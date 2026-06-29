@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+  repository-projects: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: write
+      actions: read
+      repository-projects: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Project Setup
+        run: ./scripts/setup.sh
+
+      - name: Run Linting
+        run: uv run ruff check .
+
+      - name: Run Tests with Coverage
+        run: uv run pytest --cov=src/pdum/dsl --cov-report=xml --cov-report=term
+      - name: Build Documentation
+        run: uv run mkdocs build
+      - name: Temporarily disable git hooks for coverage action
+        run: |
+          if [ -f .git/hooks/pre-commit ]; then
+            mv .git/hooks/pre-commit .git/hooks/pre-commit.disabled
+          fi
+
+      - name: Coverage Comment
+        id: coverage_comment
+        uses: py-cov-action/python-coverage-comment-action@v3
+        with:
+          GITHUB_TOKEN: ${{ github.token }}
+          MINIMUM_GREEN: 80
+          MINIMUM_ORANGE: 70
+
+      - name: Re-enable git hooks
+        if: always()
+        run: |
+          if [ -f .git/hooks/pre-commit.disabled ]; then
+            mv .git/hooks/pre-commit.disabled .git/hooks/pre-commit
+          fi
+
+      - name: Store Pull Request comment to be posted
+        uses: actions/upload-artifact@v4
+        if: steps.coverage_comment.outputs.COMMENT_FILE_WRITTEN == 'true'
+        with:
+          name: python-coverage-comment-action
+          path: python-coverage-comment-action.txt
