@@ -18,7 +18,11 @@ authors = [
     { name = "Nehal Patel", email = "nehal@alum.mit.edu" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "glfw>=2.10.0",
+    "rendercanvas>=2.6.3",
+    "wgpu>=0.31.1",
+]
 
 [project.urls]
 Homepage = "https://github.com/habemus-papadum/pdum_dsl"
