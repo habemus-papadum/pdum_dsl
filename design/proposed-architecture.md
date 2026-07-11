@@ -238,6 +238,9 @@ zero NumPy dependency). **Fingerprint soundness is a CI property fuzz**
 (P1 graft): `fingerprint(a) == fingerprint(b) ⟹ typeof(a) == typeof(b)` —
 fingerprint collisions are silent wrong *hits*, the worst failure class.
 
+`typeof` is a **summary function, not a class lookup** — how rich a summary
+(rank-only vs shape-in-type vs value buckets) is the per-kind dial; see §13.
+
 ### 2.10 `Backend` — a capability record (instances live outside the kernel)
 
 ```python
@@ -706,3 +709,126 @@ changes?" review question resolves it in one sentence.
   guarded on op/type presence, pay-for-what-you-use); if it ever needs
   ordering semantics between third parties, that is a priced sixth-surface
   decision (§11).
+
+---
+
+## 13. Value-dependent typing: the summary-function dial
+
+"Type" in this architecture never meant "the Python class." It means **the
+structural summary that a ValueKind's `typeof` chooses to extract from the
+value** — the class is only the dispatch key for *which* summarizer runs. The
+precedent has been in the design since M0: int range-bucketing gives
+`typeof(5) = i64` but `typeof(2**63) = u64` — two values of one Python class
+with different types, because the summary looked at the value. Shape-dependent
+compilation is the same move, one notch richer.
+
+### The spectrum, as three `typeof` bodies
+
+**Rank-generic (stdlib default).** Shape stays *out* of the type and flows as
+runtime data:
+
+```python
+class NdArrayKind:
+    def typeof(self, a):     return Array(dtype, a.ndim, layout, byteorder, writeable)
+    def leaf_types(self, t): return (BufferLeaf(), *ShapeLeafs, *StrideLeafs)
+    def flatten(self, a):    return (a, *a.shape, *strides)     # shape words per call
+    def fingerprint(self, a): return ("nd", dtype.num, a.ndim, layout_bit)
+```
+
+Same dtype/rank, different shape → same type → **cache hit**; new shape words
+just ride the pack path. Right default for CUDA/C-style backends.
+
+**Shape-in-type (opt-in kind).** For static loop bounds, unrolling, WGSL
+fixed-size arrays:
+
+```python
+class ShapedArray(Type): dtype: Type; shape: tuple[int, ...]
+
+class ShapedNdArrayKind:
+    def typeof(self, a):     return ShapedArray(dtype, a.shape)
+    def leaf_types(self, t): return (BufferLeaf(),)        # NO ShapeLeafs — shapes bake in
+    def fingerprint(self, a): return ("snd", dtype.num, a.shape)   # soundness law forces this
+```
+
+Same shape → hit; resized → miss → recompile with the dims as constants. This
+is JAX's model (jit keys on dtype+shape avals). Triton shows the midpoint:
+*coarsened* value properties in the key ("divisible by 16"), which is also
+just a `typeof` body returning a bucket.
+
+Selection is explicit at the capture site (a wrapper like `shaped(arr)`, or a
+one-off `Literal(x.shape)` lift) — never a global mode.
+
+### The instance-level protocol
+
+For objects that know their own type, a `__dsl_type__(self) -> Type` dunder is
+checked before the class registry (companion to the `__pdum_dsl__`-convertible
+slot in the call-resolution order). Prior art: numba's `_numba_type_`, DaCe's
+`__descriptor__`, JAX's aval protocol. An *unregistered* type with no dunder is
+a loud `typeof` error — never "fall back to the Python class," which would put
+an unsound key in the cache.
+
+### Guardrails (why this doesn't become a type-theory project)
+
+1. **Types are hashable summaries, not predicates.** Frozen, structural,
+   serializable; no computation inside a type. Relational properties ("these
+   two arrays have equal length") are miss-time analysis aspects (§12), not
+   types.
+2. **The fingerprint-soundness fuzz polices enrichment mechanically.** Put
+   shape in the type but forget it in the fingerprint and CI catches the
+   silent wrong-hit.
+3. **The cost is visible and named.** Shape-in-type = one artifact per shape;
+   LRU eviction bounds it and per-tier miss counters name the cause
+   ("arg 0: shape (64,48) → (128,96)").
+4. **Backends demand richness where their ABI needs it**, rather than the
+   frontend imposing it globally: WGSL's `legalize_params` rejects a
+   rank-generic array in a uniform slot with an error telling you to use the
+   shaped kind or lift the shape.
+
+---
+
+## 14. Build vs fork: why not tinygrad
+
+Recorded as a considered alternative (full measurements:
+`research/R7-minimal-compilers.md`). tinygrad validates our *mechanisms* — one
+node type, rules as data, ~100-line renderers, content-hash compile cache,
+CI line budget — and we stole all of them. It does not contain our *product*:
+
+1. **Programming model.** tinygrad's language is the Tensor API (lazy tensor
+   combinators → scheduler → fused kernels). It has no frontend that compiles
+   a user's Python function body; pdum's unit of programming is a scalar
+   kernel body with control flow. The part tinygrad lacks is exactly the part
+   that is our thesis (capture, typeof, AST lowering, marshaling).
+2. **Caching polarity — the decisive inversion.** In tinygrad a captured
+   Python float in a tensor expression becomes a `CONST` in the graph: new
+   value → new graph hash → recompile. Value variation without recompile
+   requires explicit integer symbolic `Variable`s or manual tensor inputs.
+   **tinygrad makes *dynamic* the explicit opt-in; pdum makes *static* the
+   explicit opt-in (`Literal`).** For live-knob domains, the default polarity
+   is the product.
+3. **TinyJit is capture-and-replay, not a specializing JIT.** It records a
+   launch sequence and replays it; a shape mismatch *raises* rather than
+   respecializes; Python-side control flow is frozen at capture; there is no
+   notion of user-code identity, so live-coding invalidation
+   (edit-and-rerun → natural miss) has no home.
+4. **No extension surfaces.** Fixed ~90-op enum, fixed scalar dtype set (no
+   records/structs), no registry/dialect layering, no user types, no units,
+   no method attachment, no mini-language seam. Our five surfaces are the
+   product; adding them to a fork is surgery on a fast-moving upstream whose
+   own 25k-line cap leaves no room for merge-back (and whose style — dense
+   one-liners to stay under budget — R7 flags as a readability cost we should
+   not copy).
+5. **No graphics runtimes.** tinygrad's WebGPU/Metal backends emit *compute*
+   kernels for tensor ops; fragment pipelines, canvases, uniform-buffer
+   render loops (and audio callback loops) are runtimes we build either way.
+
+Fork economics: the inheritable part (rewrite engine ~150 lines, renderers
+~50–115 each) is the cheapest ~10% and is already budgeted in our kernel; the
+missing parts (frontend, thesis cache, marshaling, hooks, domain runtimes) are
+the expensive 90% and the point of the project — while a fork drags ~10 kloc
+of scheduler/movement/runtime machinery our domains don't use.
+
+The forward-looking relationship instead: **mine it** (done), **oracle it**
+(differential-test our numerics against it where ops overlap), and optionally
+**target it** — once vmap exists, a Surface-D backend could lower vmapped
+pdum kernels to tinygrad tensor ops and inherit its fused CUDA/Metal execution
+for array workloads, with tinygrad's own artifact cache below ours.
