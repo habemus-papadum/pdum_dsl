@@ -94,7 +94,7 @@ since shaders are not self-recursive.)
 `generation` is a single global counter folded into every key:
 
 ```python
-from pdum.dsl import bump_generation, current_generation
+from pdum.dsl_reference import bump_generation, current_generation
 bump_generation()    # invalidate ALL specializations
 ```
 

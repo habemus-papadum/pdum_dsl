@@ -3,9 +3,9 @@ a higher-order ``shader(img)`` where ``img`` calls ``weave`` and ``weave`` captu
 an int uniform ``k``. Everything inlines into one WGSL function; the pipeline still
 compiles once across changing ``k``."""
 
-from pdum.dsl import builtins, jit
-from pdum.dsl.backends.wgsl import compile_fragment
-from pdum.dsl.webgpu import Context
+from pdum.dsl_reference import builtins, jit
+from pdum.dsl_reference.backends.wgsl import compile_fragment
+from pdum.dsl_reference.webgpu import Context
 
 
 @jit(kind="fragment")

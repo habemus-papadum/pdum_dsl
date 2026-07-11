@@ -1,9 +1,14 @@
-"""pdum.dsl — a Python DSL compiler framework.
+"""pdum.dsl_reference — the frozen Milestone-0 reference asset (formerly ``pdum.dsl``).
+
+An end-to-end proof of concept kept intact for consultation while ``pdum.dsl``
+is redesigned (see ``docs/desiderata.md``). Do not extend or refactor this
+package; its tests live in ``reference/tests/`` and run on demand.
 
 Core (backend-independent): capture/``Handle`` (phase A), the ``Type`` lattice +
 ``typeof``, and the type-keyed specialization cache + generation counter. The
-WebGPU backend/runtime lives under ``pdum.dsl.webgpu`` and is imported on demand
-(it pulls in ``wgpu``), so importing this package stays light for pure unit tests.
+WebGPU backend/runtime lives under ``pdum.dsl_reference.webgpu`` and is imported
+on demand (it pulls in ``wgpu``), so importing this package stays light for pure
+unit tests.
 """
 
 from .cache import SpecCache, bump_generation, current_generation

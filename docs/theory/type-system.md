@@ -116,10 +116,10 @@ unmarked stays runtime uniform data. For WGSL this is precisely the "bake as a `
 
 | Concern | Symbol |
 |---|---|
-| Lattice + `typeof` | `pdum.dsl.types` |
-| Narrowing to WGSL widths | `pdum.dsl.backends.wgsl.layout.narrow_type` |
-| Inference | `pdum.dsl.passes.infer.infer_function` |
-| Builtin/intrinsic type rules | `pdum.dsl.backends.wgsl.intrinsics` |
+| Lattice + `typeof` | `pdum.dsl_reference.types` |
+| Narrowing to WGSL widths | `pdum.dsl_reference.backends.wgsl.layout.narrow_type` |
+| Inference | `pdum.dsl_reference.passes.infer.infer_function` |
+| Builtin/intrinsic type rules | `pdum.dsl_reference.backends.wgsl.intrinsics` |
 
 The full target lattice (arrays with layout/byteorder, `Optional`/union, `str`/`bytes`,
 opaque callables) is specified in

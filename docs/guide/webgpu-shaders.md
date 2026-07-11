@@ -29,7 +29,7 @@ the Python variables your function captured — no manual buffer wiring.
 ## The two decorators
 
 ```python
-from pdum.dsl import builtins, jit
+from pdum.dsl_reference import builtins, jit
 
 @jit(kind="fragment")     # an entry point: (pixel) -> color
 def shader():
@@ -54,7 +54,7 @@ happens later, the first time you draw (see [Theory → Overview](../theory/over
 A fragment shader gets the pixel's framebuffer coordinate from `builtins.FragCoord`:
 
 ```python
-from pdum.dsl import builtins
+from pdum.dsl_reference import builtins
 
 @jit(kind="fragment")
 def shader():
@@ -210,7 +210,7 @@ A [`Context`](../reference/runtime.md) owns the GPU device. A [`Drawer`](../refe
 owns one shader's compiled pipeline + uniform buffer and updates uniforms each frame.
 
 ```python
-from pdum.dsl.webgpu import Context
+from pdum.dsl_reference.webgpu import Context
 
 ctx = Context()                                   # picks an adapter + device
 
@@ -284,6 +284,6 @@ and animation run at full speed.
 
 See [`docs/demos/disk.py`](https://github.com/habemus-papadum/pdum_dsl/blob/main/docs/demos/disk.py)
 for a complete, runnable window demo, and the tests in
-[`tests/test_m03_thesis.py`](https://github.com/habemus-papadum/pdum_dsl/blob/main/tests/test_m03_thesis.py)
-and [`tests/test_m04_inline.py`](https://github.com/habemus-papadum/pdum_dsl/blob/main/tests/test_m04_inline.py)
+[`reference/tests/test_m03_thesis.py`](https://github.com/habemus-papadum/pdum_dsl/blob/main/reference/tests/test_m03_thesis.py)
+and [`reference/tests/test_m04_inline.py`](https://github.com/habemus-papadum/pdum_dsl/blob/main/reference/tests/test_m04_inline.py)
 for offscreen, asserted versions.

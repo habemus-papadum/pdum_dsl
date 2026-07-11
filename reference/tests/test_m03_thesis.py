@@ -4,8 +4,8 @@ every frame compiles the pipeline exactly once and only rewrites the uniform buf
 Requires a working GPU (Metal/Vulkan/DX12); these are integration tests.
 """
 
-from pdum.dsl import builtins, jit
-from pdum.dsl.webgpu import Context
+from pdum.dsl_reference import builtins, jit
+from pdum.dsl_reference.webgpu import Context
 
 
 def make_disk(cx, cy, radius):

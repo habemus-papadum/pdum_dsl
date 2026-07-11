@@ -128,7 +128,7 @@ Each field's offset is rounded up to its alignment; the struct's total size is r
 to a multiple of 16. `Layout.pack(values)` writes each value at its offset (`f32`→`<f`,
 `i32`→`<i`, `u32`→`<I`); an empty struct emits a `_pad: vec4<f32>` member because WGSL
 forbids empty structs. This is unit-tested against the spec example in
-[`tests/test_m02_wgsl.py`](https://github.com/habemus-papadum/pdum_dsl/blob/main/tests/test_m02_wgsl.py).
+[`reference/tests/test_m02_wgsl.py`](https://github.com/habemus-papadum/pdum_dsl/blob/main/reference/tests/test_m02_wgsl.py).
 
 ## 6. The runtime
 

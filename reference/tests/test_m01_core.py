@@ -3,7 +3,7 @@ and ``closure(6)`` share one ``FnType`` and trigger exactly one compile."""
 
 import pytest
 
-from pdum.dsl import (
+from pdum.dsl_reference import (
     BoolType,
     FloatType,
     IntType,
@@ -13,7 +13,7 @@ from pdum.dsl import (
     jit,
     typeof,
 )
-from pdum.dsl.types import BigIntError, f64, i64
+from pdum.dsl_reference.types import BigIntError, f64, i64
 
 
 def make_closure(x):

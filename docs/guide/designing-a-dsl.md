@@ -9,8 +9,8 @@ discipline) and a backend (an emitter + a runtime).
 
 !!! info
     The WebGPU backend is the worked reference implementation; read it alongside this
-    guide ([`src/pdum/dsl/backends/wgsl/`](https://github.com/habemus-papadum/pdum_dsl/tree/main/src/pdum/dsl/backends/wgsl)
-    and [`webgpu/runtime.py`](https://github.com/habemus-papadum/pdum_dsl/blob/main/src/pdum/dsl/webgpu/runtime.py)).
+    guide ([`src/pdum/dsl_reference/backends/wgsl/`](https://github.com/habemus-papadum/pdum_dsl/tree/main/src/pdum/dsl_reference/backends/wgsl)
+    and [`webgpu/runtime.py`](https://github.com/habemus-papadum/pdum_dsl/blob/main/src/pdum/dsl_reference/webgpu/runtime.py)).
     The alternate-backend code in this guide is an **illustrative sketch** — it is not in
     the repo — included to show the contracts you implement.
 
@@ -154,10 +154,10 @@ IR to a Python closure; the runtime caches it and calls it with the captured val
 
 ```python
 # illustrative only — sketch of a non-WGSL backend
-from pdum.dsl import SpecCache
-from pdum.dsl.passes.inline import flatten
-from pdum.dsl.passes.infer import infer_function
-from pdum.dsl import ir
+from pdum.dsl_reference import SpecCache
+from pdum.dsl_reference.passes.inline import flatten
+from pdum.dsl_reference.passes.infer import infer_function
+from pdum.dsl_reference import ir
 
 def emit_python(flat):
     """typed IR -> a Python function (uniforms passed as a dict `u`)."""
@@ -223,15 +223,15 @@ and in an on-disk cache as well (planned).
 
 | Concern | Module |
 |---|---|
-| Capture, handles, programs | `src/pdum/dsl/jit.py` |
-| Types + `typeof` | `src/pdum/dsl/types.py` |
-| Cache + generation | `src/pdum/dsl/cache.py` |
-| IR | `src/pdum/dsl/ir.py` |
-| Source → IR | `src/pdum/dsl/frontend/ast_lower.py` |
-| Inference | `src/pdum/dsl/passes/infer.py` |
-| Inlining / monomorphization | `src/pdum/dsl/passes/inline.py` |
-| Reference backend (emit/layout) | `src/pdum/dsl/backends/wgsl/` |
-| Reference runtime | `src/pdum/dsl/webgpu/runtime.py` |
+| Capture, handles, programs | `src/pdum/dsl_reference/jit.py` |
+| Types + `typeof` | `src/pdum/dsl_reference/types.py` |
+| Cache + generation | `src/pdum/dsl_reference/cache.py` |
+| IR | `src/pdum/dsl_reference/ir.py` |
+| Source → IR | `src/pdum/dsl_reference/frontend/ast_lower.py` |
+| Inference | `src/pdum/dsl_reference/passes/infer.py` |
+| Inlining / monomorphization | `src/pdum/dsl_reference/passes/inline.py` |
+| Reference backend (emit/layout) | `src/pdum/dsl_reference/backends/wgsl/` |
+| Reference runtime | `src/pdum/dsl_reference/webgpu/runtime.py` |
 
 Then read [Theory & Internals](../theory/overview.md) for the timing model and the design
 rationale behind each contract.

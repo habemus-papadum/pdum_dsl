@@ -8,21 +8,21 @@ how the pieces connect, which tests prove what, and the open design decisions to
 on.
 
 Prose docs for each layer live under `docs/` (run `uv run mkdocs serve`):
-[WebGPU guide](docs/guide/webgpu-shaders.md), [DSL-design guide](docs/guide/designing-a-dsl.md),
-[Theory](docs/theory/overview.md). This file is about reviewing the *code*.
+[WebGPU guide](../docs/guide/webgpu-shaders.md), [DSL-design guide](../docs/guide/designing-a-dsl.md),
+[Theory](../docs/theory/overview.md). This file is about reviewing the *code*.
 
 ## How to run things first
 
 ```bash
-uv run pytest -q                              # 22 tests (unit + GPU integration)
+uv run pytest reference/tests -q                              # 22 tests (unit + GPU integration)
 uv run ruff check src tests                   # lint
 uv run python docs/demos/disk.py --frames 120 # GPU window demo, prints compiles=1
 uv run mkdocs serve                           # the docs site
 
 # See the generated WGSL for the inlined higher-order example:
 uv run python - <<'PY'
-from pdum.dsl import builtins, jit
-from pdum.dsl.backends.wgsl import compile_fragment
+from pdum.dsl_reference import builtins, jit
+from pdum.dsl_reference.backends.wgsl import compile_fragment
 @jit(kind="fragment")
 def shader(f):
     i, j = builtins.FragCoord.xy
@@ -37,7 +37,7 @@ print(compile_fragment(shader(make_img(7))).wgsl)
 PY
 ```
 
-Total implementation is ~9 small modules under `src/pdum/dsl/` plus tests. It is meant to
+Total implementation is ~9 small modules under `src/pdum/dsl_reference/` plus tests. It is meant to
 be readable end-to-end in a sitting.
 
 ---
@@ -52,12 +52,12 @@ Read in this order:
 1. **`docs/demos/disk.py`** — the API as a user sees it: `@jit(kind="fragment")`,
    `builtins.FragCoord.xy`, captured `cx/cy/radius`, `Context` → `window_drawer` →
    `update`/`show` → `run`. *Does this read the way you want the framework to feel?*
-2. **`tests/test_m03_thesis.py`** — the thesis as an executable assertion: a render loop
+2. **`reference/tests/test_m03_thesis.py`** — the thesis as an executable assertion: a render loop
    that changes capture values shows `compile_count == 1`, `uniform_writes == N`, and a
    pixel check that it actually renders. *Is this the behavior you expected?*
-3. **`tests/test_m04_inline.py`** — the demo.py shape: higher-order `shader(img)` where
+3. **`reference/tests/test_m04_inline.py`** — the demo.py shape: higher-order `shader(img)` where
    `img` calls `weave` (capturing `k`), all inlined, still one compile across changing `k`.
-4. **`src/pdum/dsl/webgpu/runtime.py`** — the runtime. Focus on `Drawer.update` (the
+4. **`src/pdum/dsl_reference/webgpu/runtime.py`** — the runtime. Focus on `Drawer.update` (the
    `flatten → cache.get_or_compile → pack → write_buffer` sequence) and `_build` (the
    cached expensive step). `Context`, `OffscreenTarget`/`WindowTarget`, `GpuProgram`.
 5. Run the WGSL-printing snippet above and read the emitted `fs_main`.
@@ -77,7 +77,7 @@ Read in this order:
 **Gap check (confirm these are flagged, not hidden):** the functional pipeline style
 (`twill | widen(2) | ...`, the `🌺` operator, `weave`/`zoom`/color tables) is **not built**
 — only the higher-order machinery that would make it inline. See the "Planned" callouts in
-[the WebGPU guide](docs/guide/webgpu-shaders.md).
+[the WebGPU guide](../docs/guide/webgpu-shaders.md).
 
 ---
 
@@ -88,16 +88,16 @@ for *other* DSLs/backends, not just WebGPU.
 
 Read in this order:
 
-1. **`src/pdum/dsl/jit.py`** — capture. `make_handle` (phase A: code object + closure
+1. **`src/pdum/dsl_reference/jit.py`** — capture. `make_handle` (phase A: code object + closure
    cells → `env_types` → `FnType`), `Handle`, `Program` (calling a `Handle` builds a
    deferred application). *Is this genuinely backend-agnostic? (It is — no WGSL here.)*
-2. **`src/pdum/dsl/cache.py`** — `SpecCache.get_or_compile(fntype, arg_types, compile_fn)`,
+2. **`src/pdum/dsl_reference/cache.py`** — `SpecCache.get_or_compile(fntype, arg_types, compile_fn)`,
    generic over the artifact type; the per-key future; `generation`. *Is the cache contract
    the right seam for a new backend?*
-3. **`src/pdum/dsl/passes/inline.py`** — `flatten(program)`: inline device fns, merge
+3. **`src/pdum/dsl_reference/passes/inline.py`** — `flatten(program)`: inline device fns, merge
    uniforms, resolve higher-order args. Returns `Flattened(fn, names, types, values)`. This
    is reused unchanged by any backend. *Is the `Flattened` contract clear?*
-4. **`src/pdum/dsl/types.py`** — the lattice + `typeof`. *Is the extension path (add a
+4. **`src/pdum/dsl_reference/types.py`** — the lattice + `typeof`. *Is the extension path (add a
    `Type` subclass + a `typeof` case + a backend layout/emit rule) clear?*
 5. Skim **`docs/guide/designing-a-dsl.md`** — it includes an illustrative (non-repo) CPU
    backend sketch showing the `flatten → get_or_compile → feed values → execute` contract.
@@ -125,24 +125,24 @@ understood and acceptable.
 
 Read in this order:
 
-1. **`src/pdum/dsl/ir.py`** — the node set. Small expression/statement tree (not SSA).
-2. **`src/pdum/dsl/frontend/ast_lower.py`** — the accepted Python subset and name
+1. **`src/pdum/dsl_reference/ir.py`** — the node set. Small expression/statement tree (not SSA).
+2. **`src/pdum/dsl_reference/frontend/ast_lower.py`** — the accepted Python subset and name
    classification (`uniform`/`arg`/`local`), the `builtins.*` intrinsic recognition, the
    tuple-unpack-via-temp lowering, and that any `Call` lowers uniformly (builtin vs device
    resolved later).
-3. **`src/pdum/dsl/passes/infer.py`** — bottom-up typing; the promotion rule; note it runs
+3. **`src/pdum/dsl_reference/passes/infer.py`** — bottom-up typing; the promotion rule; note it runs
    against **narrowed** uniform types (the "two type levels" in
-   [Type System](docs/theory/type-system.md)).
-4. **`src/pdum/dsl/backends/wgsl/layout.py`** — the WGSL alignment rules (the `vec3`
+   [Type System](../docs/theory/type-system.md)).
+4. **`src/pdum/dsl_reference/backends/wgsl/layout.py`** — the WGSL alignment rules (the `vec3`
    size-12/align-16 footgun), `build_layout`, `pack`, `narrow_type`. Cross-check against
-   `tests/test_m02_wgsl.py`.
-5. **`src/pdum/dsl/backends/wgsl/emit.py`** — `IR -> str`; the full-screen triangle; the
+   `reference/tests/test_m02_wgsl.py`.
+5. **`src/pdum/dsl_reference/backends/wgsl/emit.py`** — `IR -> str`; the full-screen triangle; the
    `f32(...)` numeric coercion (`_emit_f`/`_is_floatish`); `select(false, true, cond)`
    ordering; color coercion (`_emit_color`).
-6. **`src/pdum/dsl/backends/wgsl/compile.py`** — ties flatten → layout → infer → emit.
-7. **`src/pdum/dsl/lang.py`** — the `builtins` sentinel (iterable so `x, y = ...xy` is
+6. **`src/pdum/dsl_reference/backends/wgsl/compile.py`** — ties flatten → layout → infer → emit.
+7. **`src/pdum/dsl_reference/lang.py`** — the `builtins` sentinel (iterable so `x, y = ...xy` is
    statically valid; never executed).
-8. **`tests/test_m01_core.py`**, **`tests/test_m02_wgsl.py`** — unit coverage of the
+8. **`reference/tests/test_m01_core.py`**, **`reference/tests/test_m02_wgsl.py`** — unit coverage of the
    `closure(5)/closure(6)` → one compile property and golden WGSL/layout.
 
 **Decisions made that are worth a second opinion:**
@@ -187,5 +187,5 @@ As you go, it helps to separate three kinds of feedback:
    (vector uniforms and the dialect-decoupling are the highest-leverage next steps).
 
 The design docs this was built from are in
-[`design/`](design/dsl_caching_layer.md); the approved plan and roadmap are in the project
+[`design/`](../design/dsl_caching_layer.md); the approved plan and roadmap are in the project
 memory and the plan file.

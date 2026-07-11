@@ -13,8 +13,8 @@ from __future__ import annotations
 import math
 import sys
 
-from pdum.dsl import builtins, jit
-from pdum.dsl.webgpu import Context
+from pdum.dsl_reference import builtins, jit
+from pdum.dsl_reference.webgpu import Context
 
 
 def disk(cx, cy, radius):

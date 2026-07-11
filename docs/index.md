@@ -1,5 +1,12 @@
 # pdum.dsl
 
+!!! warning "These docs describe the frozen Milestone-0 reference asset"
+    The implementation documented here is preserved intact at
+    `pdum.dsl_reference` (code in `src/pdum/dsl_reference/`, tests in
+    `reference/tests/`) while `pdum.dsl` itself is redesigned — see
+    [`docs/desiderata.md`](desiderata.md) for the redesign brief and
+    `reference/README.md` for how to run the frozen asset.
+
 A Python **DSL compiler framework**: a [numba](https://numba.pydata.org/)-like
 `@jit` decorator workflow with **Julia-like type-keyed caching**. Its first concrete
 use case compiles Python functions into **WebGPU/WGSL fragment shaders** where
@@ -36,8 +43,8 @@ buffer write, not a recompile. See [Theory → Overview](theory/overview.md).
 
 ```python
 import math
-from pdum.dsl import builtins, jit
-from pdum.dsl.webgpu import Context
+from pdum.dsl_reference import builtins, jit
+from pdum.dsl_reference.webgpu import Context
 
 def disk(cx, cy, radius):
     @jit(kind="fragment")
