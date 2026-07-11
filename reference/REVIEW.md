@@ -8,15 +8,15 @@ how the pieces connect, which tests prove what, and the open design decisions to
 on.
 
 Prose docs for each layer live under `docs/` (run `uv run mkdocs serve`):
-[WebGPU guide](../docs/guide/webgpu-shaders.md), [DSL-design guide](../docs/guide/designing-a-dsl.md),
-[Theory](../docs/theory/overview.md). This file is about reviewing the *code*.
+[WebGPU guide](../docs/m0/guide/webgpu-shaders.md), [DSL-design guide](../docs/m0/guide/designing-a-dsl.md),
+[Theory](../docs/m0/theory/overview.md). This file is about reviewing the *code*.
 
 ## How to run things first
 
 ```bash
 uv run pytest reference/tests -q                              # 22 tests (unit + GPU integration)
 uv run ruff check src tests                   # lint
-uv run python docs/demos/disk.py --frames 120 # GPU window demo, prints compiles=1
+uv run python reference/demos/disk.py --frames 120 # GPU window demo, prints compiles=1
 uv run mkdocs serve                           # the docs site
 
 # See the generated WGSL for the inlined higher-order example:
@@ -49,7 +49,7 @@ you want, independent of how they're built.
 
 Read in this order:
 
-1. **`docs/demos/disk.py`** — the API as a user sees it: `@jit(kind="fragment")`,
+1. **`reference/demos/disk.py`** — the API as a user sees it: `@jit(kind="fragment")`,
    `builtins.FragCoord.xy`, captured `cx/cy/radius`, `Context` → `window_drawer` →
    `update`/`show` → `run`. *Does this read the way you want the framework to feel?*
 2. **`reference/tests/test_m03_thesis.py`** — the thesis as an executable assertion: a render loop
@@ -77,7 +77,7 @@ Read in this order:
 **Gap check (confirm these are flagged, not hidden):** the functional pipeline style
 (`twill | widen(2) | ...`, the `🌺` operator, `weave`/`zoom`/color tables) is **not built**
 — only the higher-order machinery that would make it inline. See the "Planned" callouts in
-[the WebGPU guide](../docs/guide/webgpu-shaders.md).
+[the WebGPU guide](../docs/m0/guide/webgpu-shaders.md).
 
 ---
 
@@ -99,7 +99,7 @@ Read in this order:
    is reused unchanged by any backend. *Is the `Flattened` contract clear?*
 4. **`src/pdum/dsl_reference/types.py`** — the lattice + `typeof`. *Is the extension path (add a
    `Type` subclass + a `typeof` case + a backend layout/emit rule) clear?*
-5. Skim **`docs/guide/designing-a-dsl.md`** — it includes an illustrative (non-repo) CPU
+5. Skim **`docs/m0/guide/designing-a-dsl.md`** — it includes an illustrative (non-repo) CPU
    backend sketch showing the `flatten → get_or_compile → feed values → execute` contract.
 
 **What to scrutinize / decide:**
@@ -132,7 +132,7 @@ Read in this order:
    resolved later).
 3. **`src/pdum/dsl_reference/passes/infer.py`** — bottom-up typing; the promotion rule; note it runs
    against **narrowed** uniform types (the "two type levels" in
-   [Type System](../docs/theory/type-system.md)).
+   [Type System](../docs/m0/theory/type-system.md)).
 4. **`src/pdum/dsl_reference/backends/wgsl/layout.py`** — the WGSL alignment rules (the `vec3`
    size-12/align-16 footgun), `build_layout`, `pack`, `narrow_type`. Cross-check against
    `reference/tests/test_m02_wgsl.py`.

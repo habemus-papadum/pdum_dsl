@@ -103,7 +103,8 @@ decision, never a `Type` property.
 ```python
 class Type: ...                                     # frozen subclasses only
 class Scalar(Type):   kind: str                     # "f64" "i64" "u64" "bool" "f32" "i32" "u32"
-class Vec(Type):      elem: Scalar; n: int
+class Vec(Type):      elem: Scalar; n: int          # IR-level only: typeof NEVER produces Vec
+class Tuple(Type):    elems: tuple[Type, ...]       # the honest tuple summary (see §10 ledger, 2026-07-11)
 class Array(Type):    dtype: Type; ndim: int; layout: str; byteorder: str; writeable: bool
 class Record(Type):   name: str; fields: tuple[tuple[str, Type], ...]
 class FnType(Type):   template: TemplateId; env_types: tuple[Type, ...]    # the thesis
@@ -379,6 +380,15 @@ IR object exists on this path. Budget: single-digit µs pure Python
 contract-preserving escalations (exec-generated per-template binder à la
 Triton, then a narrow native fastpath à la JAX).
 
+On the native (Rust/C++) escalation, for calibration (2026-07-11): generic
+fingerprint/traversal work is bound by the CPython object protocol, so a
+native port of the *same walk* buys ~2–5×, not orders of magnitude — the
+exec-generated binder (which eliminates the generic walk) comes first. The
+place native genuinely wins big is array-leaf fingerprints via the NumPy C
+API (struct reads vs. attribute protocol). All of it is decided by the step-9
+microbench gate with profiles; the hit-path contract stays frozen so
+escalations are transparent.
+
 ### 4.3 Phase B — the MISS path (once per type signature)
 
 1. Full `typeof` of env+args (verify fingerprint, intern types).
@@ -507,7 +517,7 @@ before acceptance (P1); every feature declares its cache tier (V4).
 
 ## 7. Day-1 vertical slice
 
-The orbiting-disk demo (`docs/demos/disk.py`) reproduced on the new kernel with
+The orbiting-disk demo (`reference/demos/disk.py`) reproduced on the new kernel with
 **both** the WGSL backend and the Python backend — proving the backend seam,
 the thesis cache, and the hot path in one milestone (≈1130 in-budget + ~350
 WGSL + ~120 stdlib slice):
@@ -572,6 +582,16 @@ budgeted into `cache.py` day 1 (the judges flagged it cross-cutting and
 unbudgeted); `extract` returns buffer leaves while packing bytes in place
 (merging P1's fusion with P2's channel so neither scalars nor buffers pay for
 the other).
+
+**2026-07-11 (step 1, ch01 walkthrough):** the lattice gains `Tuple(elems)`.
+An early step-1 draft summarized homogeneous scalar tuples as `Vec` at capture
+time — a shader-dialect interpretation leaking into the identity layer, caught
+at the walkthrough. The rule now: **`typeof` produces `Tuple`, never `Vec`**
+(element-wise, arity in the identity, heterogeneous fine). `Vec` remains IR-
+level only, produced by dialect lowering rules (`core.vec`); whether a captured
+`Tuple((f64, f64))` packs as one `vec2<f32>` uniform or two scalar slots is the
+backend's PackPlan decision. This restores M0's documented "two type levels"
+split.
 
 Deviations from verdicts carried over from P3 (all flagged there): first
 backend is a source renderer, not an eval-rule interpreter (the `"eval"` column

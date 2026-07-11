@@ -194,7 +194,7 @@ fn fs_main(@builtin(position) fragcoord: vec4<f32>) -> @location(0) vec4<f32> {
     substitution. Multi-statement device functions (with `let`-hoisting) are planned.
 
 !!! note "Planned: the functional pipeline style"
-    The motivating example (see [`design/Generative Julia.ipynb`](https://github.com/habemus-papadum/pdum_dsl/blob/main/design))
+    The motivating example (see [`design/archive/Generative Julia.ipynb`](https://github.com/habemus-papadum/pdum_dsl/tree/main/design/archive))
     builds shaders by *composing* higher-order functions —
     ```python
     shader = twill | widen(2) | weave(palette) | zoom(center=(0.75, 0.4))
@@ -282,7 +282,7 @@ and animation run at full speed.
 
 ## Full example
 
-See [`docs/demos/disk.py`](https://github.com/habemus-papadum/pdum_dsl/blob/main/docs/demos/disk.py)
+See [`reference/demos/disk.py`](https://github.com/habemus-papadum/pdum_dsl/blob/main/reference/demos/disk.py)
 for a complete, runnable window demo, and the tests in
 [`reference/tests/test_m03_thesis.py`](https://github.com/habemus-papadum/pdum_dsl/blob/main/reference/tests/test_m03_thesis.py)
 and [`reference/tests/test_m04_inline.py`](https://github.com/habemus-papadum/pdum_dsl/blob/main/reference/tests/test_m04_inline.py)

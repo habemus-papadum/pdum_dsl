@@ -4,8 +4,8 @@ The shader closure is rebuilt every frame with new ``cx, cy`` *values* (same
 *types*), so the pipeline compiles exactly once and each frame only rewrites the
 uniform buffer. Watch the printed ``compiles=1`` stay at 1 while ``frames`` climbs.
 
-    uv run python docs/demos/disk.py              # interactive window
-    uv run python docs/demos/disk.py --frames 120 # render N frames, print stats, exit
+    uv run python reference/demos/disk.py              # interactive window
+    uv run python reference/demos/disk.py --frames 120 # render N frames, print stats, exit
 """
 
 from __future__ import annotations

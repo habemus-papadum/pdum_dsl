@@ -56,6 +56,31 @@ moving parameters in real time over a compiled kernel.
 - **Synthetic music.**
 - Related territory as it appears; this list is not closed.
 
+### 2.1 Differentiable programming (the NN-shaped case, recorded 2026-07-11)
+
+A JAX-style functional NN workflow is a natural satellite of this design, and
+exercises it without new kernel mechanisms: networks are **compositions of
+small jitted closures, each lexically capturing its own weights** — the
+program *is* the parameter container (a Handle tree), something neither JAX
+(captures bake into the trace; closure rebuilds retrace) nor PyTorch
+(parameters must live in stateful modules) can offer. The flat labeled
+parameter tree the optimizer and checkpointing need is **derived** from the
+composition by the marshaling layer (LeafPaths through nested envs), not
+declared by the user; labels come mostly free from structure (factory
+qualnames + capture names) with light explicit annotation where needed.
+Train/eval mode is a `Literal` lift (two artifacts, dropout folded away);
+dropout RNG is a counter-based generator seeded by an ordinary runtime
+capture; gradient clipping lives optimizer-side (optax-shaped chains) or as a
+post-transpose IR pass; `grad(loss, wrt="encoder.*")` is a `Derived` identity
+matching derived label paths. **Honest scope:** tensor-op performance is
+delegated to a mature tensor backend (MLX-class) — this wins on workflow for
+interactive/medium-scale differentiable programs (the design-optimization
+domain wearing an NN costume), and does not contest LLM-scale training
+(XLA/sharding/kernel-ecosystem moats). Known warts: batch-norm-style running
+statistics (functional-state threading); reverse-mode memory management
+(remat) is real AD engineering beyond the M4 milestone. Working notes:
+`design/deep-learning-notes.md`.
+
 ## 3. Backends
 
 The framework must support multiple backends behind one core. Currently of
@@ -195,7 +220,7 @@ discovers.
 
 | Project | Why it's interesting | What to look at |
 |---|---|---|
-| **The M0 reference asset** (this repo) | proves the type-keyed caching thesis end-to-end for WebGPU | `docs/theory/`, `reference/REVIEW.md`, `design/` notes; code frozen at `src/pdum/dsl_reference/`, tests at `reference/tests/` |
+| **The M0 reference asset** (this repo) | proves the type-keyed caching thesis end-to-end for WebGPU | `docs/m0/theory/`, `reference/REVIEW.md`, `design/` notes; code frozen at `src/pdum/dsl_reference/`, tests at `reference/tests/` |
 | **numba** | the ergonomic north star (decorator workflow, NumPy batteries, structured arrays/records) *and* the documented anti-pattern (identity-keyed caches, captures frozen as constants) | intrinsic/typing/lowering architecture; `types.Record`/`structref`; bytecode frontend; `design/closure_specialization.md` for the caching critique |
 | **Julia** | the specialization model being adopted: structural function types, compile-per-type-signature, `Val{}` value lifting, world-age invalidation | via `design/dsl_caching_layer.md` (GPUCompiler comparison included) |
 | **cupy.jit** | takes a Python function and produces a high-performance CUDA kernel — directly adjacent to the CuPy backend we want | their frontend/lowering technique |

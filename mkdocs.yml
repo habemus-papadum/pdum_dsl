@@ -17,19 +17,27 @@ theme:
 
 nav:
   - Home: index.md
-  - User Guides:
-      - WebGPU Shaders: guide/webgpu-shaders.md
-      - Designing a DSL: guide/designing-a-dsl.md
-  - Theory & Internals:
-      - Overview & Timing: theory/overview.md
-      - Caching & Generations: theory/caching.md
-      - Type System: theory/type-system.md
-      - WGSL Backend & Runtime: theory/wgsl-backend.md
-  - API Reference:
-      - Core: reference/core.md
-      - Frontend & Passes: reference/frontend.md
-      - WGSL Backend: reference/wgsl.md
-      - WebGPU Runtime: reference/runtime.md
+  - Desiderata: desiderata.md
+  - The Book:
+      - "Chapter 0 — The thesis": book/ch00-thesis.ipynb
+      - "Chapter 1 — Types are values": book/ch01-types-are-values.ipynb
+      - "Chapter 2 — What a closure is": book/ch02-what-a-closure-is.ipynb
+      - Glossary: book/GLOSSARY.md
+  - M0 reference asset (frozen):
+      - Overview: m0/index.md
+      - User Guides:
+          - WebGPU Shaders: m0/guide/webgpu-shaders.md
+          - Designing a DSL: m0/guide/designing-a-dsl.md
+      - Theory & Internals:
+          - Overview & Timing: m0/theory/overview.md
+          - Caching & Generations: m0/theory/caching.md
+          - Type System: m0/theory/type-system.md
+          - WGSL Backend & Runtime: m0/theory/wgsl-backend.md
+      - API Reference:
+          - Core: m0/reference/core.md
+          - Frontend & Passes: m0/reference/frontend.md
+          - WGSL Backend: m0/reference/wgsl.md
+          - WebGPU Runtime: m0/reference/runtime.md
 
 docs_dir: docs
 
@@ -48,6 +56,8 @@ markdown_extensions:
 
 plugins:
   - search
+  - mkdocs-jupyter:
+      execute: false  # execution is the notebook harness's job (scripts/test_notebooks.sh)
   - mkdocstrings:
       default_handler: python
       handlers:

@@ -10,10 +10,10 @@
 #   --no-inplace       Execute notebook without modifying the original file
 #
 # Examples:
-#   ./scripts/nb.sh docs/demos/example.ipynb                    # Run notebook with default options
-#   ./scripts/nb.sh --check-outputs docs/demos/example.ipynb    # Run and check if outputs changed
-#   ./scripts/nb.sh --no-inplace docs/demos/example.ipynb       # Run without modifying the file
-#   ./scripts/nb.sh docs/demos/example.ipynb --ExecutePreprocessor.timeout=300
+#   ./scripts/nb.sh docs/book/ch01-types-are-values.ipynb                    # Run notebook with default options
+#   ./scripts/nb.sh --check-outputs docs/book/ch01-types-are-values.ipynb    # Run and check if outputs changed
+#   ./scripts/nb.sh --no-inplace docs/book/ch01-types-are-values.ipynb       # Run without modifying the file
+#   ./scripts/nb.sh docs/book/ch01-types-are-values.ipynb --ExecutePreprocessor.timeout=300
 #
 # By default, the notebook will be executed in place, with outputs saved back to the notebook file.
 # Use --no-inplace to prevent modifications (useful in CI environments).

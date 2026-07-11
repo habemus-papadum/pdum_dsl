@@ -4,7 +4,7 @@
     The implementation documented here is preserved intact at
     `pdum.dsl_reference` (code in `src/pdum/dsl_reference/`, tests in
     `reference/tests/`) while `pdum.dsl` itself is redesigned — see
-    [`docs/desiderata.md`](desiderata.md) for the redesign brief and
+    [`docs/desiderata.md`](../desiderata.md) for the redesign brief and
     `reference/README.md` for how to run the frozen asset.
 
 A Python **DSL compiler framework**: a [numba](https://numba.pydata.org/)-like
@@ -71,11 +71,11 @@ ctx.run(canvas, frame)
 # The shader compiles exactly once; each frame only rewrites the uniform buffer.
 ```
 
-A runnable version is in [`docs/demos/disk.py`](https://github.com/habemus-papadum/pdum_dsl/blob/main/docs/demos/disk.py):
+A runnable version is in [`reference/demos/disk.py`](https://github.com/habemus-papadum/pdum_dsl/blob/main/reference/demos/disk.py):
 
 ```bash
-uv run python docs/demos/disk.py            # interactive window
-uv run python docs/demos/disk.py --frames 120   # render N frames, print compile count, exit
+uv run python reference/demos/disk.py            # interactive window
+uv run python reference/demos/disk.py --frames 120   # render N frames, print compile count, exit
 ```
 
 ## Where to go next

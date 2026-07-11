@@ -61,6 +61,19 @@ echo ""
 NOTEBOOKS=$(grep -E '\.ipynb$' "$MKDOCS_FILE" 2>/dev/null || true)
 NOTEBOOKS=$(echo "$NOTEBOOKS" | sed 's/.*: //' | tr -d ' ')
 
+# Book chapters must execute even before (or without) a nav entry — coverage
+# must not depend on site membership.
+if [ -d "$DOCS_DIR/book" ]; then
+    for nb in "$DOCS_DIR"/book/*.ipynb; do
+        [ -e "$nb" ] || continue
+        rel="${nb#"$DOCS_DIR"/}"
+        if ! printf '%s\n' "$NOTEBOOKS" | grep -qx "$rel"; then
+            NOTEBOOKS="$NOTEBOOKS
+$rel"
+        fi
+    done
+fi
+
 if [ -z "$NOTEBOOKS" ]; then
     echo "No notebooks found in mkdocs.yml"
     exit 0

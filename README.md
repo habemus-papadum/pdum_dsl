@@ -93,7 +93,7 @@ uv run mkdocs serve
 # Build documentation
 uv run mkdocs build
 
-# Test demo notebooks (if you have notebooks in docs/demos/)
+# Test notebooks listed in the mkdocs nav + all book chapters (docs/book/)
 ./scripts/test_notebooks.sh
 ```
 

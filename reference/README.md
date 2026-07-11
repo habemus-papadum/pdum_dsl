@@ -16,8 +16,8 @@ new implementation can be compared against. New work happens in `src/pdum/dsl/`.
 | The implementation (importable, installed) | `src/pdum/dsl_reference/` |
 | Its test suite (not collected by default) | `reference/tests/` |
 | The code-review tour | `reference/REVIEW.md` |
-| The window demo | `docs/demos/disk.py` |
-| Prose docs (guides, theory, API reference) | `docs/` (mkdocs site) |
+| The window demo | `reference/demos/disk.py` |
+| Prose docs (guides, theory, API reference) | `docs/m0/` (mkdocs site, "M0" section) |
 | Original design notes | `design/` |
 
 The package was moved verbatim from `src/pdum/dsl/`; only the import name
@@ -31,7 +31,7 @@ so the code is untouched apart from the package docstring.
 uv run pytest reference/tests -q
 
 # The window demo
-uv run python docs/demos/disk.py --frames 120
+uv run python reference/demos/disk.py --frames 120
 
 # Print the WGSL emitted for the inlined higher-order example
 uv run python - <<'PY'

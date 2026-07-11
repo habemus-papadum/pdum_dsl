@@ -84,7 +84,7 @@ uv run mkdocs build
 ./scripts/test_notebooks.sh
 ```
 
-**Important**: After making any changes to demo notebooks (files in `docs/demos/*.ipynb`), you MUST run `./scripts/test_notebooks.sh` to verify the notebook executes without errors. Do not consider notebook changes complete until this test passes.
+**Important**: After making any changes to notebooks under `docs/` (e.g. the book chapters in `docs/book/*.ipynb`), you MUST run `./scripts/test_notebooks.sh` to verify they execute without errors. Do not consider notebook changes complete until this test passes.
 
 ### Publishing
 ```bash
@@ -96,14 +96,20 @@ uv run mkdocs build
 ## Architecture
 
 ### Project Structure
-- **src/pdum/dsl/**: Main package source code (src-layout)
-  - `__init__.py`: Package initialization and version
-- **tests/**: Test suite using pytest
-  - `test_example.py`: Example tests
-- **docs/**: MkDocs documentation with mkdocstrings for API reference
-  - `index.md`: Home page
-  - `reference.md`: API reference
-  - `demos/`: Demo notebooks (if included)
+- **src/pdum/dsl/**: the redesigned framework (being built; see
+  `design/proposed-architecture.md` for the design and
+  `design/implementation-plan.md` for the step sequence — both authoritative)
+- **src/pdum/dsl_reference/**: the frozen Milestone-0 proof of concept.
+  **Do not extend or refactor it.** Its tests live in `reference/tests/`
+  (run on demand: `uv run pytest reference/tests`; not collected by default)
+- **reference/**: everything about the frozen asset (README, REVIEW tour, demo)
+- **tests/**: the redesign's test suite (pytest default)
+- **docs/**: MkDocs site — `desiderata.md` (redesign brief), `m0/` (frozen M0
+  docs, historical), `book/` (forthcoming chapter notebooks, one per
+  implementation step)
+- **design/**: active design docs (`proposed-architecture.md`,
+  `implementation-plan.md`, `research/` corpus, the two normative analysis
+  notes) plus `archive/` (historical motivation material — not design inputs)
 
 ### Key Constraints
 - **Python Version**: Requires Python 3.14+
