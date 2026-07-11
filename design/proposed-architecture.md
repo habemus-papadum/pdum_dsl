@@ -592,3 +592,117 @@ revisiting); ndarray ValueKind in `stdlib/` (packaging, not architecture).
   scheduled; the microbench gate decides when.
 - **Disk-cache format**: structural key design is settled (V4); serialization
   format and dependency-closure hashing are M5+ work.
+- **Third-party analysis stages**: an always-on domain analysis attaches today
+  as a `Dialect`-bundled stage guarded on "program contains my ops/types"
+  (§12). If stage insertion ever needs real semantics (ordering constraints
+  between third-party stages), that becomes a deliberate sixth-surface
+  conversation, priced with the same constitutional discipline as region op #4.
+
+---
+
+## 12. Heavyweight analyses as satellites (the hackability stress test)
+
+Can a domain package drop an equality-saturation engine, an SMT solver, or a
+convex optimizer into the middle of compilation? Yes — and the reason is
+structural. Three properties of the kernel make heavyweight engines cheap to
+integrate, and one discipline forces them into the *right place*:
+
+1. **Everything expensive runs at miss time.** The hot path is sealed
+   (§4.2), but the miss path between a cache miss and a `FastRecord` is
+   ordinary Python with no time budget. A 200 ms solve once per type signature
+   is invisible to a loop that hits the cache ten thousand times — and because
+   analyses are deterministic functions of inputs already in the key (types,
+   attrs, op graph), their results are cached by the same machinery.
+2. **The IR is a frozen value with a tiny vocabulary.** ~30 ops, immutable
+   nodes, memoized content hash, pure regions with typed yields, no CFG.
+   Exporting to another formalism is a fold over a tree; importing the answer
+   back is `Builder` emission. E-graph and SMT encoders choke on mutable
+   SSA+CFG+effects (heroic in LLVM); we are on the trivial side by
+   construction — `Node.key` is literally what hash-consing e-graphs want.
+3. **Analyses take per-op semantics from the rule matrix, not hardcoding.** A
+   solver pass asks the registry for the `(op, "unit")` or `(op, "range")`
+   rule of each node it meets; ops added later by other packages participate
+   by registering that aspect's rule, and a missing rule is a named
+   `MissingRule(op, aspect, loc)`, never silent wrongness.
+
+Mechanically, a domain package ships (a) a new **aspect column** of per-op
+rules (Surface A) and (b) a **pass** — and a pass is just `Region → Region` or
+`Region → diagnostics`. Nothing requires a pass to use the Pat/RuleSet driver
+internally; inside it, anything importable is fair game. The solver dependency
+lives in the satellite; the kernel never imports it (same pattern as the xDSL
+oracle in `tools/`).
+
+### Sketch A — units via equality saturation (egglog)
+
+Units checking that also *places conversions optimally* (fuse factors, hoist
+them off the per-pixel path):
+
+```python
+@rule("core.mul", "unit")
+def _(d1, d2): return d1 * d2              # dimensions multiply
+@rule("core.add", "unit")
+def _(d1, d2): require(d1 == d2); return d1
+
+def unit_pass(region, ctx):                # satellite: units/saturate.py
+    eg = egglog.EGraph()
+    emit_terms(eg, region, ctx.rules_for("unit"))  # fold over frozen Nodes
+    eg.register(CONV_RULES)   # convert(a→b)∘convert(b→c)=convert(a→c);
+                              # convert distributes over add; convert(const) folds
+    eg.saturate()
+    best = eg.extract(cost=count_runtime_multiplies)
+    return rebuild_region(best)
+```
+
+The two-tier law decides where results land: a conversion attached to a
+*captured* value becomes a `SlotSpec.convert` affine — the **pack tier** — so
+switching a knob from millimeters to inches re-runs a cheap memo, rewrites
+pack bytes, and never recompiles the shader. A conversion forced
+mid-expression becomes an explicit `core.mul` by a `core.const`, visible in
+printed IR and golden-testable. Inconsistent dimensions → the e-graph never
+merges the classes → an error naming the two `loc`s.
+
+### Sketch B — Z3 for bounds proofs
+
+Per-op `"range"` rules emit interval/affine facts (`core.for` induction
+variable ∈ [0, n); `i*4+c` propagates). A pass collects constraints for every
+`core.load` and asks Z3 to prove `index < length`. Three outcomes, all clean:
+
+- **Proved** → backend legalization *elides the runtime clamp* it would
+  otherwise insert (optimization gated on proof).
+- **Refuted** → compile error carrying the model as a counterexample ("when
+  k=3, index = 66 ≥ len = 64"), mapped to `loc` via the constraint→node
+  provenance table kept while encoding.
+- **Unknown/timeout** → keep the clamp. Soundness never depends on the solver
+  succeeding.
+
+The same shape serves WGSL uniformity analysis (prove a loop bound uniform
+across the workgroup before permitting a barrier).
+
+### Sketch C — CVXPY at compile time
+
+A battery like `approx(sin, tol=1e-4, interval=(0, tau))` whose `@overload`
+runs a minimax polynomial fit (CVXPY) *during lowering* and emits the
+coefficients as `core.const`s. `tol`/`interval` are attrs — compile-time
+constants — so the solve is a deterministic function of the artifact key and
+caches like everything else.
+
+If the solve depends on a **value** (a target response curve tweaked per
+frame), types-not-values makes "solver inside the compiler, per frame"
+illegal — correctly — and forces an explicit choice: `Literal`-lift the spec
+(value enters the key; recompile per spec — right when it changes rarely), or
+run the solver *outside* the kernel in plain Python each frame and feed its
+outputs in as ordinary captures (right when it changes every frame; the
+solver's outputs are just uniforms). The "which tier misses when this
+changes?" review question resolves it in one sentence.
+
+### Caveats (the price of admission)
+
+- **Determinism is a contract.** Solver outputs must be deterministic
+  functions of key inputs or artifact/disk caching breaks — pin seeds; version
+  the solver in the disk-cache toolchain tag.
+- **Error attribution takes deliberate work.** Solvers answer globally; keep
+  the constraint→node map while encoding so unsat cores come back as `loc`s.
+- **Stage insertion is bundling sugar today** (a `Dialect`-contributed stage
+  guarded on op/type presence, pay-for-what-you-use); if it ever needs
+  ordering semantics between third parties, that is a priced sixth-surface
+  decision (§11).
