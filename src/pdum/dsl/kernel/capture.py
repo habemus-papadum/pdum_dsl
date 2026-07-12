@@ -107,6 +107,16 @@ class Handle:
     def freevars(self) -> tuple[str, ...]:
         return self.pyfunc.__code__.co_freevars
 
+    def __call__(self, *args: object) -> object:
+        """Phase B's door: dispatch through the DEFAULT registry (hit = extract
+        → pack → launch; miss = compile). Defined ON the class so a Handle is
+        honestly callable — to users and to static tooling alike — but the
+        import is lazy: capture stays reflection-only at import time, and
+        nothing about phase A touches the runtime."""
+        from .registry import DEFAULT
+
+        return DEFAULT.dispatch(self, args)
+
     def __repr__(self) -> str:
         return f"Handle[{self.kind}]({self.fntype!r}, env={list(self.env)})"
 

@@ -11,7 +11,6 @@ from pdum.dsl.combinators import (
     Terminal,
     collect,
     op,
-    register_composition,
     register_role,
     set_dispatcher,
 )
@@ -20,11 +19,9 @@ from pdum.dsl.kernel.api import jit
 from pdum.dsl.kernel.cache import FastRecord, SpecializationCache, no_compile
 from pdum.dsl.kernel.valuekind import fingerprint, typeof
 
-# Stand-in for the base-language (stdlib) package, which will own the
-# "device" role and the fuse rule once lowering exists (the satellite itself
-# pre-enumerates nothing beyond its own materializer concept):
-register_role("device")
-register_composition("pipe", "device", "device", "fuse")
+# The "device" role and the fuse rule now ship with the stdlib package
+# (batteries, step 8) — importing pdum.dsl.* wired them. Earlier revisions
+# registered stand-ins here; re-registering would clobber the stdlib hint.
 
 
 @op
@@ -129,8 +126,12 @@ def test_unregistered_kind_is_loud():
 
 
 def test_apply_without_dispatcher_is_loud():
-    with pytest.raises(NotYetExecutable):
-        6 > (add(1) | mul(2))
+    previous = set_dispatcher(None)  # batteries may have installed the real one (step 8)
+    try:
+        with pytest.raises(NotYetExecutable):
+            6 > (add(1) | mul(2))
+    finally:
+        set_dispatcher(previous)
 
 
 def test_the_thesis_for_pipelines():

@@ -39,6 +39,7 @@ nav:
       - "Chapter 7 — Source to IR": book/ch07-source-to-ir.ipynb
       - "7a — The lay of the land": book/ch07a-lay-of-the-land.ipynb
       - "Chapter 8 — One value, N parameters": book/ch08-one-value-n-parameters.ipynb
+      - "Chapter 9 — End to end, on CPU": book/ch09-end-to-end-on-cpu.ipynb
       - Glossary: book/GLOSSARY.md
   - M0 reference asset (frozen):
       - Overview: m0/index.md

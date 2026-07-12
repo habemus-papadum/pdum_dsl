@@ -63,7 +63,10 @@ class FastRecord:
 
 def guards_ok(guards: tuple) -> bool:
     for holder, name, expected in guards:
-        current = holder.get(name, _MISSING) if isinstance(holder, dict) else getattr(holder, name, _MISSING)
+        try:
+            current = holder.get(name, _MISSING) if isinstance(holder, dict) else getattr(holder, name, _MISSING)
+        except ValueError:  # a cleared closure cell raises from cell_contents: that IS drift
+            return False
         if current is not expected:  # identity: rebinding to an equal value still drifts
             return False
     return True
@@ -190,14 +193,27 @@ class SpecializationCache(_TierCache):
                 self._ready.pop(k)
                 self.retirements += 1
 
-    def get_or_compile(self, key: tuple, compile_fn: Callable[[], FastRecord]) -> FastRecord:
+    def probe(self, key: tuple) -> FastRecord | None:
+        """The per-frame fast path: ONE lock, guards inline, LRU touch.
+        ``None`` means miss (cold, or guard drift — counted and evicted)."""
         with self._lock:
             record = self._ready.get(key)
-        if record is not None and record.guards and not guards_ok(record.guards):
-            self.guard_misses += 1  # drift: refuse the stale entry, recompile
-            with self._lock:
-                self._ready.pop(key, None)
-        self._retire_superseded(key)
+            if record is None:
+                return None
+            if record.guards and not guards_ok(record.guards):
+                self.guard_misses += 1  # drift: refuse the stale entry, recompile
+                self._ready.pop(key)
+                return None
+            self._ready.pop(key)
+            self._ready[key] = record  # LRU touch
+            self.hits += 1
+            return record
+
+    def get_or_compile(self, key: tuple, compile_fn: Callable[[], FastRecord]) -> FastRecord:
+        record = self.probe(key)
+        if record is not None:
+            return record
+        self._retire_superseded(key)  # miss-only: a superseded template's next call IS a miss
         return super().get_or_compile(key, compile_fn)
 
     def _explain(self, key: tuple) -> str:

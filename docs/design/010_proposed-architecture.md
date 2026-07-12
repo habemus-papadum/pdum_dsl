@@ -613,6 +613,41 @@ each leaf with its *declared* format so a bool↔i64 drift can't hide behind
 `bool`'s int subclassing. `pack.py` cap raised 150 → 175 consciously (the
 output half + the compiled extractor were not in the §5 estimate).
 
+**2026-07-12 (step 8): first execution — Registry v1, Python backend, the
+hot path.** The thesis is now a *measurement*: 299 fresh closures under
+`no_compile()`, zero compiles, ~5–7 µs/frame INCLUDING full phase-A rebuild;
+fused pipelines dispatch through the same path (199 fresh pipelines, zero
+compiles); the content-addressed tier proven end-to-end (identical bodies
+from different def-sites: two specializations, ONE artifact; generation bump
+leaves tier 2 untouched). Deviations from the written design, all deliberate:
+(1) `Backend` v1 carries only {name, render, compile, fp} — `type_map`,
+`code_for_op`-gated decompositions, and `params_key` wait for their first
+consumer (WGSL); (2) the Python backend passes scalar *arguments* through
+the staging buffer alongside captures — deliberately uniform-block-shaped so
+the ABI is proven on CPU, not the fastest local call; composite args stay
+refused until the arg-side normalize (arrays step); (3) `core.if` renders as
+eager-both-branches + conditional expression (pure ops; the fragment-shader
+execution shape anyway); (4) guards are per-captured-cell identity triples
+`(cell, "cell_contents", value)`, and they **recurse into captured kernels**
+(review-caught: an inlined callee's drift must guard the entry) — drift is
+counted and rebuilt against the frozen env (decoration-time semantics), never
+silently served; refuse-vs-recompile remains a dial; (5) batteries: each
+satellite ships an explicit `install(registry)` and calls `install(DEFAULT)`
+at import — `import pdum.dsl` is batteries-included, a hand-built `Registry`
+receives the identical dialect through the same seam (surface E is not a
+singleton in disguise), and the batteries dispatcher never clobbers one a
+user installed first. Step-8 review corrections worth naming: the Python
+renderer emits **lazy `if`/`else` statements** with dominator-based node
+placement (the eager first draft broke guard-then-divide — crashing on
+exactly the guarded input); the tier-2 key is `(region.key, backend.fp)` (a
+version bump is a new artifact world — `name` alone served stale codegen);
+`backend_for` trips loudly when a second backend registers before per-role
+routing exists; the hit path is a single-lock `probe()` (guards inline, LRU
+touch, retirement moved to the miss path). Known deferred: pipeline entries
+escape template retirement (step-10 registry work); `FastRecord.staging` is
+single-threaded by design (the render-loop contract); guard drift on a
+long-lived handle recompiles per call — loud but wasteful, policy dial open.
+
 **2026-07-12 (step 7 review): `Stage.forbid` — conversion targets cannot
 express op-level elimination.** The claim "the `{core, abi}` legality set
 proves no logical capture survived legalization" was **false**: `core.env` is

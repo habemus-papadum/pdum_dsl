@@ -33,7 +33,7 @@ FILE_CAPS = {
     "valuekind.py": 95,
     "capture.py": 85,
     "api.py": 50,
-    "cache.py": 150,  # §5 estimate 105 + retirement/explain machinery, consciously
+    "cache.py": 165,  # §5 estimate 105 + retirement/explain + the step-8 hot-path probe(), consciously
     "ir.py": 150,
     "ops.py": 110,
     "printer.py": 80,
@@ -44,12 +44,14 @@ FILE_CAPS = {
     # from the start), the compiled per-slot extractor (§4.3.10), and the two
     # ABI stages. Raised consciously at the step-7 review, not by drift.
     "pack.py": 175,
+    "registry.py": 110,  # surface E v1: Backend record, Registry, dispatch + miss path, guards
 }
 
 SATELLITE_CAPS = {  # separately-counted buckets (the honesty clause): src/pdum/dsl/<name>
     "combinators.py": 250,
     "stdlib": 1500,
     "viz.py": 450,
+    "backends": 600,  # §5: 50-300 renderer + 130-220 runtime per source-emitting backend
 }
 
 _SKIP = {tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER}

@@ -1,15 +1,14 @@
 """The viz satellite: composable static HTML, both notebook hosts, no kernel edits."""
 
 from pdum.dsl import viz
-from pdum.dsl.combinators import op, register_composition, register_role
+from pdum.dsl.combinators import op
 from pdum.dsl.kernel import types as T
 from pdum.dsl.kernel.api import jit
 from pdum.dsl.kernel.cache import SpecializationCache
 from pdum.dsl.kernel.ir import Builder, Loc, Region
 from pdum.dsl.kernel.ops import CORE_OPS
 
-register_role("device")
-register_composition("pipe", "device", "device", "fuse")
+# device role + pipe rule now ship with stdlib (batteries, step 8)
 
 b = Builder(CORE_OPS)
 
