@@ -29,7 +29,7 @@ and a closing "what we can't do yet" section pointing at the next chapter
 green forever — they are simultaneously the step-acceptance artifact and the
 permanent bottom-up teaching track ("how the machine works, layer by layer").
 `docs/book/GLOSSARY.md` is a living terminology file; every chapter's new
-terms (Handle, FnType, thesis cache, leaf, slot, aspect, surface, …) get an
+terms (Handle, FnType, specialization cache, leaf, slot, aspect, surface, …) get an
 entry, and walkthrough feedback edits it. A future **top-down tutorial track**
 ("make art in five minutes", progressive disclosure) is explicitly planned as
 separate later docs work that deep-links into book chapters — the book serves
@@ -103,7 +103,7 @@ phase-B-style check refuse).
 
 ### Step 3 — the cache (`kernel/cache.py`)
 
-**Builds:** thesis tier + artifact tier, per-key futures (reentrant,
+**Builds:** specialization tier + artifact tier, per-key futures (reentrant,
 forward-declared recursion slots), generation, guards mechanism (synthetic
 guards for now), LRU + superseded-template retirement, per-tier miss counters,
 `no_compile` mode. (~105 LOC.)
@@ -115,6 +115,26 @@ key component, read which counter moved); evict and watch retirement.
 **Exit:** perturbation + race tests in CI; walkthrough. **The thesis is now
 proven on the new kernel — before any compiler exists.**
 
+### Step 3b — pipelines as values (inserted 2026-07-11; `design/combinators-notes.md`)
+
+**Builds:** the blessed combinator **satellite** (`src/pdum/dsl/combinators.py`
+— zero kernel edits, the first extension-locality proof): internalized
+plumbum semantics (`@op` stage constructors, `|` composes inert, `>` applies
+once), Roles v1 over `Handle.kind`, the composition-rule registry with
+`IncompatibleRoles` explanations, `f[config]` configured-stage syntax
+(recorded conservatively as static until execution), materializer terminals
+(stubbed), flattened `Derived("pipe", …)` identities.
+**Notebook `ch04-pipelines-are-values`:** definition ≠ application; identity
+stability across rebuilds; flattened associativity; role refusals read aloud;
+the thesis for pipelines via a dummy dispatcher (300 rebuilt applications,
+one compile, under `no_compile`).
+**Exit:** walkthrough (taste-heavy surface — Role naming settles here).
+**Downstream deltas:** chapter numbers after ch03 shift by one; the lowering
+step gains the Derived/combinator **build rule** (dress rehearsal for
+transforms); the marshaling step's contract is **bidirectional**
+(PackPlan + ResultPlan, per combinators-notes §3b); from the CPU-backend
+chapter on, **combinator style is the house style for examples**.
+
 ---
 
 ## Phase II — the compiler (steps 4–8)
@@ -124,7 +144,7 @@ proven on the new kernel — before any compiler exists.**
 **Builds:** `Node`/`Region`, memoized content hash, `Builder`, structural
 verifier, `OpDef` + traits + the ~30-op core table, MLIR-flavored printer.
 (~220 LOC.)
-**Notebook `ch04-programs-are-values`:** build the disk-shader body *by hand*
+**Notebook `ch05-programs-are-values`:** build the disk-shader body *by hand*
 with `Builder`; print it; hash it; rebuild it in a different order → same
 hash; the **no-value invariant** demonstrated by attempting to smuggle a
 capture value into a node (there is no field for it — show `core.env(slot=0)`
@@ -136,7 +156,7 @@ region ops and why there are exactly three.
 
 **Builds:** `Pat`/`RuleSet`, the single driver (post-order, fixpoint,
 rebuild-on-change), `Stage` legality (always-on), match logging. (~150 LOC.)
-**Notebook `ch05-everything-is-a-rule`:** write `x+0→x` and const-folding as
+**Notebook `ch06-everything-is-a-rule`:** write `x+0→x` and const-folding as
 rules in the notebook; watch fixpoint converge with the match log on; compose
 rule sets; violate stage legality deliberately and read the error (op + loc);
 peek at rule dispatch indexing (why 900 rules stay fast in tinygrad).
@@ -150,7 +170,7 @@ dispatching on `lower_ast` rules; rules for the slice subset (float arith,
 compare, `IfExp`, tuple→vec, assignment, swizzle attribute, intrinsic hook);
 `MissingRule`/`NoSourceError` diagnostics. (~135 kernel + first satellite
 rule pack; the satellite bucket's separate line-count starts here.)
-**Notebook `ch06-source-to-ir`:** decorate the disk shader; walk
+**Notebook `ch07-source-to-ir`:** decorate the disk shader; walk
 `classify_names` output (every name's fate); lower and print typed IR;
 captures appear as `core.env` slots; `loc` round-trip (error in the shader →
 caret on the user's line); unsupported syntax → the exact error text; a
@@ -165,7 +185,7 @@ of extension locality).
 kinds, `LeafPath`/`SlotSpec`/`PackPlan` + the generic packer,
 `build_extractor`, the `legalize_params` stage emitting `abi.slot` ops, a toy
 `PhysicalDest` for testing. (~150 LOC.)
-**Notebook `ch07-one-value-n-parameters`:** legalize the lowered shader and
+**Notebook `ch08-one-value-n-parameters`:** legalize the lowered shader and
 print the ABI-stage IR (`abi.slot` visible); build a `PackPlan` from types
 alone; pack values and **hexdump the staging buffer**; change a capture value
 → repack, same plan, same artifact key; nested-closure leaves; where a future
@@ -179,7 +199,7 @@ records, `Registry` v1 (`kernel/registry.py` — enough for backends +
 lower_ast + intrinsic tables), `FastRecord` assembly, guards armed with real
 dependency tags, `Handle.__call__` hot path, `@jit`. (~220 LOC — completes
 the kernel budget.)
-**Notebook `ch08-end-to-end-on-cpu`:** the payoff chapter. The disk shader:
+**Notebook `ch09-end-to-end-on-cpu`:** the payoff chapter. The disk shader:
 source → typed IR → legalized IR → **rendered Python source (read it!)** →
 executed → image displayed inline. Then the loop: 300 frames of moving
 captures under `no_compile`, `compiles == 1`, counters printed. Then the
@@ -199,10 +219,10 @@ generalized to leaves→`UniformSlot`), wgpu offscreen + window runtime (~200),
 `FragCoord` intrinsic registered *from the backend package*.
 **Parallel within step:** (a) renderer+planner, (b) wgpu runtime+targets,
 (c) differential-test harness — three agents, then integrate.
-**Notebook `ch09-the-gpu-and-the-seam`:** same shader, second backend: WGSL
+**Notebook `ch10-the-gpu-and-the-seam`:** same shader, second backend: WGSL
 text side-by-side with the Python source; the uniform layout table (offsets,
 the vec3 align-16 footgun); offscreen render; **differential image compare**
-vs ch08; the live loop with `compiles == 1`; hit-path microbench readout
+vs ch09; the live loop with `compiles == 1`; hit-path microbench readout
 (alarm/fail thresholds); [gpu-tagged cells].
 **Exit:** all M1 gates green (microbench, differential, thesis-on-GPU,
 perturbation re-armed); walkthrough. *The architecture's day-1 claim is now
@@ -217,7 +237,7 @@ mix, smoothstep, length, dot, a `Color` record + `to_oklab`) ported to
 Python + WGSL targets; the full extension-locality CI test.
 **Parallel within step:** batteries fan out across agents once the first two
 (sqrt, Color) validate the surfaces.
-**Notebook `ch10-the-five-surfaces`:** add `sinh` live in the notebook —
+**Notebook `ch11-the-five-surfaces`:** add `sinh` live in the notebook —
 defop, overload, WGSL table entry, decomposition fallback — and use it in a
 shader without restarting; the `Color` record end-to-end (captured Color →
 three uniform slots, method call inlined); MRO selection shown
@@ -232,14 +252,14 @@ risk #4); walkthrough.
 
 | Step | Builds | Notebook | Risk retired |
 |---|---|---|---|
-| 11 — arrays, `core.for`, C backend | ndarray ValueKind (Buffer/Shape/Stride leaves), `core.for` lowering, shaped-kind opt-in (§13), C renderer + cc/ctypes runtime; **ray-march spike** | `ch11-data-and-loops`: color-table shader; rank-generic vs shape-in-type caching behavior shown with counters; generated C inspected; ray-march verdict documented | region-op sufficiency; planner vocabulary; C proves the seam generalizes beyond GPU |
-| 12 — vmap + jvp | **vmap-over-if/for spike first** (>350 lines ⇒ re-hear per architecture); `Derived` ids, batch/jvp columns, transform driver | `ch12-transforms-are-rules`: vmap a scalar kernel, print base vs transformed IR; `grad`-precursor jvp checked against finite differences via the Python backend | transform taxation (~180 lines/region op claim tested) |
-| 13 — grad | partial-eval + transpose (~450 lines, own step by design), `custom_vjp` hatch | `ch13-differentiating-a-shader`: grad of a smooth SDF shader; a design-optimization mini-loop (gradient-descend a shape parameter, live) | AD architecture |
-| 14 — CUDA + MLX backends | CuPy RawKernel + MLX custom-kernel backends (**parallel agents**, one per backend); `raw_kernel` escape hatch | `ch14-four-targets-one-ir` [platform-gated cells]: same kernel on every available target, differentially compared | multi-backend claim at N=4–5 |
-| 15 — units | `Dim`/`Quantity`, unit aspect column, `Affine` pack converters | `ch15-dimensions-and-units`: mm→inch knob tweak with **zero recompiles** (pack-tier miss only, counters shown); dimension error naming both locs | two-tier law under a real domain |
+| 11 — arrays, `core.for`, C backend | ndarray ValueKind (Buffer/Shape/Stride leaves), `core.for` lowering, shaped-kind opt-in (§13), C renderer + cc/ctypes runtime; **ray-march spike** | `ch12-data-and-loops`: color-table shader; rank-generic vs shape-in-type caching behavior shown with counters; generated C inspected; ray-march verdict documented | region-op sufficiency; planner vocabulary; C proves the seam generalizes beyond GPU |
+| 12 — vmap + jvp | **vmap-over-if/for spike first** (>350 lines ⇒ re-hear per architecture); `Derived` ids, batch/jvp columns, transform driver | `ch13-transforms-are-rules`: vmap a scalar kernel, print base vs transformed IR; `grad`-precursor jvp checked against finite differences via the Python backend | transform taxation (~180 lines/region op claim tested) |
+| 13 — grad | partial-eval + transpose (~450 lines, own step by design), `custom_vjp` hatch | `ch14-differentiating-a-shader`: grad of a smooth SDF shader; a design-optimization mini-loop (gradient-descend a shape parameter, live) | AD architecture |
+| 14 — CUDA + MLX backends | CuPy RawKernel + MLX custom-kernel backends (**parallel agents**, one per backend); `raw_kernel` escape hatch | `ch15-four-targets-one-ir` [platform-gated cells]: same kernel on every available target, differentially compared | multi-backend claim at N=4–5 |
+| 15 — units | `Dim`/`Quantity`, unit aspect column, `Affine` pack converters | `ch16-dimensions-and-units`: mm→inch knob tweak with **zero recompiles** (pack-tier miss only, counters shown); dimension error naming both locs | two-tier law under a real domain |
 
 **Later, unscheduled** (each becomes a step+chapter when pulled forward):
-t-string mini-language (`ch16-einops-in-a-tstring`), disk cache, an appendix
+t-string mini-language (`ch17-einops-in-a-tstring`), disk cache, an appendix
 chapter implementing a §12 solver satellite (egglog units *or* Z3 bounds — the
 hackability claim executed), notebook/anywidget live canvas, the top-down
 tutorial track, and the **differentiable-programming satellite** (desiderata

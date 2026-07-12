@@ -44,7 +44,7 @@ weights. Everything else in these notes follows from that one move.
 
 | Pain (incumbent) | Structural answer here |
 |---|---|
-| **JAX: closures retrace.** Captures bake into the trace as constants; jit keys on function `id()`; a closure rebuilt per step retraces perpetually (documented ~240× pathology; `JAX_EXPLAIN_CACHE_MISSES` exists because of it) — R4 | Identity is `(code value-equality, env *types*)`. Rebuilding closures with fresh weights every step **is the designed hot path**: phase A is reflection with memoized fingerprints; the thesis cache hits. |
+| **JAX: closures retrace.** Captures bake into the trace as constants; jit keys on function `id()`; a closure rebuilt per step retraces perpetually (documented ~240× pathology; `JAX_EXPLAIN_CACHE_MISSES` exists because of it) — R4 | Identity is `(code value-equality, env *types*)`. Rebuilding closures with fresh weights every step **is the designed hot path**: phase A is reflection with memoized fingerprints; the specialization cache hits. |
 | **JAX: parameter plumbing.** Flax/Haiku/Equinox exist to reconcile "models hold state" with "functions must take params explicitly" | Weights are captures. The flat labeled parameter tree the optimizer needs is **derived** by the marshaling layer (LeafPaths through nested envs), not declared and threaded by the user. |
 | **JAX: `static_argnums` footguns; PyTorch: `model.train()` mutable global** | `Literal` lift per capture: `mode=Literal("train")` enters the key explicitly → two artifacts, dropout branch folded out, no runtime flag, no positional indices. |
 | **JAX: PRNG key threading** | Counter-based RNG (Philox-style) as an op; seed/step-counter are ordinary runtime captures — uniforms, in shader terms. |
@@ -77,7 +77,7 @@ weights. Everything else in these notes follows from that one move.
   is static metadata for the places structure isn't enough.
 - **Gradients.** `grad(loss, wrt="encoder.*")` mints a `Derived` template
   identity (tag + base + static label pattern) that flows through the
-  unchanged thesis cache — `grad(f)` rebuilt every step is a cache hit. The
+  unchanged specialization cache — `grad(f)` rebuilt every step is a cache hit. The
   optimizer receives `(LeafPath → gradient)` mappings.
 - **Optimizers.** optax-shaped: composable pure transformations over the
   derived gradient map (`chain(clip_by_global_norm(1.0), adam(3e-4))`);

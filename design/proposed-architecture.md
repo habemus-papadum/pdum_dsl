@@ -85,7 +85,7 @@ this whole picture — the ladder runs only between a cache miss and a
 | D2 | IR | **Purpose-built micro-IR (~650 lines): one immutable `Node(op, type, args, attrs, regions)`, structured control flow as exactly three region ops (`if`/`for`/`call`), memoized content hash, MLIR-flavored printing.** Not xDSL. | xDSL fits conceptually but is 146 kLOC of 0.x churn contributing nothing to our novelty; the MLIR *concepts* (regions, dialect namespaces, value/attr split, legality) are stolen wholesale. MLIR-flavored text keeps later migration a refactor. Pinned xDSL survives as an optional dev-time differential oracle. → `V2-ir.md`, `R3-xdsl.md` |
 | D3 | Hooks | **One explicit `Registry` + an op×aspect rule matrix, exposed through exactly five registration surfaces** (ops/rules, `@overload` batteries, type extensions, backends, transformations). No module-level registries. | numba's `@overload` (batteries written in the DSL subset, compiled per target — 491 portable vs 272 hand-lowered) is the proven batteries economics; JAX's rule matrix is the proven transformation economics; both fit one registry. → `V3-hooks.md` |
 | D4 | Marshaling | **ValueKind (typeof/leaf_types/flatten/fingerprint per Python type) → backend-owned PackPlan of Slots → per-entry FastRecord.** Two-tier keying: code-changing concerns key the artifact; bytes-changing concerns (concrete units) key a cheap pack-plan memo. | numba's datamodel/ArgPacker and JAX's pytrees agree on the shape: logical leaves declared once, physical spelling backend-owned. Units: dimension-in-Type, unit-in-converter — unit tweaks must never recompile (unxt's retrace hazard avoided). → `V4-marshaling.md`, `R8-user-types.md` |
-| D5 | Transforms | **IR-to-IR passes whose per-op content is rules (`jvp`/`transpose`/`batch` columns) in the same registry; `grad(f)`/`vmap(f)` mint `Derived` template identities flowing into the unchanged thesis cache.** Backend-native AD only as a `custom_vjp`-shaped escape hatch and test oracle. | JAX's rule matrix as content model, tinygrad's rewrite passes as execution model (tinygrad's whole AD is 132 lines of rules). Derived identities make `grad(f)` rebuilt per frame an ordinary cache hit. → `V5-transforms.md` |
+| D5 | Transforms | **IR-to-IR passes whose per-op content is rules (`jvp`/`transpose`/`batch` columns) in the same registry; `grad(f)`/`vmap(f)` mint `Derived` template identities flowing into the unchanged specialization cache.** Backend-native AD only as a `custom_vjp`-shaped escape hatch and test oracle. | JAX's rule matrix as content model, tinygrad's rewrite passes as execution model (tinygrad's whole AD is 132 lines of rules). Derived identities make `grad(f)` rebuilt per frame an ordinary cache hit. → `V5-transforms.md` |
 
 ---
 
@@ -253,7 +253,7 @@ class Backend:
     render:      Callable[[Region, Backend], str]   # typed IR → source text
     runtime:     Runtime                     # plan(types)→PackPlan; compile(src)→Artifact;
                                              # make_launcher(artifact, plan)→Callable
-    params_key:  Callable[..., Hashable]     # backend params that enter the thesis key
+    params_key:  Callable[..., Hashable]     # backend params that enter the specialization key
 ```
 
 Shared decompositions (`sqrt → pow(x,.5)`, `mean → sum/len`) are gated on
@@ -416,7 +416,7 @@ escalations are transparent.
 ### 4.4 Caches and keys
 
 ```
-thesis cache    (template_fp, env_fp, arg_fp, backend_fp+params, generation) → FastRecord
+specialization cache    (template_fp, env_fp, arg_fp, backend_fp+params, generation) → FastRecord
    | miss only
 artifact cache  (Node.key content hash, backend.token, codegen_flags) → Artifact
    | miss only
@@ -519,7 +519,7 @@ before acceptance (P1); every feature declares its cache tier (V4).
 
 The orbiting-disk demo (`reference/demos/disk.py`) reproduced on the new kernel with
 **both** the WGSL backend and the Python backend — proving the backend seam,
-the thesis cache, and the hot path in one milestone (≈1130 in-budget + ~350
+the specialization cache, and the hot path in one milestone (≈1130 in-budget + ~350
 WGSL + ~120 stdlib slice):
 
 1. `@jit(kind="fragment")` → Handle; the demo loop rebuilds it every frame.
@@ -843,7 +843,7 @@ CI line budget — and we stole all of them. It does not contain our *product*:
 
 Fork economics: the inheritable part (rewrite engine ~150 lines, renderers
 ~50–115 each) is the cheapest ~10% and is already budgeted in our kernel; the
-missing parts (frontend, thesis cache, marshaling, hooks, domain runtimes) are
+missing parts (frontend, specialization cache, marshaling, hooks, domain runtimes) are
 the expensive 90% and the point of the project — while a fork drags ~10 kloc
 of scheduler/movement/runtime machinery our domains don't use.
 

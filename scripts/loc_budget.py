@@ -33,6 +33,10 @@ FILE_CAPS = {
     "valuekind.py": 95,
     "capture.py": 85,
     "api.py": 50,
+    "cache.py": 150,  # §5 estimate 105 + retirement/explain machinery, consciously
+    "ir.py": 150,
+    "ops.py": 110,
+    "printer.py": 80,
 }
 
 _SKIP = {tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER}
