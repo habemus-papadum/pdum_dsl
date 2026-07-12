@@ -32,7 +32,4 @@ def jit(kind: str = "device") -> Callable[[Callable], Handle]:
     Registry (surface E completes at step 10); ``make_handle`` remains the
     low-level door."""
 
-    def deco(fn: Callable) -> Handle:
-        return make_handle(fn, kind)
-
-    return deco
+    return lambda fn: make_handle(fn, kind)

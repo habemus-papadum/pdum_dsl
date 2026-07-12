@@ -61,6 +61,13 @@ target-version = "py314"
 line-length = 120
 exclude = ["archive"]  # historical material, not maintained code
 
+[tool.ruff.lint.per-file-ignores]
+# Battery/overload names (clamp, sqrt, smoothstep, …) are DSL vocabulary
+# resolved at lower time through the registry — undefined to static analysis
+# BY DESIGN, and the book must show them bare.
+"docs/book/*.ipynb" = ["F821"]
+"src/pdum/dsl/stdlib/batteries.py" = ["F821"]  # battery cross-refs resolve via the overload table
+
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 ignore = []

@@ -35,8 +35,9 @@ Book: ``docs/book/ch09-end-to-end-on-cpu.ipynb``.
 
 from __future__ import annotations
 
+from collections import namedtuple
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
 from .cache import ArtifactCache, FastRecord, SpecializationCache
 from .capture import Handle
@@ -44,7 +45,7 @@ from .ir import VerifyError
 from .lower import lower_handle
 from .ops import CORE_OPS
 from .pack import ABI_OPS, NORMALIZE_ENV, build_extractor, legalize_params, pack_into, plan_from_types
-from .rewrite import run_stage
+from .rewrite import rewrite, run_stage
 from .valuekind import BUILTINS, KindTable
 
 
@@ -56,13 +57,14 @@ class Backend:
     target's shape — the python backend takes every default."""
 
     name: str
-    render: Callable  # (region, plan, name) -> source text
+    render: Callable  # (region, plan, backend) -> source text; backend = THIS record (spelling table)
     compile: Callable  # (source, name) -> artifact
     fp: tuple  # enters every specialization key (a backend/version change is a new world)
     plan: Callable | None = None  # (env_types, arg_types, table) -> PackPlan; None = dense staging
     param_types: Callable | None = None  # (target) -> tuple | None; a family that DERIVES params
     #   (compute: params ARE thread coords) returns their types; None = typeof the call args
     make_launcher: Callable | None = None  # (artifact, plan) -> launch(staging, leaves); None = artifact
+    code_for_op: dict = field(default_factory=dict)  # op -> spelling template; keys() = capability set
 
 
 class NoBackend(RuntimeError):
@@ -70,14 +72,9 @@ class NoBackend(RuntimeError):
     batteries, or ``register_backend`` your own."""
 
 
-class Out:
-    """Tags the ``out=`` payload on the leaves channel, so launchers peel it
-    by TYPE, not by tail position — buffer leaves (ch12) cannot collide."""
-
-    __slots__ = ("value",)
-
-    def __init__(self, value):
-        self.value = value
+# Out tags the ``out=`` payload on the leaves channel: launchers peel it by
+# TYPE, never tail position — buffer leaves (ch12) cannot collide with it.
+Out = namedtuple("Out", "value")
 
 
 def _guards(target) -> tuple:
@@ -99,6 +96,9 @@ class Registry:
         self.table = table
         self.lower_rules: dict = {}
         self.derived: dict = {}
+        self.ops: dict = {}  # surface A: dialect OpDefs, merged into every build
+        self.overloads: dict = {}  # surface B: call-name -> impl (satellites interpret)
+        self.decompositions: list = []  # (op_name, rule): applied when the backend lacks the op
         self.backends: dict[str, Backend] = {}
         self.routes: dict[str, str] = {}  # kind -> backend name; absent kinds use the default
         self.default_backend: str | None = None
@@ -107,8 +107,7 @@ class Registry:
 
     def register_backend(self, backend: Backend, *, default: bool = False, kinds: tuple = ()) -> None:
         self.backends[backend.name] = backend
-        for kind in kinds:  # per-role routing: role vocabularies ship WITH their backends
-            self.routes[kind] = backend.name
+        self.routes.update(dict.fromkeys(kinds, backend.name))  # roles ship WITH their backends
         if default or (self.default_backend is None and not kinds):
             # A kind-scoped backend never CLAIMS the default slot: a registry
             # holding only wgsl must refuse a "device" kernel loudly, not
@@ -116,8 +115,7 @@ class Registry:
             self.default_backend = backend.name
 
     def backend_for(self, kind: str) -> Backend:
-        name = self.routes.get(kind, self.default_backend)
-        if name is None:
+        if (name := self.routes.get(kind, self.default_backend)) is None:
             raise NoBackend("no backend registered; `import pdum.dsl` wires the batteries")
         return self.backends[name]
 
@@ -128,32 +126,31 @@ class Registry:
         spec, table = self.specializations, self.table
         backend = self.backend_for(target.kind)
         key = (target.fp, tuple(table.fingerprint(a) for a in args), backend.fp, spec.generation)
-        record = spec.probe(key)
-        if record is None:  # the miss thunk is only ever built on a miss
-            record = spec.get_or_compile(key, lambda: self._build(target, args, backend))
+        record = spec.probe(key) or spec.get_or_compile(key, lambda: self._build(target, args, backend))
         leaves = pack_into(record.plan, record.staging, record.extract(target.captures, args))
         return record.launch(record.staging, leaves if out is None else (*leaves, Out(out)))
 
     def _build(self, target, args: tuple, backend: Backend) -> FastRecord:
         """The miss path (§4.3), once per (types, backend, generation)."""
         derived_params = backend.param_types(target) if backend.param_types else None
-        if derived_params is not None and args:  # params are DERIVED (thread coords): a positional
-            raise VerifyError(  # arg would be silently dead — refuse it loudly instead
-                f"{backend.name} derives this kernel's parameters; positional arguments are not "
-                f"accepted — pass the launch domain via out="
-            )
+        if derived_params is not None and args:  # a positional arg would be silently dead: refuse
+            raise VerifyError(f"{backend.name} derives the params; pass the launch domain via out=")
         arg_types = derived_params if derived_params is not None else tuple(self.table.typeof(a) for a in args)
-        env_types = target.env_types
-        ops = {**CORE_OPS, **ABI_OPS}
-        region = lower_handle(target, self.lower_rules, ops, arg_types=arg_types, derived=self.derived)
-        plan = (backend.plan or plan_from_types)(env_types, arg_types, self.table)
+        ops = {**CORE_OPS, **ABI_OPS, **self.ops}
+        rules = {**self.lower_rules, "__registry__": self}  # rule packs' context door (surface B lives there)
+        region = lower_handle(target, rules, ops, arg_types=arg_types, derived=self.derived)
+        plan = (backend.plan or plan_from_types)(target.env_types, arg_types, self.table)
+        gated = [r for op, r in self.decompositions if op not in backend.code_for_op]
+        if gated:  # shared decompositions run only where the target lacks the native op (§2.10)
+            region = rewrite(region, gated, ops, name="decompose")
         region = run_stage(region, NORMALIZE_ENV, ops)
-        region = run_stage(region, legalize_params(plan), ops)
+        dialects = frozenset(op.split(".", 1)[0] for op in self.ops)
+        region = run_stage(region, legalize_params(plan, dialects), ops)
         artifact = self.artifacts.get_or_compile(  # content-addressed: identical IR compiles once
             (region.key, backend.fp),  # fp, not name: a backend VERSION change is a new artifact world
-            lambda: backend.compile(backend.render(region, plan)),
+            lambda: backend.compile(backend.render(region, plan, backend)),
         )
-        extract = build_extractor(env_types, arg_types, plan, self.table)
+        extract = build_extractor(target.env_types, arg_types, plan, self.table)
         return FastRecord(
             artifact=artifact,
             guards=_guards(target),
@@ -162,6 +159,28 @@ class Registry:
             staging=bytearray(plan.staging_size),
             launch=backend.make_launcher(artifact, plan) if backend.make_launcher else artifact,
         )
+
+    def extend(self) -> Registry:
+        """Surface-E layering (stdlib -> user -> session): a child registry
+        with copied registrations, an extended kind table, FRESH caches."""
+        child = Registry(self.table.extend())
+        for a in ("lower_rules", "derived", "routes", "ops", "overloads"):
+            getattr(child, a).update(getattr(self, a))
+        # Backend records are shared-immutable EXCEPT code_for_op: copy it, or a
+        # child's spell() would mutate the parent's table (review-caught leak).
+        child.backends = {k: replace(b, code_for_op=dict(b.code_for_op)) for k, b in self.backends.items()}
+        child.decompositions, child.default_backend = list(self.decompositions), self.default_backend
+        return child
+
+    def load_entry_points(self, group: str = "pdum.dsl.backends", entries=None) -> list:
+        """Third-party discovery (080 §4): each entry point names an
+        ``install(registry)``; explicit, lazy, no import-order dependence."""
+        from importlib.metadata import entry_points
+
+        eps = list(entries) if entries is not None else list(entry_points(group=group))
+        for ep in eps:
+            ep.load()(self)
+        return [ep.name for ep in eps]
 
 
 DEFAULT = Registry()  # the staged seeds fold in here; satellites register at import

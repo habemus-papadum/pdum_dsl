@@ -280,6 +280,21 @@ risk #4); walkthrough.
 
 ---
 
+### Step 10b — the bench satellite (inserted 2026-07-12, ch10 walkthrough)
+
+**Why here:** step 11's ray-march spike carries a go/no-go verdict that must
+not rest on un-decomposed wall-clock, and ch15's four-targets chapter is a
+differential PERF story. **Builds:** `bench` satellite (BenchmarkTools-style
+adaptive sampling: warmup, tune evals/sample, run to confidence, min/median),
+timing hooks at the `FastRecord.launch` seam + per-phase dispatch marks,
+wgpu `timestamp-query` GPU events (feature present on the M3), a TIMELINE
+widget in the viz satellite (static-HTML contract). **Notebook:** "Measuring
+the machine" — decompose ch10's ~2 ms/frame into host / bridge / GPU /
+readback. **Exit:** the step-9 microbench thresholds become real gates;
+walkthrough.
+
+---
+
 ## Phase IV — width (steps 11–15; each still ends in a chapter + walkthrough)
 
 | Step | Builds | Notebook | Risk retired |

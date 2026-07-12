@@ -63,7 +63,7 @@ def _take_snapshot(fn: Callable) -> SourceSnapshot | None:
     code = fn.__code__
     try:
         lines, start = inspect.getsourcelines(fn)  # start = the TEXT's first line (decorators included)
-    except (OSError, TypeError):
+    except OSError, TypeError:
         return None  # phase B's NoSourceError, not ours
     # filename and firstlineno must name the SAME file: getsourcelines unwraps
     # (@wraps) but co_filename does not, so a wrapped fn would pair the
@@ -101,7 +101,6 @@ class Handle:
     @property
     def env_types(self) -> tuple[Type, ...]:
         return self.fntype.env_types
-
 
     @property
     def freevars(self) -> tuple[str, ...]:

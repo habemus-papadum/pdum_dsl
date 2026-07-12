@@ -72,6 +72,10 @@ def _select(args, attrs, regions) -> Type:
     return args[1]
 
 
+def _tuple(args, attrs, regions) -> Type:
+    return Tuple(tuple(args))  # the honest aggregate; backends never see one that survives simplify
+
+
 def _vec(args, attrs, regions) -> Type:
     if not (2 <= len(args) <= 4 and isinstance(args[0], Scalar) and all(t == args[0] for t in args)):
         raise TypeError(f"core.vec wants 2-4 elements of one scalar type, got {args!r}")
@@ -133,6 +137,7 @@ CORE_OPS: dict[str, OpDef] = {
     "core.neg": OpDef("core.neg", _same, PURE),
     "core.cmp": OpDef("core.cmp", _cmp, PURE),  # attrs: pred = lt|gt|le|ge|eq|ne
     "core.select": OpDef("core.select", _select, PURE),
+    "core.tuple": OpDef("core.tuple", _tuple, PURE),
     "core.vec": OpDef("core.vec", _vec, PURE),
     "core.extract": OpDef("core.extract", _extract, PURE),  # attrs: index
     "core.field": OpDef("core.field", _field, PURE),  # attrs: name

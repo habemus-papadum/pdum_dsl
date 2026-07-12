@@ -133,9 +133,7 @@ class Builder:
         self._ops = ops
         self.default_loc: Provenance | None = None  # the rewrite driver's inherit-default
 
-    def emit(
-        self, op: str, *args: Node, regions: tuple = (), loc=None, type: Type | None = None, **attrs
-    ) -> Node:
+    def emit(self, op: str, *args: Node, regions: tuple = (), loc=None, type: Type | None = None, **attrs) -> Node:
         opdef = self._ops.get(op)
         if opdef is None:
             raise VerifyError(f"unknown op {op!r}; register it (defop) before emitting")

@@ -42,7 +42,7 @@ _PREDS = {"lt": "<", "gt": ">", "le": "<=", "ge": ">=", "eq": "==", "ne": "!="}
 _CASTS = {"f64": "float", "f32": "float", "i64": "int", "i32": "int", "u64": "int", "u32": "int", "bool": "bool"}
 
 
-def render(region: Region, plan: PackPlan, name: str = "kernel") -> str:
+def render(region: Region, plan: PackPlan, backend=None, name: str = "kernel") -> str:
     """Legalized Region -> Python source. One assignment per node, DAG-shared
     nodes emitted once in their OWNER region (the shared dominator-placed
     walker in ``_emit`` — the lazy-branch rule), names dense in topo order."""
@@ -76,10 +76,16 @@ def render(region: Region, plan: PackPlan, name: str = "kernel") -> str:
             return f"{_CASTS[to.kind]}({arg[0]})"
         if node.op == "core.select":
             return f"({arg[1]} if {arg[0]} else {arg[2]})"
-        if node.op == "core.vec":
+        if node.op in ("core.vec", "core.tuple"):
             return "(" + ", ".join(arg) + ("," if len(arg) == 1 else "") + ")"
         if node.op == "core.extract":
             return f"{arg[0]}[{attrs['index']}]"
+        table = backend.code_for_op if backend is not None else CODE_FOR_OP
+        template = table.get(node.op)  # surface D: THIS record's spellings (extend()-local)
+        if template:
+            return template.format(*arg)
+        if template is None and node.op in table:  # spell(None) claims native support this renderer lacks
+            raise VerifyError(f"{node.op!r} was spelled None ('native') but this renderer has no native handling")
         raise VerifyError(f"python backend has no rendering for {node.op!r}")
 
     def statement(node, nm):
@@ -97,7 +103,7 @@ def render(region: Region, plan: PackPlan, name: str = "kernel") -> str:
 
     lines, names, result = emit_dominated(region, statement, branch_join, indent="    ")
     body = "\n".join(lines) or "    pass"
-    head = f"from struct import unpack_from as _u\n\ndef {name}(staging, leaves):\n"
+    head = f"import math\nfrom struct import unpack_from as _u\n\ndef {name}(staging, leaves):\n"
     guard = '    if leaves: raise TypeError("the python backend takes no launcher data (out= is for device targets)")\n'
     return f"{head}{guard}{body}\n    return {names[id(result)]}\n"
 
@@ -110,15 +116,25 @@ def compile_source(source: str, name: str = "kernel"):
     return artifact
 
 
+CODE_FOR_OP: dict = {"core.tuple": None}  # native tuple spelling; batteries add math.* templates
+
 PYTHON = Backend(
-    name="demo.simple_shader.python", render=render, compile=compile_source, fp=("demo.simple_shader.python", 1)
+    name="demo.simple_shader.python",
+    render=render,
+    compile=compile_source,
+    fp=("demo.simple_shader.python", 1),
+    code_for_op=CODE_FOR_OP,
 )
 
 
 def install(registry) -> None:
-    """The explicit seam (same shape as ``stdlib.install``): batteries call it
-    with DEFAULT; a hand-built Registry can call it directly."""
-    registry.register_backend(PYTHON, default=True)
+    """The explicit seam (same shape as ``stdlib.install``). Each registry
+    gets its OWN record copy with a fresh spelling table — module singletons
+    shared across registries would let one registry's spell() rewrite
+    another's world (review-caught)."""
+    from dataclasses import replace
+
+    registry.register_backend(replace(PYTHON, code_for_op=dict(PYTHON.code_for_op)), default=True)
 
 
 install(DEFAULT)

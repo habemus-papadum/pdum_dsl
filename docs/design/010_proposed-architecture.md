@@ -619,6 +619,26 @@ each leaf with its *declared* format so a bool↔i64 drift can't hide behind
 `bool`'s int subclassing. `pack.py` cap raised 150 → 175 consciously (the
 output half + the compiled extractor were not in the §5 estimate).
 
+**2026-07-12 (step 10): the five surfaces live — THE KERNEL IS FINISHED at
+exactly 1150/1150.** Surfaces: A `registry.ops` + `defop`; B
+`registry.overloads` (intrinsic name→op; `@overload` = capture-free
+DSL bodies inlined per call site; record methods keyed `(RecName, meth)`);
+C `@record` dataclasses (Record type + kind + methods — the ch07a jitclass
+story); D `code_for_op` spelling tables, whose KEY-presence gates shared
+decompositions (one mechanism also retires tuples on targets that cannot
+spell them); E `extend()` layering + `load_entry_points` (080's contract).
+Base pack widened 10→15 forms (aug-assign, short-circuit and/or via core.if
+with lazy branches, chained compares sharing operands, tuples+unpack+
+subscript, attributes). Deliberate deviations: overload target-token MRO
+DEFERRED until a battery body must differ per target (decompositions cover
+today's cases); `@overload_attribute` and `to_oklab` deferred (want vec
+math); the lowering rules dict doubles as the CONTEXT DOOR
+(`"__registry__"` planted by `_build` per build — extend()-safe). Found
+live: `f16` as an Env member name is reserved WGSL (offset-16 member) —
+prefix is now `m`. Batteries: 8 intrinsic ops × 2 target spellings vs 10
+DSL-written portables; every new target pays ~8 spellings and inherits the
+portables free — the numba-2:1 economics measured in ch11.
+
 **2026-07-12 (ch10 walkthrough): backend organization settled — 080.**
 User-caught naming debt: the vertical-slice implementations were claiming
 the real backends' names ("python", "wgsl-*"). Settled: kinds are declared

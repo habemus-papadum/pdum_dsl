@@ -193,7 +193,7 @@ def _region_lines(region: Region, names: dict, counter: list, indent: str, out: 
             inner = ", ".join(f"{esc(k)} = {esc(repr(v))}" for k, v in n.attrs)
             attrs = f' <span class="pv-at">{{{inner}}}</span>'
         out.append(
-            f'{indent}{tip(f"<span class=pv-v>{name}</span>", _node_tip(n))} = '
+            f"{indent}{tip(f'<span class=pv-v>{name}</span>', _node_tip(n))} = "
             f'<span class="pv-k">{esc(n.op)}</span>{" " if argrefs else ""}{argrefs}{attrs}{regs} : '
             f'<span class="pv-ty">{esc(repr(n.type))}</span>'
         )
@@ -218,7 +218,7 @@ def _region_html(region) -> str:
     )
     head = (
         f'<div class="pv-hd">{pill("region")}{pill(f"{len(seen)} nodes", "num")}'
-        f'{pill("key " + region.key.hex()[:12], "id")}</div>'
+        f"{pill('key ' + region.key.hex()[:12], 'id')}</div>"
     )
     body = f'<div class="pv-ir"><pre>program({params}) {{\n' + "\n".join(out) + "\n}</pre></div>"
     return f'<div class="pv-card">{head}{body}</div>'
@@ -226,7 +226,7 @@ def _region_html(region) -> str:
 
 @renderer(Stage)
 def _stage_html(s) -> str:
-    cfg = f'[{", ".join(map(str, s.config))}]' if s.config else ""
+    cfg = f"[{', '.join(map(str, s.config))}]" if s.config else ""
     label = esc(s.handle.fntype.template.label + cfg)
     return f'<span class="pv-chip">{pill(s.kind)}{tip(label, repr(s.handle.fntype))}</span>'
 
@@ -248,11 +248,19 @@ def _pipeline_html(p) -> str:
 
 @renderer(_TierCache)
 def _cache_html(c) -> str:
-    stats = [("hits", c.hits, "num"), ("misses", c.misses, ""), ("compiles", c.compiles, "warn"),
-             ("evictions", c.evictions, ""), ("entries", len(c), "")]
+    stats = [
+        ("hits", c.hits, "num"),
+        ("misses", c.misses, ""),
+        ("compiles", c.compiles, "warn"),
+        ("evictions", c.evictions, ""),
+        ("entries", len(c), ""),
+    ]
     if isinstance(c, SpecializationCache):
-        stats += [("guard misses", c.guard_misses, ""), ("retired", c.retirements, ""),
-                  ("generation", c.generation, "id")]
+        stats += [
+            ("guard misses", c.guard_misses, ""),
+            ("retired", c.retirements, ""),
+            ("generation", c.generation, "id"),
+        ]
     pills = "".join(pill(f"{k}: {v}", kind) for k, v, kind in stats)
     return f'<div class="pv-card"><div class="pv-hd">{pill(c.name)}{pills}</div></div>'
 

@@ -40,8 +40,8 @@ def test_golden_shape_signature_env_and_lazy_if():
     assert "fn kernel_body(p0: f32, p1: f32) -> f32 {" in text
     assert "struct Env {" in text
     # member types follow the SLOT FORMAT: f64->f32, i64->i32, bool->u32
-    assert "f0: f32" in text and "i32" in text and "u32" in text
-    assert "(env.f" in text and "!= 0u)" in text  # bool reads compare against 0u
+    assert "m0: f32" in text and "i32" in text and "u32" in text
+    assert "(env.m" in text and "!= 0u)" in text  # bool reads compare against 0u
     assert "var v" in text and "if (" in text and "} else {" in text  # lazy statement-if
 
 
@@ -84,3 +84,18 @@ def test_nonfinite_and_bigint_consts_are_refused():
 
     with pytest.raises(VerifyError, match="does not fit i32"):
         rendered(make_big(3))
+
+
+def test_env_member_names_avoid_reserved_words():
+    """Offset 16 produced member `f16` — a reserved WGSL keyword (found live
+    in ch11's six-capture kernel). Six captures force offsets through 16."""
+
+    def make(a, b, c, d, e, f):
+        @jit(kind="simple_shader.compute")
+        def k(i, j):
+            return i * a + b + c + d + e + f
+
+        return k
+
+    text = rendered(make(1.0, 2.0, 3.0, 4.0, 5.0, 6.0))
+    assert "m16: f32" in text and "f16" not in text

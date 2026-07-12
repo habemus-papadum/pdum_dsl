@@ -18,7 +18,8 @@ Backend policies, stated once:
   backend therefore compare within f32 tolerance.
 - **The uniform layout is the plan**: ``_uniform_dest`` is this backend's
   ``dest_for`` policy — scalar leaves become 4-byte slots in one uniform
-  struct (members named by byte offset: ``env.f8``). Same ``plan_from_types``
+  struct (members named by byte offset: ``env.m8`` — the prefix is ``m``,
+  because ``f16``/``f32`` at those offsets are reserved WGSL words). Same ``plan_from_types``
   machinery as ch08, different bytes. Compute ARGS are excluded from the
   plan: they are thread coordinates, not packed values.
 - **`@workgroup_size` is pipeline-creation-time** (R12), so the workgroup
@@ -77,7 +78,7 @@ def _param_types(target) -> tuple:
 _MEMBER = {"<f": "f32", "<i": "i32", "<I": "u32"}  # slot fmt -> uniform member type
 
 
-def render(region: Region, plan: PackPlan, name: str = "kernel") -> str:
+def render(region: Region, plan: PackPlan, backend=None, name: str = "kernel") -> str:
     """Legalized Region -> a WGSL `fn kernel_body(p0: f32, …) -> f32` plus the
     Env uniform struct (omitted when the kernel captures nothing). Member
     types come from the slot FORMAT — an i64 capture is an i32 member, and a
@@ -89,17 +90,17 @@ def render(region: Region, plan: PackPlan, name: str = "kernel") -> str:
     # otherwise leave a hole and silently shift every later member's bytes
     # (review-caught). The plan is dense by construction; unused members are
     # harmless and keep offsets literal.
-    lines, names, result = _emit_wgsl(region)
+    lines, names, result = _emit_wgsl(region, backend.code_for_op if backend is not None else CODE_FOR_OP)
     header = ""
     if plan.slots:
-        members = ",\n".join(f"  f{s.dest.offset}: {_MEMBER[s.dest.fmt]}" for s in plan.slots)
+        members = ",\n".join(f"  m{s.dest.offset}: {_MEMBER[s.dest.fmt]}" for s in plan.slots)
         header = f"struct Env {{\n{members}\n}}\n@group(0) @binding(0) var<uniform> env: Env;\n"
     params = ", ".join(f"p{i}: f32" for i in range(len(region.params)))
     ret = names[id(result)]
     return header + f"fn kernel_body({params}) -> f32 {{\n" + "\n".join(lines) + f"\n  return {ret};\n}}\n"
 
 
-def _emit_wgsl(region: Region) -> tuple[list[str], dict, object]:
+def _emit_wgsl(region: Region, spelling_table=None) -> tuple[list[str], dict, object]:
     """WGSL spelling over the shared dominator-placed walker (``_emit``)."""
 
     def expr_of(node: Node, names: dict) -> str:
@@ -109,8 +110,8 @@ def _emit_wgsl(region: Region) -> tuple[list[str], dict, object]:
             return f"p{attrs['index']}"
         if node.op == "abi.slot":
             if isinstance(node.type, Scalar) and node.type.kind == "bool":
-                return f"(env.f{attrs['offset']} != 0u)"  # bool travels as u32 (not host-shareable)
-            return f"env.f{attrs['offset']}"
+                return f"(env.m{attrs['offset']} != 0u)"  # bool travels as u32 (not host-shareable)
+            return f"env.m{attrs['offset']}"
         if node.op == "core.const":
             v = attrs["value"]
             if isinstance(v, bool):
@@ -138,6 +139,12 @@ def _emit_wgsl(region: Region) -> tuple[list[str], dict, object]:
             return f"{_WTYPE[to.kind]}({arg[0]})"
         if node.op == "core.select":
             return f"select({arg[2]}, {arg[1]}, {arg[0]})"  # select(false_val, true_val, cond)
+        tbl = spelling_table if spelling_table is not None else CODE_FOR_OP
+        template = tbl.get(node.op)
+        if template:
+            return template.format(*arg)
+        if template is None and node.op in tbl:  # spell(None) claims native support this renderer lacks
+            raise VerifyError(f"{node.op!r} was spelled None ('native') but this renderer has no native handling")
         raise VerifyError(f"wgsl backend has no rendering for {node.op!r}")
 
     def wtype(node: Node) -> str:
@@ -360,10 +367,10 @@ class FragmentProgram:
 # --- the Backend records -------------------------------------------------------------
 
 
-def _render_with_meta(region, plan, name="kernel"):
+def _render_with_meta(region, plan, backend=None, name="kernel"):
     # nparams + staging size ride a header comment: deterministic text, so the
     # content-addressed artifact tier stays honest, and compile() needs no side channel.
-    return f"// nparams={len(region.params)} staging={plan.staging_size}\n" + render(region, plan)
+    return f"// nparams={len(region.params)} staging={plan.staging_size}\n" + render(region, plan, backend)
 
 
 def _compile_factory(program_cls):
@@ -377,6 +384,8 @@ def _compile_factory(program_cls):
     return compile_source
 
 
+CODE_FOR_OP: dict = {}  # ONE table for both wgsl cells (same spelling language)
+
 COMPUTE = Backend(
     name="demo.simple_shader.wgsl.compute",
     render=_render_with_meta,
@@ -384,6 +393,7 @@ COMPUTE = Backend(
     fp=("demo.simple_shader.wgsl", "compute", 1, WORKGROUP),
     plan=_plan,
     param_types=_param_types,
+    code_for_op=CODE_FOR_OP,
 )
 FRAGMENT = Backend(
     name="demo.simple_shader.wgsl.fragment",
@@ -392,6 +402,7 @@ FRAGMENT = Backend(
     fp=("demo.simple_shader.wgsl", "fragment", 1, FragmentProgram.FORMAT),
     plan=_plan,
     param_types=_param_types,
+    code_for_op=CODE_FOR_OP,
 )
 
 
@@ -401,10 +412,16 @@ def install(registry) -> None:
     # Demo-scoped KIND names: "compute" and "fragment" are reserved for the
     # real families (step 14, 080 §3) — a demo must never squat on a name a
     # future package will use with richer semantics (ch10 walkthrough rule).
+    from dataclasses import replace
+
     register_role("simple_shader.compute", hint="demo compute kernel: params are thread coordinates")
     register_role("simple_shader.fragment", hint="demo fragment kernel: params are pixel coordinates")
-    registry.register_backend(COMPUTE, kinds=("simple_shader.compute",))
-    registry.register_backend(FRAGMENT, kinds=("simple_shader.fragment",))
+    # Per-registry record copies with fresh spelling tables (shared singletons
+    # would let one registry's spell() rewrite another's — review-caught):
+    registry.register_backend(replace(COMPUTE, code_for_op=dict(COMPUTE.code_for_op)), kinds=("simple_shader.compute",))
+    registry.register_backend(
+        replace(FRAGMENT, code_for_op=dict(FRAGMENT.code_for_op)), kinds=("simple_shader.fragment",)
+    )
 
 
 install(DEFAULT)

@@ -150,8 +150,10 @@ def rewrite(region: Region, rules: RuleSet, ops: dict, *, name: str = "", log: M
             return node
         args = tuple(walk(a) for a in node.args)
         regions = tuple(walk_region(r) for r in node.regions)
-        rebuilt = node if args == node.args and regions == node.regions else Node(
-            node.op, node.type, args, regions, node.attrs, node.loc
+        rebuilt = (
+            node
+            if args == node.args and regions == node.regions
+            else Node(node.op, node.type, args, regions, node.attrs, node.loc)
         )
         out = apply_rules(rebuilt)
         memo[id(node)] = out

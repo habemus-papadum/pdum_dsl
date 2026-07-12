@@ -21,14 +21,27 @@ from ..kernel.registry import DEFAULT, Registry
 from .base_lang import LOWER_RULES
 
 
+def _fold_tuple_extract(b, m):
+    return m["root"].args[0].args[dict(m["root"].attrs)["index"]]
+
+
 def install(registry: Registry) -> Registry:
     """Register the base dialect into ``registry`` (idempotent)."""
-    registry.lower_rules.update(LOWER_RULES)
+    from ..kernel.rewrite import Pat
+    from .batteries import install as install_batteries
+
+    registry.lower_rules.update(LOWER_RULES)  # the registry itself arrives via _build's context door
     registry.derived.update(PIPE_BUILDERS)
+    # extract-of-tuple folds away wherever the target cannot spell tuples —
+    # gated on "core.tuple" ∈ code_for_op, the same mechanism as decompositions:
+    if not any(op == "core.tuple" for op, _ in registry.decompositions):  # keep install() idempotent
+        tuple_extract = Pat("core.extract", args=("t",), guard=lambda m: m["t"].op == "core.tuple")
+        registry.decompositions.append(("core.tuple", (tuple_extract, _fold_tuple_extract)))
     register_role("device", hint="the base language's neutral composable kernel")
     register_composition("pipe", "device", "device", "fuse")
     if _comb._DISPATCHER is None:  # live check — never clobber a dispatcher installed first
         set_dispatcher(lambda pipeline, value: registry.dispatch(pipeline, (value,)))
+    install_batteries(registry)
     return registry
 
 

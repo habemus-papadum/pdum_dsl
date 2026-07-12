@@ -15,8 +15,8 @@ driven by ``docs/desiderata.md``. The previous end-to-end proof of concept
 and demo.
 """
 
-from . import demo as _demo  # noqa: F401  — registers the demo backends (ch09/ch10)
-from . import stdlib as _stdlib  # noqa: F401  — registers the base dialect
+from . import demo as _demo  # noqa: F401  — demo backends FIRST: batteries spell onto them
+from . import stdlib as _stdlib  # noqa: F401  — base dialect + batteries (needs backends present)
 from .kernel.api import jit
 from .kernel.cache import no_compile
 

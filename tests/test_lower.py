@@ -119,11 +119,13 @@ def test_name_fates_are_loud():
 
 def test_missing_rule_names_syntax_and_loc():
     @jit()
-    def tup(x):
-        return (x, x)
+    def loops(x):
+        while x > 0.0:  # statements are step-11 machinery; still a loud, located refusal
+            x = x - 1.0
+        return x
 
-    with pytest.raises(MissingRule, match=r"Tuple.*test_lower\.py"):
-        lower(tup, T.f64)
+    with pytest.raises(MissingRule, match=r"While.*test_lower\.py"):
+        lower(loops, T.f64)
 
 
 def test_no_source_and_stale_source():
@@ -133,8 +135,9 @@ def test_no_source_and_stale_source():
         lower(make_handle(ns["f"](1), "device"), T.f64)
 
     h = dist2(1.0, 2.0)
-    h.snapshot = SourceSnapshot(h.snapshot.text.replace("dx * dx", "dx * dy"), h.snapshot.filename,
-                                h.snapshot.firstlineno, h.snapshot.qualname)
+    h.snapshot = SourceSnapshot(
+        h.snapshot.text.replace("dx * dx", "dx * dy"), h.snapshot.filename, h.snapshot.firstlineno, h.snapshot.qualname
+    )
     with pytest.raises(StaleSourceError, match="drifted"):
         lower(h, T.f64, T.f64)
 

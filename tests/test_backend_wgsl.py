@@ -105,7 +105,7 @@ def test_positional_args_on_derived_param_kernels_are_refused():
     def k(i):
         return i * 2.0
 
-    with pytest.raises(VerifyError, match="positional arguments are not accepted"):
+    with pytest.raises(VerifyError, match="pass the launch domain via out="):
         k(999.0, out=4)
 
 

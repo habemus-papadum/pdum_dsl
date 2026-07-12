@@ -192,15 +192,8 @@ def test_compiled_extractor_handles_pipelines_and_records():
 
 
 def lowered(sh):
-    import ast as pyast
-
-    def _subscript(ctx, node):  # stand-in const-index rule (tuples land at step 10)
-        base = ctx.lower(node.value)
-        return ctx.emit("core.extract", base, node=node, index=node.slice.value)
-
-    rules = dict(LOWER_RULES)
-    rules[pyast.Subscript] = _subscript
-    return lower_handle(sh, rules, CORE_OPS, arg_types=(T.f64,))
+    # ch08's Subscript stand-in retired: step 10 promoted it into the base pack.
+    return lower_handle(sh, LOWER_RULES, CORE_OPS, arg_types=(T.f64,))
 
 
 def test_normalize_folds_extract_into_env_path():

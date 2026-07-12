@@ -100,9 +100,7 @@ BUILTINS.register_aspect("child", Vec, lambda t, i: (t.elem, lambda v: v[i]))
 # expose `.captures`; tuples index; records read the field by name.
 BUILTINS.register_aspect("child", Tuple, lambda t, i: (t.elems[i], lambda v: v[i]))
 BUILTINS.register_aspect("child", FnType, lambda t, i: (t.env_types[i], lambda v: v.captures[i]))
-BUILTINS.register_aspect(
-    "child", Record, lambda t, i: (t.fields[i][1], lambda v, n=t.fields[i][0]: getattr(v, n))
-)
+BUILTINS.register_aspect("child", Record, lambda t, i: (t.fields[i][1], lambda v, n=t.fields[i][0]: getattr(v, n)))
 
 BUILTINS.register_aspect("rebuild", Scalar, lambda t, it, rec: next(it))
 BUILTINS.register_aspect("rebuild", Tuple, lambda t, it, rec: tuple(rec(e, it) for e in t.elems))
@@ -165,9 +163,7 @@ def _build_slots(roots: tuple, table: KindTable, dest_for) -> tuple:
 
 def plan_from_types(env_types: tuple, arg_types: tuple, table: KindTable, dest_for=packed_dest) -> PackPlan:
     """Built once per cache entry, from types alone — values never shape a plan."""
-    roots = tuple(
-        (root, i, t) for root, types in (("env", env_types), ("arg", arg_types)) for i, t in enumerate(types)
-    )
+    roots = tuple((root, i, t) for root, types in (("env", env_types), ("arg", arg_types)) for i, t in enumerate(types))
     return PackPlan(*_build_slots(roots, table, dest_for))
 
 
@@ -240,8 +236,7 @@ def unpack_result(plan: ResultPlan, buf, table: KindTable, leaves: tuple = ()) -
     buffer-class slots taken (in order) from the device's ``leaves`` channel."""
     channel = iter(leaves)
     values = tuple(
-        next(channel) if s.dest is None else struct.unpack_from(s.dest.fmt, buf, s.dest.offset)[0]
-        for s in plan.slots
+        next(channel) if s.dest is None else struct.unpack_from(s.dest.fmt, buf, s.dest.offset)[0] for s in plan.slots
     )
     return unflatten(plan.result_type, values, table)
 
@@ -269,7 +264,7 @@ NORMALIZE_ENV = Stage(
 )
 
 
-def legalize_params(plan: PackPlan) -> Stage:
+def legalize_params(plan: PackPlan, extra_legal: frozenset = frozenset()) -> Stage:
     """Every logical ``core.env`` becomes a physical ``abi.slot``; the
     {core, abi} legality set proves none survived. A whole-composite capture
     (no leaf slot for its path) is refused loudly — run NORMALIZE_ENV first."""
@@ -303,6 +298,6 @@ def legalize_params(plan: PackPlan) -> Stage:
     return Stage(
         "legalize-params",
         [(Pat("core.env"), fire)],
-        legal=frozenset({"core", "abi"}),
+        legal=frozenset({"core", "abi"}) | extra_legal,  # registered dialect ops survive to render
         forbid=frozenset({"core.env"}),
     )
