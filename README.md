@@ -2,10 +2,21 @@
 
 [Full report](https://htmlpreview.github.io/?https://github.com/habemus-papadum/pdum_dsl/blob/python-coverage-comment-action-data/htmlcov/index.html)
 
-| Name                         |    Stmts |     Miss |    Cover |   Missing |
-|----------------------------- | -------: | -------: | -------: | --------: |
-| src/pdum/dsl/\_\_init\_\_.py |        2 |        0 |     100% |           |
-| **TOTAL**                    |    **2** |    **0** | **100%** |           |
+| Name                                |    Stmts |     Miss |   Cover |   Missing |
+|------------------------------------ | -------: | -------: | ------: | --------: |
+| src/pdum/dsl/\_\_init\_\_.py        |        2 |        0 |    100% |           |
+| src/pdum/dsl/combinators.py         |      137 |        7 |     95% |134, 155, 171, 190, 202-203, 231 |
+| src/pdum/dsl/kernel/\_\_init\_\_.py |        0 |        0 |    100% |           |
+| src/pdum/dsl/kernel/api.py          |        8 |        0 |    100% |           |
+| src/pdum/dsl/kernel/cache.py        |      145 |        6 |     96% |107, 125-128, 221 |
+| src/pdum/dsl/kernel/capture.py      |       68 |        1 |     99% |       101 |
+| src/pdum/dsl/kernel/ir.py           |      107 |        4 |     96% |74, 166, 177, 181 |
+| src/pdum/dsl/kernel/ops.py          |       61 |        5 |     92% |77, 91, 116-117, 121 |
+| src/pdum/dsl/kernel/printer.py      |       45 |        9 |     80% |33-34, 36, 49-54 |
+| src/pdum/dsl/kernel/rewrite.py      |      114 |        5 |     96% |73, 137, 166, 176-177 |
+| src/pdum/dsl/kernel/types.py        |       94 |        6 |     94% |88, 97-98, 140, 155, 171 |
+| src/pdum/dsl/kernel/valuekind.py    |       56 |        0 |    100% |           |
+| **TOTAL**                           |  **837** |   **43** | **95%** |           |
 
 
 ## Setup coverage badge
