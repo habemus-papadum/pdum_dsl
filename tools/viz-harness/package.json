@@ -1,0 +1,12 @@
+{
+  "name": "pdum-viz-harness",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fixtures": "cd ../.. && uv run python tools/viz-harness/make_fixtures.py",
+    "test": "npm run fixtures && node --test"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.0"
+  }
+}

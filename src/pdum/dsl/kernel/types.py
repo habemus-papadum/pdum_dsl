@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from types import CodeType
 from typing import Hashable
 
-_SCALAR_KINDS = frozenset({"f64", "f32", "i64", "i32", "u64", "u32", "bool"})
+SCALAR_KINDS = frozenset({"f64", "f32", "i64", "i32", "u64", "u32", "bool"})  # the closed scalar lattice
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,8 +36,8 @@ class Scalar(Type):
     kind: str
 
     def __post_init__(self) -> None:
-        if self.kind not in _SCALAR_KINDS:
-            raise ValueError(f"unknown scalar kind {self.kind!r}; expected one of {sorted(_SCALAR_KINDS)}")
+        if self.kind not in SCALAR_KINDS:
+            raise ValueError(f"unknown scalar kind {self.kind!r}; expected one of {sorted(SCALAR_KINDS)}")
 
     def __repr__(self) -> str:
         return self.kind

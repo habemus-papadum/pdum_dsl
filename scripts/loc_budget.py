@@ -38,6 +38,18 @@ FILE_CAPS = {
     "ops.py": 110,
     "printer.py": 80,
     "rewrite.py": 150,
+    "lower.py": 170,  # the fused driver; rule PACKS live in the satellite bucket (V1 calibration)
+    # §5 estimated 80 for the input half alone. The real file also carries the
+    # OUTPUT half (ResultPlan/unflatten — 040 §3b made marshaling bidirectional
+    # from the start), the compiled per-slot extractor (§4.3.10), and the two
+    # ABI stages. Raised consciously at the step-7 review, not by drift.
+    "pack.py": 175,
+}
+
+SATELLITE_CAPS = {  # separately-counted buckets (the honesty clause): src/pdum/dsl/<name>
+    "combinators.py": 250,
+    "stdlib": 1500,
+    "viz.py": 450,
 }
 
 _SKIP = {tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER}
@@ -87,7 +99,27 @@ def report(kernel_dir: Path = KERNEL, caps: dict[str, int] | None = None) -> tup
     total = sum(f["lines"] for f in files.values())
     if total > KERNEL_TOTAL_CAP:
         errors.append(f"kernel total {total} exceeds the hard cap of {KERNEL_TOTAL_CAP}")
-    return {"kernel_total": total, "kernel_cap": KERNEL_TOTAL_CAP, "files": files}, errors
+    sats = {}
+    base = KERNEL.parent  # satellites live beside the real kernel, not beside a test's tmp dir
+    for name, cap in SATELLITE_CAPS.items():
+        path = base / name
+        if not path.exists():  # a renamed/typo'd satellite must not report a silent 0/cap pass
+            errors.append(f"satellite {name}: declared in SATELLITE_CAPS but not found at {path}")
+            continue
+        targets = [path] if path.is_file() else sorted(path.rglob("*.py"))
+        try:
+            n = sum(counted_lines(f) for f in targets)
+        except SyntaxError as exc:  # same fate as an unparseable kernel file: a breach, not a crash
+            errors.append(f"satellite {name}: does not parse ({exc}) — cannot be budgeted")
+            continue
+        sats[name] = {"lines": n, "cap": cap}
+        if n > cap:
+            errors.append(f"satellite {name}: {n} counted lines exceeds its cap of {cap}")
+    uncapped = sorted(  # a new satellite module must be budgeted consciously, like a kernel file
+        p.name for p in base.glob("*.py") if p.name not in SATELLITE_CAPS and p.name != "__init__.py"
+    )
+    errors += [f"satellite {n}: no cap declared — add it to SATELLITE_CAPS consciously" for n in uncapped]
+    return {"kernel_total": total, "kernel_cap": KERNEL_TOTAL_CAP, "files": files, "satellites": sats}, errors
 
 
 def main() -> int:
@@ -99,6 +131,8 @@ def main() -> int:
             cap = f["cap"] if f["cap"] is not None else "MISSING"
             print(f"  {name:<24} {f['lines']:>5} / {cap}")
         print(f"  {'KERNEL TOTAL':<24} {data['kernel_total']:>5} / {data['kernel_cap']}")
+        for name, f in data.get("satellites", {}).items():
+            print(f"  sat:{name:<20} {f['lines']:>5} / {f['cap']}")
     for e in errors:
         print(f"BUDGET BREACH: {e}", file=sys.stderr)
     return 1 if errors else 0

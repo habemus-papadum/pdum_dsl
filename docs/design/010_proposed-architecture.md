@@ -30,7 +30,9 @@ evidence analyses: why numba can't, and the hazard checklist);
 `040_combinators-notes.md` (pipelines, roles, the bracket config contract,
 DPS/outputs — informing §2.11's bidirectional marshaling and the step-7
 `ResultPlan`); `050_provenance_tracking.md` (source locations: the MLIR-lite
-algebra, the rewrite inherit-default, the starting-region contract).
+algebra, the rewrite inherit-default, the starting-region contract);
+`060_rendering-notes.md` (static notebook widgets: fragment/style
+composability, CSS-only interactivity, the jsdom dev loop).
 
 ---
 
@@ -593,6 +595,45 @@ budgeted into `cache.py` day 1 (the judges flagged it cross-cutting and
 unbudgeted); `extract` returns buffer leaves while packing bytes in place
 (merging P1's fusion with P2's channel so neither scalars nor buffers pay for
 the other).
+
+**2026-07-12 (step 7): marshaling landed bidirectional; `aspect` unifies the
+Type-keyed registries.** Three deviations from §2.9/§2.11, all review-driven:
+(1) the static view is keyed by **Type**, not by value class (`FnType` is
+produced by both `Handle` and `Pipeline` — a genuine many-to-one), so
+`leaf_types` became `KindTable.register_aspect("leaves", …)`; `child` (descend
+one step) and `rebuild` (reassemble a result) joined it as aspects, replacing
+what began as a module-global rebuild dict — one MRO lookup, one layering
+story, `extend()` copies them all. (2) `flatten` is now a **required** third
+`ValueKind` view, checked loudly at `register()` rather than deep inside a
+packer loop. (3) `build_extractor` compiles the plan's leaf paths into one
+getter per slot (§4.3.10 as written) — the first draft re-dispatched through
+`flatten` every frame, which is M0's per-frame walk wearing a new hat; the
+alignment law (`flatten` ≡ compiled getters) is now a test, and the fuzz packs
+each leaf with its *declared* format so a bool↔i64 drift can't hide behind
+`bool`'s int subclassing. `pack.py` cap raised 150 → 175 consciously (the
+output half + the compiled extractor were not in the §5 estimate).
+
+**2026-07-12 (step 7 review): `Stage.forbid` — conversion targets cannot
+express op-level elimination.** The claim "the `{core, abi}` legality set
+proves no logical capture survived legalization" was **false**: `core.env` is
+in the `core` namespace, so `check_legal` passed regions still holding it
+(verified). The guarantee held only because the rewrite rule was total — one
+partial rule (e.g. skipping buffer captures for the ndarray kind's own stage)
+would have silently resurrected M0's per-frame flatten with no test failing.
+`Stage` therefore gains `forbid: frozenset` of op *names*, checked after
+fixpoint alongside `legal`; `legalize_params` declares
+`forbid={"core.env"}`. MLIR's conversion target is a dialect-level concept;
+this is the op-level complement it lacks. Any future stage that eliminates
+specific ops of a legal dialect must declare it the same way.
+
+**2026-07-12 (ch07a walkthrough): single tail return.** The base language
+takes the strict end of the field's split (numba unifies return paths;
+Taichi refuses all but one): **one `return`, at the tail of the body —
+`core.yield` IS the return.** No return-path unification, no return-join
+phis, ever; a mid-body `return` is a loud lowering error whose message
+names the tail. Consistent with strict joins (same-type-or-loud) and the
+reason numba's `typeinfer` fixpoint has no counterpart here. Recorded in
+the plan's step-10/11 language notes; the ch07a matrix row updated.
 
 **2026-07-12 (step 5): provenance schema committed** — MLIR-lite location
 algebra (`Loc`/`CallLoc`/`FusedLoc`, outside identity, anti-pattern-gated),

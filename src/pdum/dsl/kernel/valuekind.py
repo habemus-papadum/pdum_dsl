@@ -18,7 +18,15 @@ Kinds receive the **dispatching table** on every call, so composite kinds
 extended — the call entered by. A kind must never capture a table at
 construction: that would freeze layered overrides out of nested elements.
 
-The marshaling views (``leaf_types``/``flatten``) land in step 7. ``BUILTINS``
+Step 7 adds the two *marshaling* views. ``flatten(v)`` (dynamic, hot path)
+lives on the kind, dispatched by value class like the identity views. The
+static view — leaf entries — dispatches on the **Type**, not the value
+(``FnType`` is produced by both Handles and Pipelines), so it registers per
+Type class via ``register_leaves``; the walkers themselves live in
+``pack.py`` with the leaf vocabulary. The alignment law (fuzz-enforced, like
+soundness): ``table.flatten(v)`` yields exactly one value per entry of
+``table.leaf_entries(table.typeof(v))``, in order — a drifted kind would
+otherwise corrupt packed bytes silently. ``BUILTINS``
 and the module-level ``typeof``/``fingerprint`` conveniences are the *staged
 seed* of surface C: in step 8 they fold into the explicit ``Registry``, and
 code should migrate to ``registry.typeof``. Unregistered types fail loudly —
@@ -45,7 +53,7 @@ class ValueKind(Protocol):
 
     def fingerprint(self, v: object, table: KindTable) -> Hashable: ...
 
-    # step 7 adds: leaf_types(t: Type) -> tuple[Leaf, ...]; flatten(v) -> tuple
+    def flatten(self, v: object, table: KindTable) -> tuple: ...  # aligned with leaf_entries(typeof(v))
 
 
 class KindTable:
@@ -53,6 +61,7 @@ class KindTable:
 
     def __init__(self) -> None:
         self._kinds: dict[type, ValueKind] = {}
+        self._aspects: dict[str, dict[type, object]] = {}  # aspect -> Type class -> rule
 
     def register(self, pytype: type, kind: ValueKind) -> None:
         """Register ``kind`` as the summarizer for ``pytype`` (and, via MRO,
@@ -64,7 +73,16 @@ class KindTable:
             The Python class whose instances this kind summarizes.
         kind : ValueKind
             The summarizer; called as ``kind.typeof(v, table)``.
+
+        Raises
+        ------
+        TypeError
+            If the kind is missing a protocol view — loud HERE, at the
+            registration, not later inside a packer's per-value loop.
         """
+        missing = [v for v in ("typeof", "fingerprint", "flatten") if not callable(getattr(kind, v, None))]
+        if missing:
+            raise TypeError(f"{type(kind).__name__} is not a ValueKind: missing {', '.join(missing)}")
         self._kinds[pytype] = kind
 
     def extend(self) -> KindTable:
@@ -80,7 +98,30 @@ class KindTable:
         """
         child = KindTable()
         child._kinds.update(self._kinds)
+        child._aspects = {name: dict(rules) for name, rules in self._aspects.items()}
         return child
+
+    def register_aspect(self, aspect: str, type_cls: type, rule) -> None:
+        """Register a **Type-keyed** rule. Value-keyed behaviour is a
+        ``ValueKind``; behaviour derivable from the *type* alone is an aspect
+        (``leaves`` — the static leaf walk; ``child`` — descend one step;
+        ``rebuild`` — reassemble from leaves). One registry, one MRO lookup,
+        one layering story: ``extend()`` copies aspects too, so a child table
+        can override any of them (pack.py owns the marshaling aspects)."""
+        self._aspects.setdefault(aspect, {})[type_cls] = rule
+
+    def aspect(self, name: str, t: Type):
+        """The registered ``name`` rule for a Type, by MRO like ``kind_for``."""
+        rules = self._aspects.get(name, {})
+        for cls in type(t).__mro__:
+            rule = rules.get(cls)
+            if rule is not None:
+                return rule
+        raise TypeError(f"no {name} rule registered for {type(t).__name__!r} ({t!r})")
+
+    def leaf_entries(self, t: Type) -> tuple:
+        """``((sub_path, Leaf), ...)`` for a Type — the plan-building walk."""
+        return self.aspect("leaves", t)(t, self)
 
     def kind_for(self, v: object) -> ValueKind:
         """The registered kind for ``v``, searching ``type(v).__mro__`` in
@@ -106,6 +147,9 @@ class KindTable:
     def fingerprint(self, v: object) -> Hashable:
         return self.kind_for(v).fingerprint(v, self)
 
+    def flatten(self, v: object) -> tuple:
+        return self.kind_for(v).flatten(v, self)
+
 
 # --- builtin kinds -------------------------------------------------------------
 
@@ -121,6 +165,9 @@ class _ConstKind:
 
     def fingerprint(self, v: object, table: KindTable) -> Hashable:
         return self._ty.kind
+
+    def flatten(self, v: object, table: KindTable) -> tuple:
+        return (v,)
 
 
 def _int_scalar(v: int) -> Scalar:
@@ -138,6 +185,9 @@ class _IntKind:
     def fingerprint(self, v: int, table: KindTable) -> Hashable:
         return _int_scalar(v).kind
 
+    def flatten(self, v: int, table: KindTable) -> tuple:
+        return (v,)
+
 
 class _TupleKind:
     """Python tuples summarize element-wise to ``Tuple`` — the honest identity
@@ -150,6 +200,9 @@ class _TupleKind:
 
     def fingerprint(self, v: tuple, table: KindTable) -> Hashable:
         return ("t", tuple(table.fingerprint(x) for x in v))
+
+    def flatten(self, v: tuple, table: KindTable) -> tuple:
+        return tuple(leaf for x in v for leaf in table.flatten(x))
 
 
 BUILTINS = KindTable()

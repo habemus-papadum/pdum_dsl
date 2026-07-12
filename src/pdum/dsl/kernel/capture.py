@@ -62,10 +62,14 @@ _FNTYPES: dict[tuple[CodeType, tuple[Hashable, ...]], FnType] = {}
 def _take_snapshot(fn: Callable) -> SourceSnapshot | None:
     code = fn.__code__
     try:
-        text = textwrap.dedent(inspect.getsource(fn))
+        lines, start = inspect.getsourcelines(fn)  # start = the TEXT's first line (decorators included)
     except (OSError, TypeError):
         return None  # phase B's NoSourceError, not ours
-    return SourceSnapshot(text, code.co_filename, code.co_firstlineno, code.co_qualname)
+    # filename and firstlineno must name the SAME file: getsourcelines unwraps
+    # (@wraps) but co_filename does not, so a wrapped fn would pair the
+    # wrapper's file with the wrappee's line — every later Loc would lie.
+    filename = getattr(inspect.unwrap(fn), "__code__", code).co_filename
+    return SourceSnapshot(textwrap.dedent("".join(lines)), filename, start, code.co_qualname)
 
 
 class Handle:
@@ -77,11 +81,16 @@ class Handle:
     handles fingerprint in O(1) at the parent.
     """
 
-    __slots__ = ("fntype", "env", "env_fp", "fp", "snapshot", "kind", "table", "pyfunc", "__weakref__")
+    __slots__ = ("fntype", "env", "env_fp", "fp", "snapshot", "kind", "table", "pyfunc", "captures", "__weakref__")
 
     def __init__(self, fntype, env, env_fp, snapshot, kind, table, pyfunc):
         self.fntype = fntype
         self.env = env
+        # Frozen at construction, from the same order `env_types` was built in:
+        # the marshaling law is that `captures[i]` is a value of `env_types[i]`.
+        # Deriving it per call from `env.values()` would let a later mutation of
+        # the dict silently transpose the two — swapped uniforms, no error.
+        self.captures = tuple(env.values())
         self.env_fp = env_fp
         self.fp = ("H", pyfunc.__code__, env_fp)
         self.snapshot = snapshot
@@ -92,6 +101,7 @@ class Handle:
     @property
     def env_types(self) -> tuple[Type, ...]:
         return self.fntype.env_types
+
 
     @property
     def freevars(self) -> tuple[str, ...]:
@@ -109,6 +119,9 @@ class _HandleKind:
 
     def fingerprint(self, v: Handle, table: KindTable) -> Hashable:
         return v.fp  # precomputed at construction
+
+    def flatten(self, v: Handle, table: KindTable) -> tuple:
+        return tuple(leaf for val in v.captures for leaf in table.flatten(val))
 
 
 BUILTINS.register(Handle, _HandleKind())

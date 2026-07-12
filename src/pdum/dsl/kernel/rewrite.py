@@ -57,7 +57,13 @@ RuleSet = list
 class Stage:
     name: str
     rules: RuleSet
-    legal: frozenset = frozenset()  # legal op namespaces at output; empty = unchecked
+    legal: frozenset = frozenset()  # legal op NAMESPACES at output; empty = unchecked
+    forbid: frozenset = frozenset()  # legal op names *within* a legal namespace must still die here
+    # `legal` is MLIR's conversion target (which dialects may remain). It cannot
+    # express "core.env must be gone" — core.env IS core. A stage that eliminates
+    # specific ops of a legal dialect says so with `forbid`, and the check makes
+    # the elimination a machine-checked fact rather than a property of the rule
+    # set that a later partial rule could quietly revoke (step-7 review).
 
 
 @dataclass
@@ -158,17 +164,19 @@ def rewrite(region: Region, rules: RuleSet, ops: dict, *, name: str = "", log: M
     return walk_region(region)
 
 
-def check_legal(region: Region, namespaces: frozenset, stage_name: str) -> None:
+def check_legal(region: Region, namespaces: frozenset, stage_name: str, forbid: frozenset = frozenset()) -> None:
     seen: set[int] = set()
 
     def visit(node: Node) -> None:
         if id(node) in seen:
             return
         seen.add(id(node))
-        if node.op.split(".", 1)[0] not in namespaces:
-            from .ir import format_loc
+        from .ir import format_loc
 
-            where = f" at {format_loc(node.loc)}" if node.loc else ""
+        where = f" at {format_loc(node.loc)}" if node.loc else ""
+        if node.op in forbid:
+            raise VerifyError(f"[{stage_name}] {node.op!r} survived the stage that must eliminate it{where}")
+        if namespaces and node.op.split(".", 1)[0] not in namespaces:
             raise VerifyError(f"[{stage_name}] illegal op {node.op!r}{where}; legal namespaces: {sorted(namespaces)}")
         for a in node.args:
             visit(a)
@@ -184,6 +192,6 @@ def run_stage(region: Region, stage: Stage, ops: dict, log: MatchLog | None = No
     """Rules to fixpoint, then the conversion-target check: which dialects may
     exist after this stage is machine-checked, not folklore."""
     out = rewrite(region, stage.rules, ops, name=stage.name, log=log)
-    if stage.legal:
-        check_legal(out, stage.legal, stage.name)
+    if stage.legal or stage.forbid:
+        check_legal(out, stage.legal, stage.name, stage.forbid)
     return out

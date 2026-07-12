@@ -65,6 +65,9 @@ def test_extended_table_overrides_reach_nested_elements():
         def fingerprint(self, v, table):
             return "f32"
 
+        def flatten(self, v, table):  # the third view is part of the contract from step 7 on
+            return (v,)
+
     mine = BUILTINS.extend()
     mine.register(float, WeirdFloatKind())
     assert mine.typeof(1.5) == T.f32

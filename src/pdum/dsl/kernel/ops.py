@@ -79,10 +79,12 @@ def _vec(args, attrs, regions) -> Type:
 
 
 def _extract(args, attrs, regions) -> Type:
-    (t,) = args
-    if not isinstance(t, Vec) or not 0 <= attrs["index"] < t.n:
-        raise TypeError(f"cannot extract index {attrs.get('index')!r} from {t!r}")
-    return t.elem
+    (t,), i = args, attrs["index"]  # a missing `index` is a bug in the emitting rule, not a type error
+    if isinstance(t, Vec) and 0 <= i < t.n:
+        return t.elem
+    if isinstance(t, Tuple) and 0 <= i < len(t.elems):
+        return t.elems[i]
+    raise TypeError(f"cannot extract index {i!r} from {t!r}")
 
 
 def _field(args, attrs, regions) -> Type:

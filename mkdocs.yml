@@ -27,6 +27,7 @@ nav:
       - "030 — Deep-learning notes": design/030_deep-learning-notes.md
       - "040 — Combinators notes": design/040_combinators-notes.md
       - "050 — Provenance tracking": design/050_provenance_tracking.md
+      - "060 — Rendering notes": design/060_rendering-notes.md
   - The Book:
       - "Chapter 0 — The thesis": book/ch00-thesis.ipynb
       - "Chapter 1 — Types are values": book/ch01-types-are-values.ipynb
@@ -35,6 +36,9 @@ nav:
       - "Chapter 4 — Pipelines are values": book/ch04-pipelines-are-values.ipynb
       - "Chapter 5 — Programs are values": book/ch05-programs-are-values.ipynb
       - "Chapter 6 — Everything is a rule": book/ch06-everything-is-a-rule.ipynb
+      - "Chapter 7 — Source to IR": book/ch07-source-to-ir.ipynb
+      - "7a — The lay of the land": book/ch07a-lay-of-the-land.ipynb
+      - "Chapter 8 — One value, N parameters": book/ch08-one-value-n-parameters.ipynb
       - Glossary: book/GLOSSARY.md
   - M0 reference asset (frozen):
       - Overview: m0/index.md

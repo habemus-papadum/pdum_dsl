@@ -19,8 +19,13 @@ the mkdocs site):
     bracket config contract (§3c), DPS/outputs.
   - `050_provenance_tracking.md` — source locations through the pipeline:
     the MLIR-lite algebra, the inherit-default, starting-region contract.
+  - `060_rendering-notes.md` — rich static notebook widgets: the
+    fragment/style composability contract, CSS-only interactivity, the
+    jsdom dev loop.
 
 Also here, unnumbered: `research/` — the frozen 20-agent research corpus
-(R/V/P/J) behind 010. Records, not living documents; paths inside them may
-predate later renames. Historical motivation material lives at the repo-root
+(R/V/P/J) behind 010, plus later targeted surveys appended in the same
+R-series (R10/R11: construct-level language surfaces, feeding the book's
+ch07a lay-of-the-land interlude). Records, not living documents; paths inside them may predate
+later renames. Historical motivation material lives at the repo-root
 `archive/`, outside the site.

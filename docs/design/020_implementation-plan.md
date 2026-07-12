@@ -28,6 +28,15 @@ and a closing "what we can't do yet" section pointing at the next chapter
 **The book.** Chapters live in `docs/book/chNN-<slug>.ipynb` and are kept
 green forever — they are simultaneously the step-acceptance artifact and the
 permanent bottom-up teaching track ("how the machine works, layer by layer").
+**Lay-of-the-land interludes** (`chNNa-<slug>.ipynb`, decided at the 2026-07-12
+walkthrough): `ch07a-lay-of-the-land` baselines the *language surface* after
+seven chapters — the supported list printed live from `LOWER_RULES`, refusals
+shown via their real errors, the inference story, the cross-library matrix
+(research R10/R11). After steps that materially widen the base pack
+(notably 10 and 11), a short new interlude records the **deltas** — what
+just became possible — rather than restating the baseline; interlude cells
+run against the current rule pack, so a stale claim shows up as a changed
+output, and the next interlude names it.
 `docs/book/GLOSSARY.md` is a living terminology file; every chapter's new
 terms (Handle, FnType, specialization cache, leaf, slot, aspect, surface, …) get an
 entry, and walkthrough feedback edits it. A future **top-down tutorial track**
@@ -229,6 +238,18 @@ perturbation re-armed); walkthrough. *The architecture's day-1 claim is now
 fact or falsified.*
 
 ### Step 10 — the five surfaces & batteries (`stdlib/`, registry completed)
+
+**Base-pack table stakes (from the ch07a lay-of-the-land matrix,
+2026-07-12; research R10/R11):** four registration-sized widenings ride
+along with this step's stdlib work — aug-assign, `and`/`or` (base pack
+picks short-circuit via `core.if`, stated as dialect policy), chained
+comparisons, and tuples (literal/unpack; the `Tuple` type exists). Early
+return, `if`/`for` *statements*, and the strict-join policy are step 11
+machinery, not registrations. The matrix also fixed two policy stances:
+**single tail return — settled at the ch07a walkthrough (2026-07-12,
+user decision; 010 ledger):** one `return`, at the tail, `core.yield` is
+the return, no unification machinery ever; and globals stay a loud
+`NameFateError` — never a silent freeze.
 
 **Builds:** `@overload`/`@overload_method`/`@overload_attribute` with
 target-token MRO, the call-typing resolution order, registry layering

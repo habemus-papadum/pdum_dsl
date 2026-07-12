@@ -16,4 +16,13 @@ Modules land step by step (``docs/design/020_implementation-plan.md``):
 - ``ops``       — OpDef + the core dialect table                       (step 4)
 - ``printer``   — the MLIR-flavored textual form                       (step 4)
 - ``rewrite``   — Pat/RuleSet, the one driver, Stage legality          (step 5)
+- ``lower``     — the fused typing+lowering driver; fates; inlining    (step 6)
+- ``pack``      — leaves, plans, the generic packer, the ABI stages    (step 7)
 """
+
+from . import pack  # noqa: F401  — registers the marshaling aspects on BUILTINS
+
+# Importing the package registers them, so ANY entry point (`from
+# pdum.dsl.kernel.valuekind import BUILTINS` included) gets a table that can
+# plan. Without this, `extend()` — which snapshots the aspect registry — could
+# mint a child table that is permanently unable to marshal.
