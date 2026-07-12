@@ -65,7 +65,7 @@
             <a id="nextFileLink" class="nav" href="z_7b1868a9906006d1_valuekind_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.14.3">coverage.py v7.14.3</a>,
-            created at 2026-07-12 14:20 +0000
+            created at 2026-07-12 17:04 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -105,7 +105,7 @@
     <p class="run"><span class="n"><a id="t23" href="#t23">23</a></span><span class="t"><span class="key">from</span> <span class="nam">types</span> <span class="key">import</span> <span class="nam">CodeType</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t24" href="#t24">24</a></span><span class="t"><span class="key">from</span> <span class="nam">typing</span> <span class="key">import</span> <span class="nam">Hashable</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t25" href="#t25">25</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t26" href="#t26">26</a></span><span class="t"><span class="nam">_SCALAR_KINDS</span> <span class="op">=</span> <span class="nam">frozenset</span><span class="op">(</span><span class="op">{</span><span class="str">"f64"</span><span class="op">,</span> <span class="str">"f32"</span><span class="op">,</span> <span class="str">"i64"</span><span class="op">,</span> <span class="str">"i32"</span><span class="op">,</span> <span class="str">"u64"</span><span class="op">,</span> <span class="str">"u32"</span><span class="op">,</span> <span class="str">"bool"</span><span class="op">}</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t26" href="#t26">26</a></span><span class="t"><span class="nam">SCALAR_KINDS</span> <span class="op">=</span> <span class="nam">frozenset</span><span class="op">(</span><span class="op">{</span><span class="str">"f64"</span><span class="op">,</span> <span class="str">"f32"</span><span class="op">,</span> <span class="str">"i64"</span><span class="op">,</span> <span class="str">"i32"</span><span class="op">,</span> <span class="str">"u64"</span><span class="op">,</span> <span class="str">"u32"</span><span class="op">,</span> <span class="str">"bool"</span><span class="op">}</span><span class="op">)</span>  <span class="com"># the closed scalar lattice</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t27" href="#t27">27</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t28" href="#t28">28</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t29" href="#t29">29</a></span><span class="t"><span class="op">@</span><span class="nam">dataclass</span><span class="op">(</span><span class="nam">frozen</span><span class="op">=</span><span class="key">True</span><span class="op">,</span> <span class="nam">slots</span><span class="op">=</span><span class="key">True</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
@@ -118,8 +118,8 @@
     <p class="run"><span class="n"><a id="t36" href="#t36">36</a></span><span class="t">    <span class="nam">kind</span><span class="op">:</span> <span class="nam">str</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t37" href="#t37">37</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t38" href="#t38">38</a></span><span class="t">    <span class="key">def</span> <span class="nam">__post_init__</span><span class="op">(</span><span class="nam">self</span><span class="op">)</span> <span class="op">-></span> <span class="key">None</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t39" href="#t39">39</a></span><span class="t">        <span class="key">if</span> <span class="nam">self</span><span class="op">.</span><span class="nam">kind</span> <span class="key">not</span> <span class="key">in</span> <span class="nam">_SCALAR_KINDS</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t40" href="#t40">40</a></span><span class="t">            <span class="key">raise</span> <span class="nam">ValueError</span><span class="op">(</span><span class="fst">f"</span><span class="fst">unknown scalar kind </span><span class="op">{</span><span class="nam">self</span><span class="op">.</span><span class="nam">kind</span><span class="op">!</span><span class="nam">r</span><span class="op">}</span><span class="fst">; expected one of </span><span class="op">{</span><span class="nam">sorted</span><span class="op">(</span><span class="nam">_SCALAR_KINDS</span><span class="op">)</span><span class="op">}</span><span class="fst">"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t39" href="#t39">39</a></span><span class="t">        <span class="key">if</span> <span class="nam">self</span><span class="op">.</span><span class="nam">kind</span> <span class="key">not</span> <span class="key">in</span> <span class="nam">SCALAR_KINDS</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t40" href="#t40">40</a></span><span class="t">            <span class="key">raise</span> <span class="nam">ValueError</span><span class="op">(</span><span class="fst">f"</span><span class="fst">unknown scalar kind </span><span class="op">{</span><span class="nam">self</span><span class="op">.</span><span class="nam">kind</span><span class="op">!</span><span class="nam">r</span><span class="op">}</span><span class="fst">; expected one of </span><span class="op">{</span><span class="nam">sorted</span><span class="op">(</span><span class="nam">SCALAR_KINDS</span><span class="op">)</span><span class="op">}</span><span class="fst">"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t41" href="#t41">41</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t42" href="#t42">42</a></span><span class="t">    <span class="key">def</span> <span class="nam">__repr__</span><span class="op">(</span><span class="nam">self</span><span class="op">)</span> <span class="op">-></span> <span class="nam">str</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t43" href="#t43">43</a></span><span class="t">        <span class="key">return</span> <span class="nam">self</span><span class="op">.</span><span class="nam">kind</span>&nbsp;</span><span class="r"></span></p>
@@ -281,7 +281,7 @@
             <a class="nav" href="z_7b1868a9906006d1_valuekind_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.14.3">coverage.py v7.14.3</a>,
-            created at 2026-07-12 14:20 +0000
+            created at 2026-07-12 17:04 +0000
         </p>
     </div>
 </footer>
