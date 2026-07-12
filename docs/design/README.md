@@ -19,9 +19,17 @@ the mkdocs site):
     bracket config contract (§3c), DPS/outputs.
   - `050_provenance_tracking.md` — source locations through the pipeline:
     the MLIR-lite algebra, the inherit-default, starting-region contract.
+  - `070_backends-notes.md` — the backend detour synthesis: bridge
+    ride-vs-own verdicts (own CUDA via cuda.core; own Metal; wgpu-py
+    settled), the shader-family dialect layering, the compute invocation
+    surface (explicit DPS, config schema, ping-pong chaining), the
+    graphics draw surface, packaging/CI. Raw surveys: research/R12–R17.
   - `060_rendering-notes.md` — rich static notebook widgets: the
     fragment/style composability contract, CSS-only interactivity, the
     jsdom dev loop.
+  - `080_backend-organization.md` — families vs targets vs cells (the
+    sparse matrix), three-tier backend resolution, why the fused demos live
+    at `dsl.demo`, the namespace-package + entry-point contribution contract.
 
 Also here, unnumbered: `research/` — the frozen 20-agent research corpus
 (R/V/P/J) behind 010, plus later targeted surveys appended in the same

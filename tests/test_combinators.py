@@ -43,7 +43,7 @@ def mul(k):
 
 
 def frag():
-    @jit(kind="fragment")
+    @jit(kind="simple_shader.fragment")
     def shader():
         return (0.0, 0.0)
 
@@ -91,14 +91,11 @@ def test_config_accepts_named_mappings():
 def test_fragment_role_arrives_with_its_domain():
     from pdum.dsl.combinators import Stage
 
-    # No graphics vocabulary is built in — roles ship with their packages:
-    with pytest.raises(IncompatibleRoles, match="no Role registered"):
-        add(1) | frag()
-    # ...and once a (future WGSL) package registers it, composition is still
-    # gated by rules, with the package's explanation:
-    register_role("fragment", hint="orchestration arrives with the pass runtime")
-    with pytest.raises(IncompatibleRoles, match="orchestration"):
-        add(1) | frag()  # raw Handle operands are wrapped automatically
+    # The rule this test always taught — roles ship with their owning
+    # packages — has now HAPPENED: the WGSL backend registers "fragment"
+    # (step 9). Composition is still gated by rules, with the package's hint:
+    with pytest.raises(IncompatibleRoles, match="pixel coordinates"):
+        add(1) | frag()  # role exists; no rule — and the wgsl package's HINT is woven in
     with pytest.raises(IncompatibleRoles, match="no composition rule"):
         Stage(frag()) | add(1)
 
@@ -111,13 +108,13 @@ def test_materializer_only_ends_a_pipeline():
 
 
 def test_unregistered_kind_is_loud():
-    @jit(kind="compute")
+    @jit(kind="audio_node")  # a kind no shipped package owns
     def k():
         return 0
 
     with pytest.raises(IncompatibleRoles, match="no Role registered"):
         add(1) | k
-    register_role("compute")  # registering opens the role, but no rule yet:
+    register_role("audio_node")  # registering opens the role, but no rule yet:
     with pytest.raises(IncompatibleRoles, match="no composition rule"):
         add(1) | k
 

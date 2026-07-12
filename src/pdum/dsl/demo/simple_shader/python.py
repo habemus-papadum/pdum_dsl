@@ -31,10 +31,11 @@ from __future__ import annotations
 
 import math
 
-from ..kernel.ir import Node, Region, VerifyError
-from ..kernel.pack import PackPlan
-from ..kernel.registry import DEFAULT, Backend
-from ..kernel.types import Scalar
+from ...backends._emit import emit_dominated
+from ...kernel.ir import Node, Region, VerifyError
+from ...kernel.pack import PackPlan
+from ...kernel.registry import DEFAULT, Backend
+from ...kernel.types import Scalar
 
 _BIN = {"core.add": "+", "core.sub": "-", "core.mul": "*", "core.div": "/", "core.mod": "%", "core.pow": "**"}
 _PREDS = {"lt": "<", "gt": ">", "le": "<=", "ge": ">=", "eq": "==", "ne": "!="}
@@ -43,64 +44,11 @@ _CASTS = {"f64": "float", "f32": "float", "i64": "int", "i32": "int", "u64": "in
 
 def render(region: Region, plan: PackPlan, name: str = "kernel") -> str:
     """Legalized Region -> Python source. One assignment per node, DAG-shared
-    nodes emitted once in their OWNER region (the deepest region dominating
-    every use — the lazy-branch placement rule), names dense in topo order."""
+    nodes emitted once in their OWNER region (the shared dominator-placed
+    walker in ``_emit`` — the lazy-branch rule), names dense in topo order."""
     args_by_index = {s.source.index: s for s in plan.slots if s.source.root == "arg" and not s.source.sub}
 
-    # Pass 1: topo order, direct users, and region anchors ((if_id, branch) uses).
-    topo: list[Node] = []
-    seen: set[int] = set()
-    users: dict[int, list[Node]] = {}
-    anchors: dict[int, list[tuple]] = {}
-    region_result: dict[tuple, Node] = {}
-
-    def walk(node: Node) -> None:
-        if id(node) in seen:
-            return
-        seen.add(id(node))
-        for a in node.args:
-            users.setdefault(id(a), []).append(node)
-            walk(a)
-        for i, r in enumerate(node.regions):
-            for n in r.body:
-                inner = n.args[0] if n.op == "core.yield" else n
-                anchors.setdefault(id(inner), []).append((id(node), i))
-                if n.op == "core.yield":
-                    region_result[(id(node), i)] = inner
-                walk(inner)
-        topo.append(node)
-
-    result = None
-    for n in region.body:
-        inner = n.args[0] if n.op == "core.yield" else n
-        result = inner if n.op == "core.yield" else result
-        anchors.setdefault(id(inner), []).append(None)  # anchored at the root
-        walk(inner)
-
-    # Pass 2: owner region per node = longest common prefix of all use paths.
-    def lca(a: tuple, b: tuple) -> tuple:
-        out = []
-        for x, y in zip(a, b):
-            if x != y:
-                break
-            out.append(x)
-        return tuple(out)
-
-    owner: dict[int, tuple] = {}
-    for node in reversed(topo):  # users precede their args here, so owner(user) is final
-        paths = [owner[id(u)] for u in users.get(id(node), ())]
-        paths += [() if a is None else (*owner[a[0]], a) for a in anchors.get(id(node), ())]
-        o = paths[0]
-        for q in paths[1:]:
-            o = lca(o, q)
-        owner[id(node)] = o
-
-    names = {id(n): f"v{k}" for k, n in enumerate(topo)}
-    blocks: dict[tuple, list[Node]] = {}
-    for n in topo:
-        blocks.setdefault(owner[id(n)], []).append(n)
-
-    def expr_of(node: Node) -> str:
+    def expr_of(node: Node, names: dict) -> str:
         attrs = dict(node.attrs)
         arg = [names[id(a)] for a in node.args]
         if node.op == "core.param":
@@ -134,25 +82,24 @@ def render(region: Region, plan: PackPlan, name: str = "kernel") -> str:
             return f"{arg[0]}[{attrs['index']}]"
         raise VerifyError(f"python backend has no rendering for {node.op!r}")
 
-    def emit_block(path: tuple, indent: str) -> list[str]:
-        out: list[str] = []
-        for node in blocks.get(path, ()):
-            if node.op == "core.if":
-                res = names[id(node)]
-                out.append(f"{indent}if {names[id(node.args[0])]}:")
-                for i, kw in ((0, "if"), (1, "else")):
-                    sub = (*path, (id(node), i))
-                    if i:
-                        out.append(f"{indent}else:")
-                    out += emit_block(sub, indent + "    ")
-                    out.append(f"{indent}    {res} = {names[id(region_result[(id(node), i)])]}")
-            else:
-                out.append(f"{indent}{names[id(node)]} = {expr_of(node)}")
+    def statement(node, nm):
+        return f"{nm[id(node)]} = {expr_of(node, nm)}"
+
+    def branch_join(node, nm, result_of, emit_block, path, ind):
+        res = nm[id(node)]
+        out = [f"{ind}if {nm[id(node.args[0])]}:"]
+        out += emit_block((*path, (id(node), 0)), ind + "    ")
+        out.append(f"{ind}    {res} = {result_of(0)}")
+        out.append(f"{ind}else:")
+        out += emit_block((*path, (id(node), 1)), ind + "    ")
+        out.append(f"{ind}    {res} = {result_of(1)}")
         return out
 
-    body = "\n".join(emit_block((), "    ")) or "    pass"
+    lines, names, result = emit_dominated(region, statement, branch_join, indent="    ")
+    body = "\n".join(lines) or "    pass"
     head = f"from struct import unpack_from as _u\n\ndef {name}(staging, leaves):\n"
-    return f"{head}{body}\n    return {names[id(result)]}\n"
+    guard = '    if leaves: raise TypeError("the python backend takes no launcher data (out= is for device targets)")\n'
+    return f"{head}{guard}{body}\n    return {names[id(result)]}\n"
 
 
 def compile_source(source: str, name: str = "kernel"):
@@ -163,7 +110,9 @@ def compile_source(source: str, name: str = "kernel"):
     return artifact
 
 
-PYTHON = Backend(name="python", render=render, compile=compile_source, fp=("python", 1))
+PYTHON = Backend(
+    name="demo.simple_shader.python", render=render, compile=compile_source, fp=("demo.simple_shader.python", 1)
+)
 
 
 def install(registry) -> None:

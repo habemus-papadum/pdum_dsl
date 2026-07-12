@@ -133,7 +133,7 @@ def test_pipelines_execute_fused(counters):
 def test_rendered_source_reads_the_staging_abi():
     f = make_shader(0.7, 9.0)
     f(0.5)
-    key = DEFAULT.specializations.key_for(f, (DEFAULT.table.fingerprint(0.5),), ("python", 1))
+    key = DEFAULT.specializations.key_for(f, (DEFAULT.table.fingerprint(0.5),), ("demo.simple_shader.python", 1))
     src = DEFAULT.specializations._ready[key].artifact.__pdum_source__
     assert "def kernel(staging, leaves):" in src
     assert "_u('<d', staging," in src and "return v" in src
@@ -207,23 +207,37 @@ def test_guard_reaches_into_nested_handles(counters):
     assert counters.guard_misses >= 1  # the OUTER entry noticed the INNER drift
 
 
-def test_two_backends_trip_the_routing_wire():
-    from pdum.dsl.backends.python import PYTHON, install
+def test_per_role_routing_with_two_backends():
+    """Step 9: routes map kinds to backends; unrouted kinds use the default."""
+    from pdum.dsl.demo.simple_shader.python import PYTHON, install
     from pdum.dsl.kernel.registry import Backend
     from pdum.dsl.stdlib import install as install_lang
 
     reg = install_lang(Registry())
-    install(reg)
-    reg.register_backend(Backend(name="other", render=PYTHON.render, compile=PYTHON.compile, fp=("other", 1)))
-    f = make_shader(0.0, 1.0)
-    with pytest.raises(NotImplementedError, match="routing"):
-        reg.dispatch(f, (1.0,))
+    install(reg)  # python, default
+    hits = []
+
+    def spy_compile(source, name="kernel"):
+        hits.append(name)
+        return PYTHON.compile(source, name)
+
+    other = Backend(name="other", render=PYTHON.render, compile=spy_compile, fp=("other", 1))
+    reg.register_backend(other, kinds=("spykind",))
+    assert reg.dispatch(make_shader(0.0, 2.0), (0.25,)) == 2.0  # "device": default python, no spy
+    assert hits == []
+
+    @jit(kind="spykind")
+    def k(x):
+        return x + 1.0
+
+    assert reg.dispatch(k, (1.0,)) == 2.0  # routed kind: compiled by the spy backend
+    assert hits == ["kernel"]
 
 
 def test_fresh_registry_via_install_seams():
     """Surface E is not a singleton in disguise: a hand-built Registry gets
     the same batteries through the explicit install() seams."""
-    from pdum.dsl.backends.python import install as install_backend
+    from pdum.dsl.demo.simple_shader.python import install as install_backend
     from pdum.dsl.stdlib import install as install_lang
 
     reg = install_lang(Registry())

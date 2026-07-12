@@ -15,7 +15,7 @@ driven by ``docs/desiderata.md``. The previous end-to-end proof of concept
 and demo.
 """
 
-from . import backends as _backends  # noqa: F401  — registers the Python backend
+from . import demo as _demo  # noqa: F401  — registers the demo backends (ch09/ch10)
 from . import stdlib as _stdlib  # noqa: F401  — registers the base dialect
 from .kernel.api import jit
 from .kernel.cache import no_compile

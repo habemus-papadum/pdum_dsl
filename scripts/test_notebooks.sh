@@ -33,6 +33,19 @@ while [[ $# -gt 0 && "$1" == --* ]]; do
     esac
 done
 
+# Probe the GPU ONCE for the whole suite; nb.sh honors the exported result.
+if [ -z "${PDUM_GPU:-}" ]; then
+    set +e
+    uv run python -c "from pdum.dsl.demo.simple_shader import wgsl; raise SystemExit(0 if wgsl.is_available() else 3)"
+    PROBE=$?
+    set -e
+    case "$PROBE" in
+        0) export PDUM_GPU=1; echo "GPU adapter present: gpu-tagged cells will execute" ;;
+        3) export PDUM_GPU=0; echo "No GPU adapter: gpu-tagged cells will be skipped" ;;
+        *) echo "GPU probe CRASHED (exit $PROBE) — wgsl backend broken"; exit 1 ;;
+    esac
+fi
+
 MKDOCS_FILE="$REPO_ROOT/mkdocs.yml"
 DOCS_DIR="docs"
 NB_SCRIPT="$SCRIPT_DIR/nb.sh"

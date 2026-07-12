@@ -122,6 +122,31 @@ else
 fi
 
 JUPYTER_CMD="$JUPYTER_CMD --ExecutePreprocessor.timeout=60"
+
+# GPU gating (R17 / 070 §6): cells tagged `gpu` execute only where an adapter
+# answers; skipped cells keep their COMMITTED outputs. Three states, never
+# conflated: adapter present / adapter absent / PROBE BROKEN (a broken wgsl
+# import must FAIL the run, not silently skip — the EXPECT_LAVAPIPE lesson).
+# test_notebooks.sh probes once and exports PDUM_GPU; standalone runs probe here.
+if [ -z "${PDUM_GPU:-}" ]; then
+    set +e
+    uv run python -c "from pdum.dsl.demo.simple_shader import wgsl; raise SystemExit(0 if wgsl.is_available() else 3)"
+    PROBE=$?
+    set -e
+    case "$PROBE" in
+        0) PDUM_GPU=1 ;;
+        3) PDUM_GPU=0 ;;
+        *) echo "GPU probe CRASHED (exit $PROBE) — the wgsl backend is broken, not absent"; exit 1 ;;
+    esac
+fi
+if [ "$PDUM_GPU" != "1" ]; then
+    if [ -n "${PDUM_REQUIRE_WEBGPU:-}" ]; then
+        echo "PDUM_REQUIRE_WEBGPU is set but no adapter answered"; exit 1
+    fi
+    echo "No GPU adapter: skipping cells tagged 'gpu' (committed outputs preserved)"
+    JUPYTER_CMD="$JUPYTER_CMD --ExecutePreprocessor.skip_cells_with_tag=gpu"
+fi
+
 JUPYTER_CMD="$JUPYTER_CMD $NOTEBOOK_PATH"
 
 if [ $# -gt 0 ]; then

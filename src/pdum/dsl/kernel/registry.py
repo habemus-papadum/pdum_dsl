@@ -24,10 +24,11 @@ recompile against the same frozen env) rather than silently serving bytes
 from a world that no longer exists. Edited-and-rerun templates retire their
 predecessors via the cache's code map.
 
-``Backend`` v1 carries what the Python backend needs (token, render,
-compile, fp). The §2.10 columns it defers — ``type_map``, ``code_for_op``
-gating shared decompositions, ``params_key`` — arrive with the WGSL backend,
-which is the first consumer that needs them.
+``Backend`` carries name/render/compile/fp plus the step-9 columns
+(``plan``, ``param_types``, ``make_launcher``). Still deferred from §2.10:
+``code_for_op``-gated decompositions and a real ``params_key`` column —
+type_map was absorbed into the wgsl renderer's tables, and the fragment
+target format rides ``fp`` (coarse but sound) until multiple formats exist.
 
 Book: ``docs/book/ch09-end-to-end-on-cpu.ipynb``.
 """
@@ -39,6 +40,7 @@ from dataclasses import dataclass
 
 from .cache import ArtifactCache, FastRecord, SpecializationCache
 from .capture import Handle
+from .ir import VerifyError
 from .lower import lower_handle
 from .ops import CORE_OPS
 from .pack import ABI_OPS, NORMALIZE_ENV, build_extractor, legalize_params, pack_into, plan_from_types
@@ -48,17 +50,34 @@ from .valuekind import BUILTINS, KindTable
 
 @dataclass(frozen=True)
 class Backend:
-    """A capability record (§2.10, the v1 columns)."""
+    """A capability record (§2.10; the step-9 columns arrive with the second
+    backend). The three optional callables let a backend own its layout, its
+    parameter convention, and its launcher without the kernel knowing any
+    target's shape — the python backend takes every default."""
 
     name: str
     render: Callable  # (region, plan, name) -> source text
-    compile: Callable  # (source, name) -> artifact; artifact(staging, leaves) runs
+    compile: Callable  # (source, name) -> artifact
     fp: tuple  # enters every specialization key (a backend/version change is a new world)
+    plan: Callable | None = None  # (env_types, arg_types, table) -> PackPlan; None = dense staging
+    param_types: Callable | None = None  # (target) -> tuple | None; a family that DERIVES params
+    #   (compute: params ARE thread coords) returns their types; None = typeof the call args
+    make_launcher: Callable | None = None  # (artifact, plan) -> launch(staging, leaves); None = artifact
 
 
 class NoBackend(RuntimeError):
     """Dispatch reached a registry with no backend — ``import pdum.dsl`` for
     batteries, or ``register_backend`` your own."""
+
+
+class Out:
+    """Tags the ``out=`` payload on the leaves channel, so launchers peel it
+    by TYPE, not by tail position — buffer leaves (ch12) cannot collide."""
+
+    __slots__ = ("value",)
+
+    def __init__(self, value):
+        self.value = value
 
 
 def _guards(target) -> tuple:
@@ -81,27 +100,31 @@ class Registry:
         self.lower_rules: dict = {}
         self.derived: dict = {}
         self.backends: dict[str, Backend] = {}
+        self.routes: dict[str, str] = {}  # kind -> backend name; absent kinds use the default
         self.default_backend: str | None = None
         self.specializations = SpecializationCache()
         self.artifacts = ArtifactCache()
 
-    def register_backend(self, backend: Backend, *, default: bool = False) -> None:
+    def register_backend(self, backend: Backend, *, default: bool = False, kinds: tuple = ()) -> None:
         self.backends[backend.name] = backend
-        if default or self.default_backend is None:
+        for kind in kinds:  # per-role routing: role vocabularies ship WITH their backends
+            self.routes[kind] = backend.name
+        if default or (self.default_backend is None and not kinds):
+            # A kind-scoped backend never CLAIMS the default slot: a registry
+            # holding only wgsl must refuse a "device" kernel loudly, not
+            # silently compile it through the compute backend (review-caught).
             self.default_backend = backend.name
 
     def backend_for(self, kind: str) -> Backend:
-        # v1: one default backend serves every role; per-role routing lands
-        # with the second backend (ch10). The tripwire below makes forgetting
-        # that a loud error instead of silent wrong-backend compilation.
-        if self.default_backend is None:
+        name = self.routes.get(kind, self.default_backend)
+        if name is None:
             raise NoBackend("no backend registered; `import pdum.dsl` wires the batteries")
-        if len(self.backends) > 1:
-            raise NotImplementedError("multiple backends registered: per-role routing is the ch10 work")
-        return self.backends[self.default_backend]
+        return self.backends[name]
 
-    def dispatch(self, target, args: tuple):
-        """THE hot path. `target` is anything FnType-shaped: Handle or Pipeline."""
+    def dispatch(self, target, args: tuple, out=None):
+        """THE hot path. `target` is anything FnType-shaped: Handle or Pipeline.
+        `out` is launcher data (destinations / launch domain) — it rides the
+        leaves channel and never touches any key (070 §3: grid strips)."""
         spec, table = self.specializations, self.table
         backend = self.backend_for(target.kind)
         key = (target.fp, tuple(table.fingerprint(a) for a in args), backend.fp, spec.generation)
@@ -109,15 +132,21 @@ class Registry:
         if record is None:  # the miss thunk is only ever built on a miss
             record = spec.get_or_compile(key, lambda: self._build(target, args, backend))
         leaves = pack_into(record.plan, record.staging, record.extract(target.captures, args))
-        return record.launch(record.staging, leaves)
+        return record.launch(record.staging, leaves if out is None else (*leaves, Out(out)))
 
     def _build(self, target, args: tuple, backend: Backend) -> FastRecord:
         """The miss path (§4.3), once per (types, backend, generation)."""
-        arg_types = tuple(self.table.typeof(a) for a in args)
+        derived_params = backend.param_types(target) if backend.param_types else None
+        if derived_params is not None and args:  # params are DERIVED (thread coords): a positional
+            raise VerifyError(  # arg would be silently dead — refuse it loudly instead
+                f"{backend.name} derives this kernel's parameters; positional arguments are not "
+                f"accepted — pass the launch domain via out="
+            )
+        arg_types = derived_params if derived_params is not None else tuple(self.table.typeof(a) for a in args)
         env_types = target.env_types
         ops = {**CORE_OPS, **ABI_OPS}
         region = lower_handle(target, self.lower_rules, ops, arg_types=arg_types, derived=self.derived)
-        plan = plan_from_types(env_types, arg_types, self.table)
+        plan = (backend.plan or plan_from_types)(env_types, arg_types, self.table)
         region = run_stage(region, NORMALIZE_ENV, ops)
         region = run_stage(region, legalize_params(plan), ops)
         artifact = self.artifacts.get_or_compile(  # content-addressed: identical IR compiles once
@@ -131,7 +160,7 @@ class Registry:
             extract=extract,
             plan=plan,
             staging=bytearray(plan.staging_size),
-            launch=artifact,
+            launch=backend.make_launcher(artifact, plan) if backend.make_launcher else artifact,
         )
 
 

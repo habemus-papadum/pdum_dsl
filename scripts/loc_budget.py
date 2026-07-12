@@ -51,7 +51,8 @@ SATELLITE_CAPS = {  # separately-counted buckets (the honesty clause): src/pdum/
     "combinators.py": 250,
     "stdlib": 1500,
     "viz.py": 450,
-    "backends": 600,  # §5: 50-300 renderer + 130-220 runtime per source-emitting backend
+    "backends": 150,  # shared infra only (_emit); target packages arrive step 14 (raise then)
+    "demo": 600,  # the fused ch09/ch10 simple-shader pair (080: special-cased OUT of backends/)
 }
 
 _SKIP = {tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER}

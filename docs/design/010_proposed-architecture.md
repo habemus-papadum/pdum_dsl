@@ -32,7 +32,13 @@ DPS/outputs — informing §2.11's bidirectional marshaling and the step-7
 `ResultPlan`); `050_provenance_tracking.md` (source locations: the MLIR-lite
 algebra, the rewrite inherit-default, the starting-region contract);
 `060_rendering-notes.md` (static notebook widgets: fragment/style
-composability, CSS-only interactivity, the jsdom dev loop).
+composability, CSS-only interactivity, the jsdom dev loop);
+`070_backends-notes.md` (the backend roster and taxonomy, bridge
+ride-vs-own verdicts, the compute invocation surface, the graphics draw
+surface, packaging/CI — informing §2.10's remaining columns and revising
+§5's step-14 module-map line); `080_backend-organization.md` (families vs
+targets vs cells, three-tier backend resolution, the `dsl.demo` special
+case, the backends/ contribution contract).
 
 ---
 
@@ -612,6 +618,84 @@ alignment law (`flatten` ≡ compiled getters) is now a test, and the fuzz packs
 each leaf with its *declared* format so a bool↔i64 drift can't hide behind
 `bool`'s int subclassing. `pack.py` cap raised 150 → 175 consciously (the
 output half + the compiled extractor were not in the §5 estimate).
+
+**2026-07-12 (ch10 walkthrough): backend organization settled — 080.**
+User-caught naming debt: the vertical-slice implementations were claiming
+the real backends' names ("python", "wgsl-*"). Settled: kinds are declared
+by FAMILY packages, targets by backend packages, routing binds thin CELLS
+(family × target, sparse, holes loud); backend resolution is three-tier
+(data-driven via the device axis in Array types → explicit override →
+routed default; no activation API). The ch09/ch10 pair moved to
+`pdum.dsl.demo.simple_shader` with dotted cell names
+(`demo.simple_shader.python`, `demo.simple_shader.wgsl.{compute,fragment}`)
+— fused family+target on purpose, which is exactly why they left
+`backends/`: that package is now a PEP 420 namespace (no __init__) — the
+contribution point, entry-point group `pdum.dsl.backends` specified in 080,
+implemented at step 10. Rename was free TODAY (fps live only in-process);
+it would not have been after disk persistence. `families/` is deliberately
+NOT created until the second compute target forces it (step 14). Same
+hygiene for KIND strings: the demo registers `simple_shader.compute`/
+`simple_shader.fragment`, reserving plain `compute`/`fragment` for the real
+families; `device` keeps its name (stdlib's, semantics already final).
+
+**2026-07-12 (step 9): M1 COMPLETE — the WGSL backend, compute-led.** Two
+backends, one IR, the thesis measured on both: 119 fresh closures + a
+mid-loop RESOLUTION change on the GPU = zero recompiles (the domain rides
+the leaves channel via `out=`; `@workgroup_size` bakes into the artifact
+text exactly as §3b/spec require); differential gate GPU-vs-Python
+branch-exact on the disk, <5e-6 on smooth kernels (f64 vs f32 seam);
+~1.8 ms/frame dominated by the deliberate synchronous readback (render
+loops pay only write_buffer + encode). Landed: per-role routing
+(`Registry.routes`, kinds ship WITH their backends), the §2.10 Backend
+columns `plan`/`param_types`/`make_launcher` (python takes every default),
+`out=` as launcher data through dispatch. Deviations, all deliberate:
+compute-family contract v1 = params ARE thread coordinates and the call
+passes the domain (explicit out-BUFFERS wait for ndarrays); fragment
+broadcasts its scalar to grayscale rgba (colors wait for tuples, step 10);
+workgroup size fixed (64 / 8×8) until the bracket-schema surface;
+fragment renders offscreen only (the `draw(target)` window surface is
+070 §4's committed design, next graphics step). GPU cells in the book are
+`gpu`-tagged: the harness probes and skips without an adapter, committed
+outputs baked on the M3 survive (R17's nbclient pattern; the probe is
+three-state — present / absent / BROKEN-fails-loudly). Step-9 review
+(medium, 7 angles, 15 findings, 11 fixed): Env struct members now follow
+the slot FORMAT (the f32-only first draft reinterpreted int/bool capture
+bits as float garbage) and are generated from the PLAN, hole-free (WGSL
+lays members sequentially — a folded capture would have shifted every
+later member's bytes); non-finite floats and over-i32 int constants refuse
+loudly; `out=` rides the leaves channel in an `Out` TAG (peeled by type,
+never tail position — no ch12 buffer-leaf collision); a kind-scoped
+backend registration no longer claims the default slot; positional args on
+derived-param kernels refuse; bind groups/dims/views cached at
+domain-change tier per R12's ranking; and the dominator-placed emission
+walker is now ONE shared module (`backends/_emit.py`) under both
+renderers — the house rule's third-copy trigger, honored.
+
+**2026-07-12 (backend detour, pre-step-9): bridges owned, invocation
+surface committed.** Six-agent research fan-out (research/R12–R17; synthesis
+`070_backends-notes.md`). Decisions: (1) **own the CUDA stack via
+cuda.core** (1.0-stable; opt-in caching keeps our two tiers the only
+authority; `cuLaunchKernel`'s `void**` params admit a once-per-FastRecord
+pointer table INTO staging — the purest `launch(staging, leaves)` of any
+target) — §5's "backends/cuda/ (CuPy RawKernel)" line is superseded, cupy
+demoted to optional fallback/allocator; (2) **own the Metal stack**
+(ctypes-objc/PyObjC; MLX's name-keyed never-recheck kernel cache is
+incompatible with a content-addressed artifact tier, `mx.eval`-per-call
+blows the hit budget, and `setBytes`/`setBuffer` ARE staging/leaves; MLX
+reserved as an optional thin satellite); both rides failed for the same
+three reasons — caching, marshaling, scheduler — which are the three things
+this framework exists to own. (3) Step 9 leads with COMPUTE, fragment as a
+thin same-step variant (workgroup_size is pipeline-creation-time, confirming
+block-in-artifact-key; compute exercises every marshaling contract with the
+fewest parts; ch08's staging ABI verified live on the M3's Metal backend).
+(4) Invocation: explicit-DPS `out=` returning destinations, out-shape RULES
+(registration, never program analysis), config schema `[grid, block, smem,
+stream]` through the §3c pipeline (block value-specializes — WGSL forces
+it; grid/smem/stream strip to the leaves channel; smem refused on WGSL),
+ping-pong chaining as the `orchestrate` tag's encode plan. (5) Shader-family
+dialect layering confirmed (R15): shader-core / compute-family (+capability
+flags) / fragment-family / per-target packs; numeric policy legislated in
+core (trunc div-mod, twin-raises on div-zero, no NaN-as-data).
 
 **2026-07-12 (step 8): first execution — Registry v1, Python backend, the
 hot path.** The thesis is now a *measurement*: 299 fresh closures under

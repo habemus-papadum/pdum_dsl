@@ -28,6 +28,8 @@ nav:
       - "040 — Combinators notes": design/040_combinators-notes.md
       - "050 — Provenance tracking": design/050_provenance_tracking.md
       - "060 — Rendering notes": design/060_rendering-notes.md
+      - "070 — Backends notes": design/070_backends-notes.md
+      - "080 — Backend organization": design/080_backend-organization.md
   - The Book:
       - "Chapter 0 — The thesis": book/ch00-thesis.ipynb
       - "Chapter 1 — Types are values": book/ch01-types-are-values.ipynb
@@ -40,6 +42,7 @@ nav:
       - "7a — The lay of the land": book/ch07a-lay-of-the-land.ipynb
       - "Chapter 8 — One value, N parameters": book/ch08-one-value-n-parameters.ipynb
       - "Chapter 9 — End to end, on CPU": book/ch09-end-to-end-on-cpu.ipynb
+      - "Chapter 10 — The GPU and the seam": book/ch10-the-gpu-and-the-seam.ipynb
       - Glossary: book/GLOSSARY.md
   - M0 reference asset (frozen):
       - Overview: m0/index.md

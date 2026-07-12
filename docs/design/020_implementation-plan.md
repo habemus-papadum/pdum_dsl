@@ -223,16 +223,27 @@ in the notebook itself; walkthrough.
 
 ### Step 9 — the WGSL backend (`backends/wgsl/`) — **completes M1, the vertical slice**
 
+**Revised at the 2026-07-12 backend detour (070_backends-notes, R12): the
+step leads with COMPUTE, fragment follows as a thin variant in the same
+step, sharing one runtime module.** `@workgroup_size` is pipeline-creation-
+time (block-in-artifact-key confirmed); compute exercises every marshaling
+contract with the fewest moving parts and is the path M0 did NOT prove
+(the ch08 staging ABI already ran live against a WGSL uniform block on the
+M3 — session probe). Fragment then ports M0's `GpuProgram`/`Drawer`/
+`OffscreenTarget` shape onto `FastRecord` (target format in
+`Backend.params_key`; per-frame = pack → `write_buffer` → draw).
 **Builds:** WGSL renderer (~150), uniform-layout planner (M0's `layout.py`
-generalized to leaves→`UniformSlot`), wgpu offscreen + window runtime (~200),
-`FragCoord` intrinsic registered *from the backend package*.
+generalized to leaves→`UniformSlot`), wgpu compute + offscreen + window
+runtime (~200), `FragCoord` intrinsic registered *from the backend package*;
+the `[grid, block, smem, stream]` config schema (070 §3) with `block`
+value-specialized; multi-destination `out=` through ResultPlan.
 **Parallel within step:** (a) renderer+planner, (b) wgpu runtime+targets,
 (c) differential-test harness — three agents, then integrate.
 **Notebook `ch10-the-gpu-and-the-seam`:** same shader, second backend: WGSL
 text side-by-side with the Python source; the uniform layout table (offsets,
-the vec3 align-16 footgun); offscreen render; **differential image compare**
-vs ch09; the live loop with `compiles == 1`; hit-path microbench readout
-(alarm/fail thresholds); [gpu-tagged cells].
+the vec3 align-16 footgun); compute dispatch + offscreen render;
+**differential image compare** vs ch09; the live loop with `compiles == 1`;
+hit-path microbench readout (alarm/fail thresholds); [gpu-tagged cells].
 **Exit:** all M1 gates green (microbench, differential, thesis-on-GPU,
 perturbation re-armed); walkthrough. *The architecture's day-1 claim is now
 fact or falsified.*
@@ -276,7 +287,7 @@ risk #4); walkthrough.
 | 11 — arrays, `core.for`, C backend | ndarray ValueKind (Buffer/Shape/Stride leaves), `core.for` lowering, shaped-kind opt-in (§13), C renderer + cc/ctypes runtime; **ray-march spike** | `ch12-data-and-loops`: color-table shader; rank-generic vs shape-in-type caching behavior shown with counters; generated C inspected; ray-march verdict documented | region-op sufficiency; planner vocabulary; C proves the seam generalizes beyond GPU |
 | 12 — vmap + jvp | **vmap-over-if/for spike first** (>350 lines ⇒ re-hear per architecture); `Derived` ids, batch/jvp columns, transform driver | `ch13-transforms-are-rules`: vmap a scalar kernel, print base vs transformed IR; `grad`-precursor jvp checked against finite differences via the Python backend | transform taxation (~180 lines/region op claim tested) |
 | 13 — grad | partial-eval + transpose (~450 lines, own step by design), `custom_vjp` hatch | `ch14-differentiating-a-shader`: grad of a smooth SDF shader; a design-optimization mini-loop (gradient-descend a shape parameter, live) | AD architecture |
-| 14 — CUDA + MLX backends | CuPy RawKernel + MLX custom-kernel backends (**parallel agents**, one per backend); `raw_kernel` escape hatch | `ch15-four-targets-one-ir` [platform-gated cells]: same kernel on every available target, differentially compared | multi-backend claim at N=4–5 |
+| 14 — CUDA + Metal backends (revised 2026-07-12, 070/R13/R14: OWN both stacks) | `backends/cuda/` on **cuda.core** (opt-in-cache off; escalation: once-per-FastRecord pointer table into staging via `cuLaunchKernel`); `backends/metal/` on **ctypes-objc/PyObjC** (`setBytes`=staging, `setBuffer`=leaves); cupy/MLX demoted to optional fallback runtimes/allocators; CUDA developed design-for-skip + Modal burst (**parallel agents**, one per backend); `raw_kernel` escape hatch | `ch15-four-targets-one-ir` [platform-gated cells]: same kernel on every available target, differentially compared | multi-backend claim at N=4–5 |
 | 15 — units | `Dim`/`Quantity`, unit aspect column, `Affine` pack converters | `ch16-dimensions-and-units`: mm→inch knob tweak with **zero recompiles** (pack-tier miss only, counters shown); dimension error naming both locs | two-tier law under a real domain |
 
 **Later, unscheduled** (each becomes a step+chapter when pulled forward):
