@@ -97,8 +97,8 @@ uv run mkdocs build
 
 ### Project Structure
 - **src/pdum/dsl/**: the redesigned framework (being built; see
-  `design/proposed-architecture.md` for the design and
-  `design/implementation-plan.md` for the step sequence — both authoritative)
+  `docs/design/010_proposed-architecture.md` for the design and
+  `docs/design/020_implementation-plan.md` for the step sequence — both authoritative)
 - **src/pdum/dsl_reference/**: the frozen Milestone-0 proof of concept.
   **Do not extend or refactor it.** Its tests live in `reference/tests/`
   (run on demand: `uv run pytest reference/tests`; not collected by default)
@@ -107,9 +107,11 @@ uv run mkdocs build
 - **docs/**: MkDocs site — `desiderata.md` (redesign brief), `m0/` (frozen M0
   docs, historical), `book/` (forthcoming chapter notebooks, one per
   implementation step)
-- **design/**: active design docs (`proposed-architecture.md`,
-  `implementation-plan.md`, `research/` corpus, the two normative analysis
-  notes) plus `archive/` (historical motivation material — not design inputs)
+- **docs/design/**: the numbered design canon, part of the mkdocs site
+  (`010_proposed-architecture.md` is the master; `020` the plan; `022`/`024`
+  the evidence analyses; `03x+` topic notes in book order — see
+  `docs/design/README.md`), plus `research/` (frozen corpus)
+- **archive/** (repo root): historical motivation material — not design inputs
 
 ### Key Constraints
 - **Python Version**: Requires Python 3.14+

@@ -123,5 +123,5 @@ unmarked stays runtime uniform data. For WGSL this is precisely the "bake as a `
 
 The full target lattice (arrays with layout/byteorder, `Optional`/union, `str`/`bytes`,
 opaque callables) is specified in
-[`design/dsl_caching_layer.md`](https://github.com/habemus-papadum/pdum_dsl/blob/main/design/dsl_caching_layer.md);
+[`docs/design/024_dsl_caching_layer.md`](https://github.com/habemus-papadum/pdum_dsl/blob/main/docs/design/024_dsl_caching_layer.md);
 this implementation covers the subset above.

@@ -6,6 +6,20 @@ render, never here). Ops whose type cannot be computed from operands
 (``core.env``, ``core.const``, ``core.load``) have ``type_rule=None`` and
 demand an explicit ``type=`` at emit.
 
+THE STRICT-CORE RULE (settled 2026-07-12, superseding the earlier
+one-promotion-semantics note): **core arithmetic and comparison are strict**
+— operands must share a type; every conversion is an explicit ``core.cast``
+in the IR. There is NO promotion in the kernel: promotion, where a language
+wants it, is a *dialect's lowering policy* (auto-insert casts — the friendly
+option) or absent (force the user to write ``float(i)`` — the strict
+option). This is Julia's architecture (promotion is stdlib methods, not
+compiler magic) and MLIR/LLVM/WGSL's (strict operands everywhere). Payoffs:
+emitters never invent conversions at render; AD rules see matching types by
+construction; the content hash reflects the exact computation. The residual,
+documented surprise: the same surface ``x + y`` may lower with different
+cast insertions under different dialects — visible in printed IR, never
+ambient.
+
 The unit type is ``Tuple(())`` — no lattice addition needed; ``core.yield``
 types itself as the tuple of what it yields (a region's result vocabulary).
 
@@ -34,23 +48,10 @@ PURE = frozenset({"Pure"})
 PURE_COMM = frozenset({"Pure", "Commutative"})
 
 
-def _is_float(t: Type) -> bool:
-    return isinstance(t, Scalar) and t.kind.startswith("f")
-
-
-def promote(a: Type, b: Type) -> Type:
-    """Numeric promotion in the honest world: vectors dominate scalars,
-    floats dominate ints. (Coercion *ops* are a dialect concern; this is
-    only the result-type arithmetic.)"""
-    if isinstance(a, Vec):
-        return a
-    if isinstance(b, Vec):
-        return b
-    return a if _is_float(a) or not _is_float(b) else b
-
-
 def _arith(args, attrs, regions) -> Type:
-    return promote(args[0], args[1])
+    if args[0] != args[1]:
+        raise TypeError(f"core arithmetic is strict: {args[0]!r} vs {args[1]!r} — insert an explicit core.cast")
+    return args[0]
 
 
 def _same(args, attrs, regions) -> Type:
@@ -58,6 +59,8 @@ def _same(args, attrs, regions) -> Type:
 
 
 def _cmp(args, attrs, regions) -> Type:
+    if args[0] != args[1]:
+        raise TypeError(f"core.cmp is strict: {args[0]!r} vs {args[1]!r} — insert an explicit core.cast")
     return boolean
 
 

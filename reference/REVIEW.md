@@ -187,5 +187,5 @@ As you go, it helps to separate three kinds of feedback:
    (vector uniforms and the dialect-decoupling are the highest-leverage next steps).
 
 The design docs this was built from are in
-[`design/`](../design/dsl_caching_layer.md); the approved plan and roadmap are in the project
+[`design/`](../docs/design/024_dsl_caching_layer.md); the approved plan and roadmap are in the project
 memory and the plan file.

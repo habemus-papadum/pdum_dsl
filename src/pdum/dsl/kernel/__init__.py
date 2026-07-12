@@ -1,11 +1,11 @@
 """The pdum.dsl kernel: twelve frozen data structures and two engines.
 
-Everything in this package is governed by ``design/proposed-architecture.md``
+Everything in this package is governed by ``docs/design/010_proposed-architecture.md``
 and the CI line budget (``scripts/loc_budget.py``). Each module is introduced
 by a chapter of the book (``docs/book/``); read the chapters to understand not
 just the API but the reasoning.
 
-Modules land step by step (``design/implementation-plan.md``):
+Modules land step by step (``docs/design/020_implementation-plan.md``):
 
 - ``types``     — the structural type lattice + template identity   (step 1)
 - ``valuekind`` — value -> Type summaries and fingerprints           (step 1, completed step 7)
@@ -15,4 +15,5 @@ Modules land step by step (``design/implementation-plan.md``):
 - ``ir``        — Node/Region, content key, Builder, verify            (step 4)
 - ``ops``       — OpDef + the core dialect table                       (step 4)
 - ``printer``   — the MLIR-flavored textual form                       (step 4)
+- ``rewrite``   — Pat/RuleSet, the one driver, Stage legality          (step 5)
 """

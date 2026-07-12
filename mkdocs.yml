@@ -18,6 +18,15 @@ theme:
 nav:
   - Home: index.md
   - Desiderata: desiderata.md
+  - Design:
+      - Overview: design/README.md
+      - "010 — Proposed architecture": design/010_proposed-architecture.md
+      - "020 — Implementation plan": design/020_implementation-plan.md
+      - "022 — Closure specialization (evidence)": design/022_closure_specialization.md
+      - "024 — DSL caching layer (evidence)": design/024_dsl_caching_layer.md
+      - "030 — Deep-learning notes": design/030_deep-learning-notes.md
+      - "040 — Combinators notes": design/040_combinators-notes.md
+      - "050 — Provenance tracking": design/050_provenance_tracking.md
   - The Book:
       - "Chapter 0 — The thesis": book/ch00-thesis.ipynb
       - "Chapter 1 — Types are values": book/ch01-types-are-values.ipynb
@@ -25,6 +34,7 @@ nav:
       - "Chapter 3 — One compile per signature": book/ch03-one-compile-per-signature.ipynb
       - "Chapter 4 — Pipelines are values": book/ch04-pipelines-are-values.ipynb
       - "Chapter 5 — Programs are values": book/ch05-programs-are-values.ipynb
+      - "Chapter 6 — Everything is a rule": book/ch06-everything-is-a-rule.ipynb
       - Glossary: book/GLOSSARY.md
   - M0 reference asset (frozen):
       - Overview: m0/index.md

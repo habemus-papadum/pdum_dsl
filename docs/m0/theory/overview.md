@@ -110,7 +110,7 @@ The cache is exactly the line between them.
 
 - **Type-keyed, value-agnostic** caching is what numba does *not* do (it freezes captures
   as constants and keys on dispatcher identity, so every new closure recompiles — see
-  [`design/closure_specialization.md`](https://github.com/habemus-papadum/pdum_dsl/blob/main/design/closure_specialization.md)).
+  [`docs/design/022_closure_specialization.md`](https://github.com/habemus-papadum/pdum_dsl/blob/main/docs/design/022_closure_specialization.md)).
   Keying on types is the Julia model and the reason a render loop is free.
 - **Full monomorphization** (every call site has one statically-known target) means device
   calls inline with no dynamic dispatch — the functional composition collapses to a single

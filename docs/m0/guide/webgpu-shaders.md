@@ -194,7 +194,7 @@ fn fs_main(@builtin(position) fragcoord: vec4<f32>) -> @location(0) vec4<f32> {
     substitution. Multi-statement device functions (with `let`-hoisting) are planned.
 
 !!! note "Planned: the functional pipeline style"
-    The motivating example (see [`design/archive/Generative Julia.ipynb`](https://github.com/habemus-papadum/pdum_dsl/tree/main/design/archive))
+    The motivating example (see [`archive/Generative Julia.ipynb`](https://github.com/habemus-papadum/pdum_dsl/tree/main/archive))
     builds shaders by *composing* higher-order functions —
     ```python
     shader = twill | widen(2) | weave(palette) | zoom(center=(0.75, 0.4))

@@ -80,6 +80,14 @@ def test_config_is_conservatively_static():
     assert add(1)[64].fp == add(1)[64].fp
 
 
+def test_config_accepts_named_mappings():
+    s = add(1)[{"grid": 256, "block": 64}]
+    assert s.config == (("block", 64), ("grid", 256))  # canonicalized: order-free
+    assert add(1)[{"block": 64, "grid": 256}].fp == s.fp
+    with pytest.raises(TypeError, match="hashable"):
+        add(1)[{"grid": [1, 2]}]
+
+
 # --- roles gate composition -------------------------------------------------------
 
 

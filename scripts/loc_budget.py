@@ -37,6 +37,7 @@ FILE_CAPS = {
     "ir.py": 150,
     "ops.py": 110,
     "printer.py": 80,
+    "rewrite.py": 150,
 }
 
 _SKIP = {tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER}

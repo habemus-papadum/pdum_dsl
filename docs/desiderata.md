@@ -20,8 +20,8 @@ The one idea the reference asset proved, which any redesign must preserve:
 
 - A closure is **(code identity, typed environment, environment values)**.
 - Compilation is keyed on the **types** of the environment and arguments — never
-  on the values. (`design/closure_specialization.md` documents why numba cannot do
-  this; `design/dsl_caching_layer.md` is the full hazard analysis.)
+  on the values. (`docs/design/022_closure_specialization.md` documents why numba cannot do
+  this; `docs/design/024_dsl_caching_layer.md` is the full hazard analysis.)
 - Capture (phase A, at decoration) is compile-free; compilation (phase B, at first
   call) happens once per type signature.
 
@@ -79,7 +79,7 @@ domain wearing an NN costume), and does not contest LLM-scale training
 (XLA/sharding/kernel-ecosystem moats). Known warts: batch-norm-style running
 statistics (functional-state threading); reverse-mode memory management
 (remat) is real AD engineering beyond the M4 milestone. Working notes:
-`design/deep-learning-notes.md`.
+`docs/design/030_deep-learning-notes.md`.
 
 ## 3. Backends
 
@@ -221,8 +221,8 @@ discovers.
 | Project | Why it's interesting | What to look at |
 |---|---|---|
 | **The M0 reference asset** (this repo) | proves the type-keyed caching thesis end-to-end for WebGPU | `docs/m0/theory/`, `reference/REVIEW.md`, `design/` notes; code frozen at `src/pdum/dsl_reference/`, tests at `reference/tests/` |
-| **numba** | the ergonomic north star (decorator workflow, NumPy batteries, structured arrays/records) *and* the documented anti-pattern (identity-keyed caches, captures frozen as constants) | intrinsic/typing/lowering architecture; `types.Record`/`structref`; bytecode frontend; `design/closure_specialization.md` for the caching critique |
-| **Julia** | the specialization model being adopted: structural function types, compile-per-type-signature, `Val{}` value lifting, world-age invalidation | via `design/dsl_caching_layer.md` (GPUCompiler comparison included) |
+| **numba** | the ergonomic north star (decorator workflow, NumPy batteries, structured arrays/records) *and* the documented anti-pattern (identity-keyed caches, captures frozen as constants) | intrinsic/typing/lowering architecture; `types.Record`/`structref`; bytecode frontend; `docs/design/022_closure_specialization.md` for the caching critique |
+| **Julia** | the specialization model being adopted: structural function types, compile-per-type-signature, `Val{}` value lifting, world-age invalidation | via `docs/design/024_dsl_caching_layer.md` (GPUCompiler comparison included) |
 | **cupy.jit** | takes a Python function and produces a high-performance CUDA kernel — directly adjacent to the CuPy backend we want | their frontend/lowering technique |
 | **DaCe** — <https://github.com/spcl/dace> | Python-like code compiled to many backends; adjacent end use case, but a specific dataflow-centric analysis style that isn't necessarily ours | frontend technique (AST vs bytecode?); how backends plug in; what's separable from their dataflow model |
 | **xDSL** — <https://github.com/xdslproject/xdsl> | a Python compiler-design toolkit (MLIR-family): dialects, rewrites, extensible IR — a candidate answer to the IR question | maturity; fit for a small embedded DSL; cost of adoption vs. own IR |

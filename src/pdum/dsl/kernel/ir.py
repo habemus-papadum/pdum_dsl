@@ -45,6 +45,35 @@ class Loc:
     col: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class CallLoc:
+    """Provenance through inlining: the callee's loc within the caller's site."""
+
+    callee: Loc | CallLoc | FusedLoc
+    caller: Loc | CallLoc | FusedLoc
+
+
+@dataclass(frozen=True, slots=True)
+class FusedLoc:
+    """A rewrite merged several nodes; every contributor, kept."""
+
+    locs: tuple
+
+
+Provenance = Loc | CallLoc | FusedLoc
+
+
+def format_loc(p) -> str:
+    """Render provenance compactly: 'a.py:5 (inlined from b.py:40)', '{a, b}'."""
+    if isinstance(p, Loc):
+        return f"{p.file}:{p.line}" + (f":{p.col}" if p.col else "")
+    if isinstance(p, CallLoc):
+        return f"{format_loc(p.callee)} (inlined from {format_loc(p.caller)})"
+    if isinstance(p, FusedLoc):
+        return "{" + ", ".join(format_loc(x) for x in p.locs) + "}"
+    return "?"
+
+
 def _hash_parts(*parts: bytes) -> bytes:
     h = hashlib.sha256()
     for p in parts:
@@ -66,7 +95,7 @@ class Node:
     args: tuple[Node, ...] = ()
     regions: tuple[Region, ...] = ()
     attrs: tuple[Attr, ...] = ()  # compile-time constants — INSIDE identity
-    loc: Loc | None = field(default=None, compare=False)  # EXCLUDED from identity
+    loc: Provenance | None = field(default=None, compare=False)  # EXCLUDED from identity
     _key: bytes | None = field(default=None, init=False, repr=False, compare=False)
 
     @property
@@ -102,9 +131,10 @@ class Builder:
 
     def __init__(self, ops: dict):
         self._ops = ops
+        self.default_loc: Provenance | None = None  # the rewrite driver's inherit-default
 
     def emit(
-        self, op: str, *args: Node, regions: tuple = (), loc: Loc | None = None, type: Type | None = None, **attrs
+        self, op: str, *args: Node, regions: tuple = (), loc=None, type: Type | None = None, **attrs
     ) -> Node:
         opdef = self._ops.get(op)
         if opdef is None:
@@ -112,10 +142,16 @@ class Builder:
         if len(regions) != opdef.nregions:
             raise VerifyError(f"{op} takes {opdef.nregions} region(s), got {len(regions)}")
         canon = tuple(sorted(attrs.items()))
+        loc = loc if loc is not None else self.default_loc
         if type is None:
             if opdef.type_rule is None:
                 raise VerifyError(f"{op} has no type rule; pass an explicit type=")
-            type = opdef.type_rule(tuple(a.type for a in args), dict(canon), regions)
+            try:
+                type = opdef.type_rule(tuple(a.type for a in args), dict(canon), regions)
+            except TypeError as exc:
+                points = [format_loc(x) for x in (loc, *(a.loc for a in args)) if x is not None]
+                suffix = f" [{'; '.join(points)}]" if points else ""
+                raise TypeError(f"{exc}{suffix}") from None
         return Node(op, type, tuple(args), tuple(regions), canon, loc)
 
     def param(self, index: int, type: Type) -> Node:

@@ -3,7 +3,7 @@
 **Status:** synthesized proposal, ready for review. Not yet code.
 
 **Provenance.** Produced by a structured multi-agent study on 2026-07-11, fully
-auditable under [`design/research/`](research/):
+auditable under [`docs/design/research/`](research/):
 
 - **R1–R9** — deep-dives into numba, DaCe, xDSL/MLIR, JAX, kernel DSLs
   (cupy.jit/Triton/MLX/Taichi), torch.compile, minimal compilers
@@ -20,6 +20,17 @@ auditable under [`design/research/`](research/):
 This document is P3's structure with every judge-mandated graft applied, and
 the accounting corrections the judges demanded. §10 is the ledger of what came
 from where. Where this document and a research doc disagree, this document wins.
+
+**Companion documents** (the numbered canon, `docs/design/README.md`): this file is
+the master (010) and is kept current; detailed notes elaborate without
+overriding — `020_implementation-plan.md` (steps, gates, the book);
+`022_closure_specialization.md` + `024_dsl_caching_layer.md` (the pre-M0
+evidence analyses: why numba can't, and the hazard checklist);
+`030_deep-learning-notes.md` (the differentiable-programming satellite);
+`040_combinators-notes.md` (pipelines, roles, the bracket config contract,
+DPS/outputs — informing §2.11's bidirectional marshaling and the step-7
+`ResultPlan`); `050_provenance_tracking.md` (source locations: the MLIR-lite
+algebra, the rewrite inherit-default, the starting-region contract).
 
 ---
 
@@ -582,6 +593,32 @@ budgeted into `cache.py` day 1 (the judges flagged it cross-cutting and
 unbudgeted); `extract` returns buffer leaves while packing bytes in place
 (merging P1's fusion with P2's channel so neither scalars nor buffers pay for
 the other).
+
+**2026-07-12 (step 5): provenance schema committed** — MLIR-lite location
+algebra (`Loc`/`CallLoc`/`FusedLoc`, outside identity, anti-pattern-gated),
+rewrite-driver inherit-default via `Builder.default_loc` (fresh nodes inherit
+the replaced node's loc; survivors keep their own — preserving DAG sharing),
+loc-bearing type errors. Contract: starting region for an AI consumer, not
+DWARF. Details: `050_provenance_tracking.md`.
+
+**2026-07-12 (step 5): equality saturation evaluated as THE core — rejected
+with measurements, retained as the §12 satellite.** egglog probe (ch06): the
+phase-ordering win is real (`x*2+x*3 → x*5`, ~1 ms) but the costs are
+disqualifying for a core: ~20 ms saturate+extract at kernel scale (the whole
+miss budget) vs microseconds greedy; ~1.5 s import vs the zero-dep kernel;
+bounded-iteration heuristics vs golden tests and deterministic content keys;
+no home for non-equational passes (slot numbering, AD, rendering); binders
+(`core.for`/`core.call`) are the classic e-graph hard case. Confirms V2/R7.
+The sanctioned home stays: an opt-in `Region → Region` optimizer pass.
+
+**2026-07-12 (step 4, ch05 walkthrough): strict core arithmetic.** Core
+arith/cmp require same-type operands; every conversion is an explicit
+`core.cast` in the IR (the kernel's `promote()` was deleted — promotion
+policy had leaked into the kernel, the same class of mistake as tuple→Vec).
+Promotion, where a language wants it, is a dialect's lowering policy —
+Julia's architecture (stdlib methods), MLIR/LLVM/WGSL's strict operands.
+Payoffs: emitters never invent conversions; AD sees matching types by
+construction; the content hash reflects the exact computation.
 
 **2026-07-11 (step 1, ch01 walkthrough):** the lattice gains `Tuple(elems)`.
 An early step-1 draft summarized homogeneous scalar tuples as `Vec` at capture

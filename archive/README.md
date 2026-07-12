@@ -2,7 +2,7 @@
 
 Pre-redesign material kept for the record. **Nothing here is an input to the
 current implementation** — the active documents are `docs/desiderata.md`,
-`design/proposed-architecture.md`, `design/implementation-plan.md`, and the
+`design/010_proposed-architecture.md`, `design/020_implementation-plan.md`, and the
 research corpus in `design/research/`.
 
 | Item | What it was |

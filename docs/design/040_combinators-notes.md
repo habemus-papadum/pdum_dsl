@@ -1,7 +1,7 @@
 # Combinator & pipeline design notes
 
 **Status:** design notes, recorded 2026-07-11 from the ch03-era discussion.
-Companion to `docs/desiderata.md` §4.5/§5 and `design/deep-learning-notes.md`
+Companion to `docs/desiderata.md` §4.5/§5 and `docs/design/030_deep-learning-notes.md`
 §6.5 (the `>>` sugar question — this document answers it). Source semantics:
 [`pdum_plumbum`](https://github.com/habemus-papadum/pdum_plumbum). Implies no
 new kernel mechanisms; the one kernel-adjacent evolution (kind → Role) was
@@ -175,6 +175,40 @@ precedents; ours is simpler because pipelines are linear/tree-shaped).
   the backends.
 - **In-place/donation** (`a >> f` overwriting `a`'s buffer — JAX
   `donate_argnums`) is parked as a later explicit opt-in.
+
+### 3c. Configuration: the bracket contract (settled 2026-07-12; specialization semantics corrected at walkthrough)
+
+The abstract, domain-free contract for ``unit[config]``:
+
+1. **Syntax (generic).** Any compilable unit may carry a configuration — an
+   opaque, hashable payload attached via brackets. No built-in vocabulary:
+   "thread"/"block" appear nowhere in the mechanism. Payloads may be
+   positional (`a[64, 128]` — a tuple) or **named via a mapping**
+   (`a[{"grid": 64, "block": 128}]`), canonicalized to sorted pairs at
+   attachment; Python has no `a[grid=64]` (PEP 637 was rejected), so the
+   dict literal is the named form. Unhashable payloads are refused at
+   attachment, loudly.
+2. **Interpretation (deferred).** What a payload *means* is decided by the
+   owning role/backend via a registered **config schema**.
+3. **Specialization — config's own regime, deliberately NOT the capture
+   thesis.** Captures dispatch on types, never values. Config is different:
+   per component, the schema runs a pipeline —
+   **strip → value-specialize (default) → type-specialize (rare)**.
+   First, components irrelevant to specialization are *stripped*: they never
+   touch any key and flow to the launcher as plain runtime data. For what
+   remains, the **default is specialization on value** — a block size of 64
+   and of 128 are different compiled artifacts; config is the natural home
+   of value-specialization. Type-specialization is the available third mode
+   for the rare component where it fits. The mode is chosen **per
+   component**, and configurable at **two levels**: the role/backend schema
+   declares defaults, and the individual kernel/stage may override (one
+   kernel wants per-grid-size specialization, another wants grid stripped).
+
+**Today's stub** is the general model's degenerate case: no schemas exist,
+so nothing is stripped and every component value-specializes — never wrong,
+sometimes wasteful. Whether bracket syntax also lands on bare `Handle`s
+(`sim[grid](x)`) is a step-8 decision, made when dispatch exists to consume
+it.
 
 ## 4. Decision: sequencing (approved 2026-07-11)
 

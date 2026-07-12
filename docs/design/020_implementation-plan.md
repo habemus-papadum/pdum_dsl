@@ -1,7 +1,7 @@
 # Implementation plan: steps, notebooks, and gates
 
-**Status:** proposed. Companion to [`proposed-architecture.md`](proposed-architecture.md)
-(the design) and [`docs/desiderata.md`](../docs/desiderata.md) (the wants).
+**Status:** proposed. Companion to [`proposed-architecture.md`](010_proposed-architecture.md)
+(the design) and [`docs/desiderata.md`](../desiderata.md) (the wants).
 
 ## The meta-pattern
 
@@ -115,7 +115,7 @@ key component, read which counter moved); evict and watch retirement.
 **Exit:** perturbation + race tests in CI; walkthrough. **The thesis is now
 proven on the new kernel — before any compiler exists.**
 
-### Step 3b — pipelines as values (inserted 2026-07-11; `design/combinators-notes.md`)
+### Step 3b — pipelines as values (inserted 2026-07-11; `docs/design/040_combinators-notes.md`)
 
 **Builds:** the blessed combinator **satellite** (`src/pdum/dsl/combinators.py`
 — zero kernel edits, the first extension-locality proof): internalized
@@ -263,7 +263,7 @@ t-string mini-language (`ch17-einops-in-a-tstring`), disk cache, an appendix
 chapter implementing a §12 solver satellite (egglog units *or* Z3 bounds — the
 hackability claim executed), notebook/anywidget live canvas, the top-down
 tutorial track, and the **differentiable-programming satellite** (desiderata
-§2.1, working notes `design/deep-learning-notes.md`: Equinox-shaped labeled closures + optax-shaped gradient chains over a
+§2.1, working notes `docs/design/030_deep-learning-notes.md`: Equinox-shaped labeled closures + optax-shaped gradient chains over a
 tensor dialect delegated to an MLX-class backend — pulls forward only after
 M4/grad and a tensor backend exist).
 

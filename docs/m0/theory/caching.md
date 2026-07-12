@@ -4,7 +4,7 @@ The cache is the whole point of the framework: **one compiled artifact per type
 signature, reused across all capture values.** This page is the model behind
 [`cache.py`](../reference/core.md) and [`jit.py`](../reference/core.md). The original,
 longer design note is
-[`design/dsl_caching_layer.md`](https://github.com/habemus-papadum/pdum_dsl/blob/main/design/dsl_caching_layer.md);
+[`docs/design/024_dsl_caching_layer.md`](https://github.com/habemus-papadum/pdum_dsl/blob/main/docs/design/024_dsl_caching_layer.md);
 this page describes what is actually implemented and where it diverges.
 
 ## The reframing
@@ -140,6 +140,6 @@ re-collected from the current (rebuilt-every-frame) closures:
 | Dependency-graph world age | planned |
 | Backend params in the key (e.g. WGSL target format) | not yet (one `Drawer` per format) |
 
-See [`design/dsl_caching_layer.md`](https://github.com/habemus-papadum/pdum_dsl/blob/main/design/dsl_caching_layer.md)
+See [`docs/design/024_dsl_caching_layer.md`](https://github.com/habemus-papadum/pdum_dsl/blob/main/docs/design/024_dsl_caching_layer.md)
 for the full hazard analysis (capture rebinding vs mutation, recursion, disk-key
 construction) that informs the planned items.

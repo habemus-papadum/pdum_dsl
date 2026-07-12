@@ -17,9 +17,9 @@ step by step, with each step ending in an executable book chapter.
 | What | Where |
 |---|---|
 | The redesign brief (wants, influences, open questions) | [Desiderata](desiderata.md) |
-| The synthesized architecture (primitives, hooks, structure) | [`design/proposed-architecture.md`](https://github.com/habemus-papadum/pdum_dsl/blob/main/design/proposed-architecture.md) |
-| The step-by-step implementation plan | [`design/implementation-plan.md`](https://github.com/habemus-papadum/pdum_dsl/blob/main/design/implementation-plan.md) |
-| The research corpus behind the architecture (R/V/P/J) | [`design/research/`](https://github.com/habemus-papadum/pdum_dsl/tree/main/design/research) |
+| The synthesized architecture (primitives, hooks, structure) | [`docs/design/010_proposed-architecture.md`](https://github.com/habemus-papadum/pdum_dsl/blob/main/docs/design/010_proposed-architecture.md) |
+| The step-by-step implementation plan | [`docs/design/020_implementation-plan.md`](https://github.com/habemus-papadum/pdum_dsl/blob/main/docs/design/020_implementation-plan.md) |
+| The research corpus behind the architecture (R/V/P/J) | [`docs/design/research/`](https://github.com/habemus-papadum/pdum_dsl/tree/main/docs/design/research) |
 | The book (bottom-up chapters, one per implementation step) | `docs/book/` — *forthcoming* |
 | The frozen M0 proof of concept | [M0 reference asset](m0/index.md) · [`reference/README.md`](https://github.com/habemus-papadum/pdum_dsl/blob/main/reference/README.md) |
 

@@ -5,7 +5,7 @@ extension-locality proof, ahead of its CI gate). Semantics follow
 `pdum_plumbum` (credit: habemus-papadum/pdum_plumbum): stage constructors are
 curried, ``|`` composes stages into an **inert** pipeline value, and ``>``
 threads a value through it, ideally once. Design record:
-``design/combinators-notes.md``.
+``docs/design/040_combinators-notes.md``.
 
 This is the *definition layer* (step 3b). What is real today: identities
 (flattened ``Derived("pipe", …)`` templates that hit the specialization cache across
@@ -117,7 +117,15 @@ class Stage:
         return ("S", self.handle.fp, self.config)
 
     def __getitem__(self, config) -> Stage:
-        return Stage(self.handle, config if isinstance(config, tuple) else (config,))
+        if isinstance(config, dict):  # named config: canonicalize like Node.attrs
+            config = tuple(sorted(config.items()))
+        elif not isinstance(config, tuple):
+            config = (config,)
+        try:
+            hash(config)
+        except TypeError:
+            raise TypeError(f"config must be hashable (got {config!r}); wrap collections as tuples") from None
+        return Stage(self.handle, config)
 
     def __or__(self, other) -> Pipeline:
         return _compose(self, other)

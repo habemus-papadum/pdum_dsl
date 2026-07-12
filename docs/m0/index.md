@@ -114,5 +114,5 @@ marks features as implemented or planned inline, but here is the headline:
     - Additional backends (LLVM/CPU/CUDA) + numba type interop
     - `if`/`for` statements and multi-statement device functions in shader bodies
 
-See [`design/`](https://github.com/habemus-papadum/pdum_dsl/tree/main/design) for the
+See [`design/`](https://github.com/habemus-papadum/pdum_dsl/tree/main/docs/design) for the
 original design notes that this implementation is based on.

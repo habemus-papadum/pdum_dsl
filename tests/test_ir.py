@@ -6,7 +6,7 @@ import typing
 import pytest
 
 from pdum.dsl.kernel import types as T
-from pdum.dsl.kernel.ir import Builder, Loc, Node, Region, VerifyError, verify
+from pdum.dsl.kernel.ir import Builder, CallLoc, FusedLoc, Loc, Node, Region, VerifyError, format_loc, verify
 from pdum.dsl.kernel.ops import CORE_OPS, UNIT
 from pdum.dsl.kernel.printer import print_program
 
@@ -34,7 +34,7 @@ def test_no_value_shaped_fields_reachable_from_node():
     # No field on Node/Region/Loc may be typed to hold an arbitrary runtime
     # value; `attrs` is the single, deliberate carve-out (the const/Literal
     # slot). This is the caching thesis enforced by field annotations.
-    for cls in (Node, Region, Loc):
+    for cls in (Node, Region, Loc, CallLoc, FusedLoc):  # provenance is reachable from Node.loc
         hints = typing.get_type_hints(cls)
         for f in dataclasses.fields(cls):
             if f.name in ("attrs", "_key"):
@@ -73,6 +73,22 @@ def test_loc_is_excluded_from_identity():
     assert n1 == n2 and n1.key == n2.key  # where code came from is not what it is
 
 
+def test_provenance_algebra_is_outside_identity():
+    la, lb = Loc("wave.py", 5), Loc("art.py", 40)
+    n1 = b.emit("core.add", b.param(0, T.f64), b.param(0, T.f64), loc=CallLoc(la, lb))
+    n2 = b.emit("core.add", b.param(0, T.f64), b.param(0, T.f64), loc=FusedLoc((la, lb)))
+    assert n1 == n2 and n1.key == n2.key  # provenance never touches identity
+    assert format_loc(CallLoc(la, lb)) == "wave.py:5 (inlined from art.py:40)"
+    assert format_loc(FusedLoc((la, lb))) == "{wave.py:5, art.py:40}"
+
+
+def test_type_errors_carry_source_points():
+    i = b.emit("core.env", type=T.i64, slot=0, loc=Loc("art.py", 11))
+    f = b.emit("core.env", type=T.f64, slot=1, loc=Loc("art.py", 12))
+    with pytest.raises(TypeError, match=r"strict.*art\.py:13; art\.py:11; art\.py:12"):
+        b.emit("core.add", i, f, loc=Loc("art.py", 13))
+
+
 def test_attrs_are_canonically_sorted():
     n1 = b.emit("core.env", type=T.f64, slot=1, role="uniform")
     n2 = b.emit("core.env", type=T.f64, role="uniform", slot=1)
@@ -83,11 +99,16 @@ def test_attrs_are_canonically_sorted():
 # --- type rules ------------------------------------------------------------------
 
 
-def test_arith_promotion_is_honest():
+def test_core_arithmetic_is_strict():
     i, f = b.emit("core.env", type=T.i64, slot=0), b.emit("core.env", type=T.f64, slot=1)
     assert b.emit("core.add", i, i).type == T.i64
-    assert b.emit("core.add", i, f).type == T.f64  # floats dominate; no narrowing here
-    assert b.emit("core.cmp", i, f, pred="lt").type == T.boolean
+    with pytest.raises(TypeError, match="strict"):
+        b.emit("core.add", i, f)  # NO promotion in the kernel — a dialect's lowering may insert casts
+    widened = b.emit("core.cast", i, to=T.f64)
+    assert b.emit("core.add", widened, f).type == T.f64  # the Julia way: cast, then same-type add
+    with pytest.raises(TypeError, match="strict"):
+        b.emit("core.cmp", i, f, pred="lt")
+    assert b.emit("core.cmp", widened, f, pred="lt").type == T.boolean
 
 
 def test_select_checks_its_types():

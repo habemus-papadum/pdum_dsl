@@ -18,7 +18,7 @@ new implementation can be compared against. New work happens in `src/pdum/dsl/`.
 | The code-review tour | `reference/REVIEW.md` |
 | The window demo | `reference/demos/disk.py` |
 | Prose docs (guides, theory, API reference) | `docs/m0/` (mkdocs site, "M0" section) |
-| Original design notes | `design/` |
+| Original design notes | `docs/design/` (022/024 evidence analyses) |
 
 The package was moved verbatim from `src/pdum/dsl/`; only the import name
 changed (`pdum.dsl` → `pdum.dsl_reference`). All internal imports are relative,

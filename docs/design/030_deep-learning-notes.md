@@ -7,7 +7,7 @@ accept as facts of life. Companion to `docs/desiderata.md` §2.1; implies **no
 kernel changes** — every mechanism named here is one of the five surfaces or
 an already-planned milestone. Prerequisites before building: M4 (grad) and a
 tensor-capable backend (MLX-class). Evidence citations refer to
-`design/research/R4-jax.md` and `R6-torch.md`.
+`docs/design/research/R4-jax.md` and `R6-torch.md`.
 
 ---
 
