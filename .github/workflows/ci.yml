@@ -30,14 +30,29 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Install C compiler
+        run: |
+          if ! command -v cc >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends build-essential
+          fi
+          cc --version
+
       - name: Project Setup
         run: ./scripts/setup.sh
+
+      - name: Verify the C backend sees a compiler
+        run: |
+          uv run python -c "
+          from pdum.dsl.backends import c
+          assert c.is_available(), 'no cc/clang on PATH — the C backend tests would silently skip'
+          print('C backend available')"
 
       - name: Run Linting
         run: uv run ruff check .
 
       - name: Run Tests with Coverage
-        run: uv run pytest --cov=src/pdum/dsl --cov-report=xml --cov-report=term
+        run: uv run pytest -rs --cov=src/pdum/dsl --cov-report=xml --cov-report=term
       - name: Build Documentation
         run: uv run mkdocs build
       - name: Temporarily disable git hooks for coverage action
