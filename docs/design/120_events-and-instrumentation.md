@@ -1,7 +1,106 @@
 # 120 — Events & instrumentation: counting the expensive things
 
-**Status:** proposal (not implemented). Supersedes nothing; extends 010 §6
-(budgets) and §2.12/§4.4 (the cache bookkeeping).
+**Status:** IMPLEMENTED (2026-07-13, this PR), with three review amendments
+and one budget deviation — all recorded in §0 below and in the 010 ledger.
+§§1–11 are the original proposal, kept as the rationale record; where the
+implementation deviates, §0 wins. Extends 010 §6 (budgets, now the tripwire
+policy) and §2.12/§4.4 (the cache bookkeeping).
+
+---
+
+## 0. As built — the quick reference
+
+### 0.1 Using it
+
+```python
+from pdum.dsl import events
+
+# Count, time, and attribute everything expensive in a block:
+with events.record() as ev:
+    for i in range(300):
+        make_shader(i * 0.001, 1.0)(0.5)
+print(ev)                                # the report table (indent = span depth)
+ev["guard.drift"].count                  # exact, never sampled
+ev["guard.drift"].exemplars[0].trace.user_frames   # YOUR loop, not our internals
+ev["spec.miss"].exemplars[0].explain     # "nearest entry differs in: env_types"
+ev["spec.compile"].by_key()              # which template, how many times
+ev.top(3); ev.timeline()                 # by total time; a viz.Timeline
+
+# Performance assertions (the regression gates):
+with events.forbid("guard.drift"):       # captures are not drifting
+    ...
+with events.forbid("spec.*"):            # nothing spec-shaped fires (prefix wildcard)
+    ...
+with events.expect(**{"spec.compile": 1, "guard.drift": 0}):  # exact budgets
+    ...
+
+# Sampling policy, per event name (counts stay exact regardless):
+with events.record(policy={"guard.drift": events.Sampling(first=4, then=1000)}) as ev:
+    ...
+```
+
+`no_compile()` (unchanged import, `pdum.dsl.kernel.cache`) is now literally
+`events.forbid("spec.miss", "artifact.miss")`; `CompileForbidden` is an
+alias of `EventForbidden`.
+
+### 0.2 The pieces
+
+| Piece | Where | Counted |
+| --- | --- | --- |
+| Seam: `emit` / `span` / `forbid`, `SINKS` | `kernel/events.py` | 43 / 55 |
+| Hooks: tier miss/compile, drift, evict, retire, bump | `kernel/cache.py` | (in 175) |
+| Traced twin + `lower`/`rewrite`/`render` spans | `kernel/registry.py` | 132 / 140 |
+| Capture memo misses | `kernel/capture.py` | (in 85) |
+| Recorder: traces, sampling, buckets, report | `pdum/dsl/events.py` (satellite) | 157 / 300 |
+| `Memo` (instrumented-by-construction tier) | `kernel/cache.py` | — |
+
+Kernel total after landing: **1229 / 1500**.
+
+### 0.3 The sink protocol (one delta from §3)
+
+Sinks receive **five** positional args: ``(name, key, dur_ns, depth,
+detail)`` — ``detail`` is ``None`` or a LAZY zero-arg callable (the tier
+passes ``lambda: self._explain(key)``). A sink should call it only for
+sampled exemplars; the forbid path calls it when raising, which is how the
+old ``no_compile`` diagnostic text survives. Point events carry
+``dur_ns=0``; ``template.retire`` reuses ``dur_ns`` for its retired-entry
+COUNT (a documented pun — it is not a duration).
+
+### 0.4 The event vocabulary, as built
+
+``spec.miss`` / ``spec.compile`` (span) · ``artifact.miss`` /
+``artifact.compile`` (span) · ``guard.drift`` · ``cache.evict`` ·
+``template.retire`` · ``generation.bump`` · ``lower`` / ``rewrite`` /
+``render`` (spans inside the build) · ``dispatch.probe`` / ``.extract`` /
+``.pack`` / ``.launch`` (the traced twin; ``probe`` CONTAINS the compile on
+a cold call) · ``capture.snapshot`` / ``fntype.miss`` (phase-A memo misses).
+Tier-1 hits and per-arg fingerprinting remain deliberately dark, forever.
+
+### 0.5 Deltas from the proposal (all ledgered in 010)
+
+1. **`Memo` migration narrowed** (§7): `Memo` exists (`kernel.cache.Memo`,
+   API `get_or_compile(key, fn)` — the tier API, not the sketched `.get`)
+   and both tiers are its citizens by construction, but `capture.py`'s
+   `WeakKeyDictionary`/`_FNTYPES` containers were NOT migrated — weak-keyed
+   lifetime is the point of the snapshot memo, and LRU-with-capacity would
+   change GC behavior to gain two counters. They emit miss EVENTS instead.
+2. **Per-thread span trees** (§6.3): the recorder keys its depth tracking by
+   `threading.get_ident()` — a bare depth column interleaves wrongly under
+   exactly the cross-thread compiles §8 makes `SINKS` global for.
+3. **Sink protocol carries `detail`** (§0.3) so sampled miss exemplars keep
+   the `_explain` text.
+4. **Budget actuals** (§9.1): total went to **1500**, not 1235 (policy: caps
+   are tripwires; a surgical raise re-opens the negotiation at every seam);
+   `registry.py` measured 132 vs the guessed 125 → cap 140, ledgered.
+5. **`gpu_timeline` kept its artifact probe AND its launch shim** — that is
+   an artifact-capability invocation slated for the step-14 runtime
+   protocol, not the deleted monkeypatch. `bench.py` landed at 124 counted
+   (cap dropped to 300 as proposed, so the surgery cannot return).
+
+Book: the live walkthrough (drift canary, `forbid("guard.drift")`, the
+miss-path phase tree) is in ``ch11b-measuring-the-machine.ipynb``.
+
+---
 
 **The ask.** There is a class of bug this codebase cannot currently see: not a
 wrong answer, but a *right answer computed too often*. A specialization that
