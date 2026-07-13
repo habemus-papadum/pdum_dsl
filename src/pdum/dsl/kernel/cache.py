@@ -28,20 +28,18 @@ Book: ``docs/book/ch03-one-compile-per-signature.ipynb``.
 
 from __future__ import annotations
 
-import contextvars
 import threading
-from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable
+
+from . import events
 
 _MISSING = object()
 _KEY_PARTS = ("template", "env_types", "arg_types", "backend", "generation")
 
-_NO_COMPILE = contextvars.ContextVar("pdum_no_compile", default=False)
-
-
-class CompileForbidden(RuntimeError):
-    """A compile was reached inside ``no_compile()`` — the loop is not hot."""
+# The old context-var machinery became one forbid() call on the seam (120 §1.2's
+# design test). The alias keeps every existing `except CompileForbidden` working.
+CompileForbidden = events.EventForbidden
 
 
 class ReentrantCompile(RuntimeError):
@@ -72,14 +70,9 @@ def guards_ok(guards: tuple) -> bool:
     return True
 
 
-@contextmanager
 def no_compile():
     """Assert that everything inside is a cache hit (the thesis, testable)."""
-    token = _NO_COMPILE.set(True)
-    try:
-        yield
-    finally:
-        _NO_COMPILE.reset(token)
+    return events.forbid("spec.miss", "artifact.miss")
 
 
 class _Slot:
@@ -97,6 +90,7 @@ class _TierCache:
 
     def __init__(self, name: str = "artifact", capacity: int = 1024) -> None:
         self.name = name
+        self.evt = {"specialization": "spec"}.get(name, name)  # dotted-event prefix
         self.capacity = capacity
         self._lock = threading.Lock()
         self._ready: dict[tuple, Any] = {}
@@ -131,9 +125,10 @@ class _TierCache:
             return slot.value
         self.misses += 1
         try:
-            if _NO_COMPILE.get():
-                raise CompileForbidden(f"{self.name}-tier miss under no_compile(): {self._explain(key)}")
-            slot.value = compile_fn()
+            # Inside the try ON PURPOSE: a forbidden miss must still release waiters.
+            events.emit(f"{self.evt}.miss", key, detail=lambda: self._explain(key))
+            with events.span(f"{self.evt}.compile", key):
+                slot.value = compile_fn()
         except BaseException as exc:
             slot.error = exc
             with self._lock:
@@ -144,15 +139,26 @@ class _TierCache:
         with self._lock:
             self._building.pop(key, None)
             self._ready[key] = slot.value
+            evicted = []
             while len(self._ready) > self.capacity:
-                self._ready.pop(next(iter(self._ready)))
+                evicted.append(next(iter(self._ready)))
+                self._ready.pop(evicted[-1])
                 self.evictions += 1
         slot.event.set()
+        for k in evicted:  # outside the lock: sinks never run under it
+            events.emit("cache.evict", k)
         return slot.value
 
 
 # Tier 2, ``(content_key, backend_token, flags) -> artifact``: the base tier as-is.
 ArtifactCache = _TierCache
+
+
+class Memo(_TierCache):
+    """A fingerprint-keyed cache instrumented BY CONSTRUCTION (120 §7): emits
+    ``<name>.miss`` and a ``<name>.compile`` span, with LRU + capacity +
+    per-key futures. The two dispatch tiers are its first citizens; future
+    analyses (axis inference, shape propagation, …) get bookkeeping for free."""
 
 
 class SpecializationCache(_TierCache):
@@ -175,7 +181,9 @@ class SpecializationCache(_TierCache):
             self.generation += 1
             self.retirements += len(self._ready)
             self._ready.clear()
-            return self.generation
+            generation = self.generation
+        events.emit("generation.bump", generation)
+        return generation
 
     def _retire_superseded(self, key: tuple) -> None:
         head = key[0]
@@ -192,6 +200,8 @@ class SpecializationCache(_TierCache):
             for k in dead:
                 self._ready.pop(k)
                 self.retirements += 1
+        if dead:
+            events.emit("template.retire", loc, dur_ns=len(dead))
 
     def probe(self, key: tuple) -> FastRecord | None:
         """The per-frame fast path: ONE lock, guards inline, LRU touch.
@@ -203,11 +213,13 @@ class SpecializationCache(_TierCache):
             if record.guards and not guards_ok(record.guards):
                 self.guard_misses += 1  # drift: refuse the stale entry, recompile
                 self._ready.pop(key)
-                return None
-            self._ready.pop(key)
-            self._ready[key] = record  # LRU touch
-            self.hits += 1
-            return record
+            else:
+                self._ready.pop(key)
+                self._ready[key] = record  # LRU touch
+                self.hits += 1
+                return record
+        events.emit("guard.drift", key)  # THE invisible bug (120 §4); outside the lock
+        return None
 
     def get_or_compile(self, key: tuple, compile_fn: Callable[[], FastRecord]) -> FastRecord:
         record = self.probe(key)

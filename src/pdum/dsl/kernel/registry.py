@@ -38,7 +38,9 @@ from __future__ import annotations
 from collections import namedtuple
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from time import perf_counter_ns
 
+from . import events
 from .cache import ArtifactCache, FastRecord, SpecializationCache
 from .capture import Handle
 from .ir import VerifyError
@@ -123,12 +125,40 @@ class Registry:
         """THE hot path. `target` is anything FnType-shaped: Handle or Pipeline.
         `out` is launcher data (destinations / launch domain) — it rides the
         leaves channel and never touches any key (070 §3: grid strips)."""
+        if events.SINKS:  # one branch, ~1.2% of a warm hit (120 §5); dark otherwise
+            return self._dispatch_traced(target, args, out)
         spec, table = self.specializations, self.table
         backend = self.backend_for(target.kind)
         key = (target.fp, tuple(table.fingerprint(a) for a in args), backend.fp, spec.generation)
         record = spec.probe(key) or spec.get_or_compile(key, lambda: self._build(target, args, backend))
         leaves = pack_into(record.plan, record.staging, record.extract(target.captures, args))
         return record.launch(record.staging, leaves if out is None else (*leaves, Out(out)))
+
+    def _dispatch_traced(self, target, args: tuple, out=None):
+        """dispatch's traced twin (120 §5): the same four steps with a
+        timestamp between each, emitted as a batch AFTER launch so sink cost
+        never pollutes a later phase. ``test_traced_dispatch_agrees`` pins
+        the two bodies together — edit BOTH or CI says so."""
+        t0 = perf_counter_ns()
+        spec, table = self.specializations, self.table
+        backend = self.backend_for(target.kind)
+        key = (target.fp, tuple(table.fingerprint(a) for a in args), backend.fp, spec.generation)
+        record = spec.probe(key) or spec.get_or_compile(key, lambda: self._build(target, args, backend))
+        t1 = perf_counter_ns()
+        values = record.extract(target.captures, args)
+        t2 = perf_counter_ns()
+        leaves = pack_into(record.plan, record.staging, values)
+        t3 = perf_counter_ns()
+        result = record.launch(record.staging, leaves if out is None else (*leaves, Out(out)))
+        t4 = perf_counter_ns()
+        for name, dur in (
+            ("dispatch.probe", t1 - t0),
+            ("dispatch.extract", t2 - t1),
+            ("dispatch.pack", t3 - t2),
+            ("dispatch.launch", t4 - t3),
+        ):
+            events.emit(name, key, dur)
+        return result
 
     def _build(self, target, args: tuple, backend: Backend) -> FastRecord:
         """The miss path (§4.3), once per (types, backend, generation)."""
@@ -138,17 +168,25 @@ class Registry:
         arg_types = derived_params if derived_params is not None else tuple(self.table.typeof(a) for a in args)
         ops = {**CORE_OPS, **ABI_OPS, **self.ops}
         rules = {**self.lower_rules, "__registry__": self}  # rule packs' context door (surface B lives there)
-        region = lower_handle(target, rules, ops, arg_types=arg_types, derived=self.derived)
+        with events.span("lower", target.fp):
+            region = lower_handle(target, rules, ops, arg_types=arg_types, derived=self.derived)
         plan = (backend.plan or plan_from_types)(target.env_types, arg_types, self.table)
-        gated = [r for op, r in self.decompositions if op not in backend.code_for_op]
-        if gated:  # shared decompositions run only where the target lacks the native op (§2.10)
-            region = rewrite(region, gated, ops, name="decompose")
-        region = run_stage(region, NORMALIZE_ENV, ops)
-        dialects = frozenset(op.split(".", 1)[0] for op in self.ops)
-        region = run_stage(region, legalize_params(plan, dialects), ops)
+        with events.span("rewrite", target.fp):  # decompositions + the two ABI stages
+            gated = [r for op, r in self.decompositions if op not in backend.code_for_op]
+            if gated:  # shared decompositions run only where the target lacks the native op (§2.10)
+                region = rewrite(region, gated, ops, name="decompose")
+            region = run_stage(region, NORMALIZE_ENV, ops)
+            dialects = frozenset(op.split(".", 1)[0] for op in self.ops)
+            region = run_stage(region, legalize_params(plan, dialects), ops)
+
+        def _render_then_compile():
+            with events.span("render", region.key):
+                source = backend.render(region, plan, backend)
+            return backend.compile(source)
+
         artifact = self.artifacts.get_or_compile(  # content-addressed: identical IR compiles once
             (region.key, backend.fp),  # fp, not name: a backend VERSION change is a new artifact world
-            lambda: backend.compile(backend.render(region, plan, backend)),
+            _render_then_compile,
         )
         extract = build_extractor(target.env_types, arg_types, plan, self.table)
         return FastRecord(

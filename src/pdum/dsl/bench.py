@@ -10,9 +10,11 @@ Three tools, none of which the kernel knows about (zero kernel edits):
   A naive ``timeit``-one-loop mean overstates fast paths — ch11b shows by
   how much.
 - ``instrument(target, ...)`` — phase decomposition of the dispatch hot
-  path, by *temporarily wrapping the FastRecord's seams* (``extract`` and
-  ``launch`` are plain dataclass fields): key+probe, extract, pack, launch
-  fall out as timestamp differences. Restores the record afterwards.
+  path, riding the kernel's EVENT SEAM (design 120): arming a sink routes
+  dispatch through its traced twin, which stamps key+probe / extract /
+  pack / launch. No cache-entry surgery — the step-10b monkeypatch this
+  replaced could not see the miss path and broke on the guard drift it
+  should have reported.
 - ``Timeline`` — a list of labelled spans, rendered by the viz satellite as
   a static-HTML bar chart (hover for µs; one lane per phase family).
 
@@ -28,6 +30,7 @@ import statistics
 from dataclasses import dataclass, field
 from time import perf_counter as _pc
 
+from .kernel import events
 from .kernel.registry import DEFAULT
 
 
@@ -105,7 +108,9 @@ class Timeline:
 
 
 def _warm_record(registry, target, args, out):
-    """Warm, then locate, the FastRecord that dispatch just used."""
+    """Warm, then locate, the FastRecord that dispatch just used. (Used only
+    by ``gpu_timeline``'s artifact-capability probe now; the CPU instrument
+    rides the event seam. Retires with the step-14 runtime protocol.)"""
     registry.dispatch(target, args, out)
     arg_fp = tuple(registry.table.fingerprint(a) for a in args)
     key = registry.specializations.key_for(target, arg_fp, registry.backend_for(target.kind).fp)
@@ -118,45 +123,33 @@ def _warm_record(registry, target, args, out):
 def instrument(target, *args, out=None, registry=None, frames: int = 50) -> dict:
     """Decompose the dispatch hot path into phases, averaged over ``frames``.
 
-    Wraps the warm FastRecord's ``extract`` and ``launch`` fields with
-    timestamping shims (restored afterwards). Phase math: ``key+probe`` is
-    what happens before extract begins; ``pack`` is the gap between extract
-    returning and launch starting. Returns seconds per phase plus 'total'.
+    Rides the event seam: with a sink armed, ``dispatch`` routes through its
+    traced twin (120 §5). The phases are measured on the REAL entry point —
+    no hand-derived keys, no record surgery — and a record rebuilt mid-loop
+    is a datum in the same stream (``guard.drift``), not an error.
     """
     registry = registry or DEFAULT
-    record = _warm_record(registry, target, args, out)
-    marks: dict = {}
-    orig_extract, orig_launch = record.extract, record.launch
-
-    def timed_extract(captures, call_args):
-        marks["extract_start"] = _pc()
-        result = orig_extract(captures, call_args)
-        marks["extract_end"] = _pc()
-        return result
-
-    def timed_launch(staging, leaves):
-        marks["launch_start"] = _pc()
-        result = orig_launch(staging, leaves)
-        marks["launch_end"] = _pc()
-        return result
-
-    record.extract, record.launch = timed_extract, timed_launch
+    registry.dispatch(target, args, out)  # warm: misses stay out of the phase means
+    phase = {
+        "dispatch.probe": "key+probe",
+        "dispatch.extract": "extract",
+        "dispatch.pack": "pack",
+        "dispatch.launch": "launch",
+    }
     sums = {"key+probe": 0.0, "extract": 0.0, "pack": 0.0, "launch": 0.0, "total": 0.0}
+
+    def sink(name, key, dur_ns, depth, detail):
+        p = phase.get(name)
+        if p is not None:
+            sums[p] += dur_ns / 1e9
+            sums["total"] += dur_ns / 1e9
+
+    events.SINKS.append(sink)
     try:
         for _ in range(frames):
-            marks.clear()  # a mid-loop rebuild would leave last frame's marks — fail loud instead
-            t0 = _pc()
             registry.dispatch(target, args, out)
-            t1 = _pc()
-            if "launch_end" not in marks:  # dispatch served a fresh, unwrapped record
-                raise RuntimeError("record was rebuilt mid-instrument (guard drift?)")
-            sums["key+probe"] += marks["extract_start"] - t0
-            sums["extract"] += marks["extract_end"] - marks["extract_start"]
-            sums["pack"] += marks["launch_start"] - marks["extract_end"]
-            sums["launch"] += marks["launch_end"] - marks["launch_start"]
-            sums["total"] += t1 - t0
     finally:
-        record.extract, record.launch = orig_extract, orig_launch
+        events.SINKS.remove(sink)
     return {k: v / frames for k, v in sums.items()}
 
 

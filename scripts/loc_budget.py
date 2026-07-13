@@ -23,7 +23,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 KERNEL = ROOT / "src" / "pdum" / "dsl" / "kernel"
 
-KERNEL_TOTAL_CAP = 1150  # hard cap; target ≈1000 (architecture §5)
+KERNEL_TOTAL_CAP = 1500  # tripwire, not a wall (010 §6 policy, 2026-07-13): crossing any cap
+# means a LEDGER ENTRY stating what was bought — never silent growth. Raised 1150→1500 when
+# three lines of headroom started producing monkeypatches instead of seams (design 120).
 
 # Per-file caps (paths relative to kernel/). types.py runs ~25% over its §5
 # estimate (65) after the LiteralType identity fix — noted, consciously.
@@ -33,7 +35,7 @@ FILE_CAPS = {
     "valuekind.py": 95,
     "capture.py": 85,
     "api.py": 50,
-    "cache.py": 165,  # §5 estimate 105 + retirement/explain + the step-8 hot-path probe(), consciously
+    "cache.py": 175,  # §5 estimate 105 + retirement/explain + probe() + the 120 event hooks, consciously
     "ir.py": 150,
     "ops.py": 110,
     "printer.py": 80,
@@ -44,14 +46,17 @@ FILE_CAPS = {
     # from the start), the compiled per-slot extractor (§4.3.10), and the two
     # ABI stages. Raised consciously at the step-7 review, not by drift.
     "pack.py": 175,
-    "registry.py": 110,  # surface E v1: Backend record, Registry, dispatch + miss path, guards
+    "registry.py": 140,  # surface E v1 + the traced twin and miss-path spans; 120 §9 guessed 125,
+    # the real twin (batched phase emission + the anti-drift docstring) measured 132 — ledgered
+    "events.py": 55,  # the 120 seam: emit/span/forbid; measured 41, headroom for sink-protocol growth
 }
 
 SATELLITE_CAPS = {  # separately-counted buckets (the honesty clause): src/pdum/dsl/<name>
     "combinators.py": 250,
     "stdlib": 1500,
     "viz.py": 450,
-    "bench.py": 350,  # step 10b: adaptive sampling, phase instrument, timelines
+    "bench.py": 300,  # 120 step 6: instrument() rides the seam now — the cap DROPS so the monkeypatch cannot return
+    "events.py": 300,  # the 120 recorder: traces, interning, sampling, buckets, report
     "backends": 500,  # _emit infra + the C target (step 11 pulled the first citizen forward); step 14 raises again
     "demo": 600,  # the fused ch09/ch10 simple-shader pair (080: special-cased OUT of backends/)
 }

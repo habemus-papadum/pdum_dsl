@@ -46,6 +46,15 @@ the mkdocs site):
     transform machinery), named-first vmap, the one tangent engine behind
     `jvp` and the in-kernel `D` (analytic shader derivatives), and named
     contraction with batching for free.
+  - `120_events-and-instrumentation.md` — **implemented** (§0 is the
+    as-built reference; §§1–11 the original proposal, kept as rationale):
+    the kernel event seam (`emit`/`span`/`forbid`) generalizing the ad-hoc
+    counters and `no_compile()`, the recorder satellite (`events.record()`
+    / `expect()`, interned structured tracebacks, per-name sampling, the
+    per-thread phase tree), the `Memo` primitive, the traced-dispatch twin
+    that made the miss path observable, the budget-policy change (caps are
+    tripwires; 1150 → 1500), and the deletion of `bench.py`'s
+    live-cache-entry monkeypatch.
 
 Also here, unnumbered: `research/` — the frozen 20-agent research corpus
 (R/V/P/J) behind 010, plus later targeted surveys appended in the same

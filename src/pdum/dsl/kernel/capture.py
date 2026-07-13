@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from types import CodeType
 from typing import Hashable
 
+from . import events
 from .types import Base, FnType, Type
 from .valuekind import BUILTINS, KindTable
 
@@ -161,11 +162,13 @@ def make_handle(fn: Callable, kind: str, table: KindTable = BUILTINS) -> Handle:
     # object whose weak entry dies before a second lookup (rare GC race).
     snap = _SNAPSHOTS.get(code, _EMPTY)
     if snap is _EMPTY:
+        events.emit("capture.snapshot", code)  # inspect.getsourcelines = file I/O (120 §4)
         snap = _SNAPSHOTS[code] = _take_snapshot(fn)
     cells = fn.__closure__ or ()
     bound = [(name, v) for name, c in zip(code.co_freevars, cells) if (v := safe_cell(c)) is not _EMPTY]
     env_fp = tuple(table.fingerprint(v) for _, v in bound)
     fntype = _FNTYPES.get((code, env_fp))
     if fntype is None:
+        events.emit("fntype.miss", code)
         fntype = _FNTYPES.setdefault((code, env_fp), FnType(Base(code), tuple(table.typeof(v) for _, v in bound)))
     return Handle(fntype, dict(bound), env_fp, snap, kind, table, fn)
