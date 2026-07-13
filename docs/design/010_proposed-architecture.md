@@ -990,7 +990,8 @@ than as a seam, and the entire miss path (lower/rewrite/render/`cc`) stayed
 dark because its phases are locals no satellite can reach (120 §1.3). Policy
 change, user-directed: `KERNEL_TOTAL_CAP` 1150 → **1500** (a tripwire, not a
 wall; every cap crossing still demands a ledger entry; the budget TEST stays
-exactly as strict); per-file caps `cache.py` 165→175, `registry.py` 110→125,
+exactly as strict); per-file caps `cache.py` 165→175, `registry.py` 110→140 (120 §9 guessed
+125; the real twin with batched phase emission measured 132),
 new `events.py` 55 (kernel) and 300 (recorder satellite). One virtue
 inverted, now that it has bitten twice: satellites needing visibility must
 ASK FOR A SEAM — monkeypatching live kernel state is what is forbidden.

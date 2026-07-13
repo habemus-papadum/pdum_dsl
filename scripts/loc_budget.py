@@ -46,7 +46,8 @@ FILE_CAPS = {
     # from the start), the compiled per-slot extractor (§4.3.10), and the two
     # ABI stages. Raised consciously at the step-7 review, not by drift.
     "pack.py": 175,
-    "registry.py": 125,  # surface E v1 + the traced-dispatch twin and miss-path spans (design 120)
+    "registry.py": 140,  # surface E v1 + the traced twin and miss-path spans; 120 §9 guessed 125,
+    # the real twin (batched phase emission + the anti-drift docstring) measured 132 — ledgered
     "events.py": 55,  # the 120 seam: emit/span/forbid; measured 41, headroom for sink-protocol growth
 }
 
