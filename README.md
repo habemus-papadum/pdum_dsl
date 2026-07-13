@@ -7,23 +7,25 @@
 | src/pdum/dsl/\_\_init\_\_.py                     |        6 |        0 |    100% |           |
 | src/pdum/dsl/backends/\_emit.py                  |       68 |        1 |     99% |        97 |
 | src/pdum/dsl/backends/c.py                       |      163 |       19 |     88% |76, 82, 102, 110, 116, 118, 123, 130-132, 134, 140, 145, 150, 155, 193, 210, 217, 239 |
-| src/pdum/dsl/bench.py                            |      127 |       28 |     78% |114, 152, 182-208 |
+| src/pdum/dsl/bench.py                            |      112 |       33 |     71% |114-120, 175-201 |
 | src/pdum/dsl/combinators.py                      |      162 |        7 |     96% |134, 155, 171, 190, 239, 265, 274 |
 | src/pdum/dsl/demo/\_\_init\_\_.py                |        1 |        0 |    100% |           |
 | src/pdum/dsl/demo/graphics.py                    |       31 |        9 |     71% |31, 35, 39, 46, 50, 54-55, 65, 68 |
 | src/pdum/dsl/demo/simple\_shader/\_\_init\_\_.py |        1 |        0 |    100% |           |
 | src/pdum/dsl/demo/simple\_shader/python.py       |       98 |        7 |     93% |57, 66, 70, 88, 100-102 |
 | src/pdum/dsl/demo/simple\_shader/wgsl.py         |      244 |      133 |     45% |54, 66-72, 118, 122-123, 126, 128, 132, 134, 138, 142-148, 181-183, 200-209, 218-248, 253-265, 268-290, 296-321, 332-367, 370-402, 411, 416-420 |
+| src/pdum/dsl/events.py                           |      153 |       14 |     91% |48, 52-54, 57, 92, 170, 173, 189-196 |
 | src/pdum/dsl/kernel/\_\_init\_\_.py              |        1 |        0 |    100% |           |
 | src/pdum/dsl/kernel/api.py                       |        5 |        0 |    100% |           |
-| src/pdum/dsl/kernel/cache.py                     |      158 |        8 |     95% |68-69, 110, 128-131, 237 |
-| src/pdum/dsl/kernel/capture.py                   |       75 |        1 |     99% |       121 |
+| src/pdum/dsl/kernel/cache.py                     |      163 |        7 |     96% |66-67, 122-125, 249 |
+| src/pdum/dsl/kernel/capture.py                   |       78 |        1 |     99% |       122 |
+| src/pdum/dsl/kernel/events.py                    |       41 |        0 |    100% |           |
 | src/pdum/dsl/kernel/ir.py                        |      107 |        3 |     97% |74, 164, 175 |
 | src/pdum/dsl/kernel/lower.py                     |       91 |        7 |     92% |73-74, 102, 124, 134, 150, 157 |
 | src/pdum/dsl/kernel/ops.py                       |       65 |        3 |     95% |81, 97, 127 |
 | src/pdum/dsl/kernel/pack.py                      |      136 |        2 |     99% |  141, 289 |
 | src/pdum/dsl/kernel/printer.py                   |       45 |        9 |     80% |33-34, 36, 49-54 |
-| src/pdum/dsl/kernel/registry.py                  |       91 |        1 |     99% |       137 |
+| src/pdum/dsl/kernel/registry.py                  |      117 |        1 |     99% |       167 |
 | src/pdum/dsl/kernel/rewrite.py                   |      117 |        2 |     98% |   79, 143 |
 | src/pdum/dsl/kernel/types.py                     |       96 |        5 |     95% |99-100, 142, 157, 173 |
 | src/pdum/dsl/kernel/valuekind.py                 |       80 |        1 |     99% |        85 |
@@ -34,7 +36,7 @@
 | src/pdum/dsl/stdlib/surfaces.py                  |       64 |        3 |     95% |88, 104, 112 |
 | src/pdum/dsl/stdlib/transforms.py                |      312 |       44 |     86% |86-87, 100-101, 103-109, 111-115, 117-120, 124, 128, 130-131, 136, 143, 146, 178-180, 279, 312, 320, 342, 359, 361, 371, 387, 392, 405, 409, 415-417 |
 | src/pdum/dsl/viz.py                              |      166 |       17 |     90% |115, 123-124, 155, 176-177, 183-188, 214, 237, 271-277 |
-| **TOTAL**                                        | **3005** |  **388** | **87%** |           |
+| **TOTAL**                                        | **3218** |  **406** | **87%** |           |
 
 
 ## Setup coverage badge
