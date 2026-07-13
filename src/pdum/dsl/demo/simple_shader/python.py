@@ -58,12 +58,25 @@ def render(region: Region, plan: PackPlan, backend=None, name: str = "kernel") -
             return f"_u({spec.dest.fmt!r}, staging, {spec.dest.offset})[0]"
         if node.op == "abi.slot":
             return f"_u({attrs['fmt']!r}, staging, {attrs['offset']})[0]"
+        if node.op == "array.buffer":  # leaves-channel position, resolved from THE plan (like abi offsets)
+            chan = [s for s in plan.slots if s.dest is None]
+            for k, s in enumerate(chan):
+                if s.source.root == "env" and (s.source.index, *s.source.sub) == (*attrs["slot"], 0):
+                    return f"leaves[{k}]"
+            raise VerifyError(f"no buffer leaf for capture path {attrs['slot']!r}")
         if node.op == "core.const":
             v = attrs["value"]
             if isinstance(v, float) and not math.isfinite(v):
                 return f"float({str(v)!r})"  # repr(inf) is not a Python literal
             return repr(v)
         if node.op in _BIN:
+            # Numeric policy (070): TRUNC div/mod, like C — never Python's floored
+            # // %. Integers go through EXACT helpers (float rounding would lose
+            # precision past 2^53); float mod is math.fmod (sign of the dividend).
+            if node.op in ("core.div", "core.mod") and isinstance(node.type, Scalar) and node.type.kind[0] in "iu":
+                return f"{'_tdiv' if node.op == 'core.div' else '_tmod'}({arg[0]}, {arg[1]})"
+            if node.op == "core.mod":
+                return f"math.fmod({arg[0]}, {arg[1]})"
             return f"{arg[0]} {_BIN[node.op]} {arg[1]}"
         if node.op == "core.neg":
             return f"-{arg[0]}"
@@ -101,10 +114,32 @@ def render(region: Region, plan: PackPlan, backend=None, name: str = "kernel") -
         out.append(f"{ind}    {res} = {result_of(1)}")
         return out
 
-    lines, names, result = emit_dominated(region, statement, branch_join, indent="    ")
+    def loop_join(node, nm, result_of, emit_block, path, ind):
+        res, (lo, hi, init) = nm[id(node)], (nm[id(a)] for a in node.args)
+        iv, carry = node.regions[0].params
+        out = [f"{ind}{res} = {init}"]  # res IS the carry between iterations
+        out.append(f"{ind}for {nm[id(iv)]} in range({lo}, {hi}):")
+        out.append(f"{ind}    {nm[id(carry)]} = {res}")
+        out += emit_block((*path, (id(node), 0)), ind + "    ")
+        out.append(f"{ind}    {res} = {result_of(0)}")
+        return out
+
+    lines, names, result = emit_dominated(region, statement, branch_join, indent="    ", loop=loop_join)
     body = "\n".join(lines) or "    pass"
-    head = f"import math\nfrom struct import unpack_from as _u\n\ndef {name}(staging, leaves):\n"
-    guard = '    if leaves: raise TypeError("the python backend takes no launcher data (out= is for device targets)")\n'
+    head = (
+        "import math\nfrom struct import unpack_from as _u\n"
+        "from pdum.dsl.kernel.registry import Out as _Out\n\n"
+        "def _tdiv(a, b):  # exact trunc division (numeric policy: C semantics)\n"
+        "    q = a // b\n"
+        "    return q + 1 if q < 0 and q * b != a else q\n\n"
+        "def _tmod(a, b):\n"
+        "    return a - _tdiv(a, b) * b\n\n"
+        f"def {name}(staging, leaves):\n"
+    )
+    guard = (  # buffer leaves are welcome (arrays, ch12); launcher data is peeled BY TYPE (§ Out contract)
+        "    if any(isinstance(x, _Out) for x in leaves):\n"
+        '        raise TypeError("the python backend takes no launcher data (out= is for device targets)")\n'
+    )
     return f"{head}{guard}{body}\n    return {names[id(result)]}\n"
 
 
@@ -116,7 +151,10 @@ def compile_source(source: str, name: str = "kernel"):
     return artifact
 
 
-CODE_FOR_OP: dict = {"core.tuple": None}  # native tuple spelling; batteries add math.* templates
+CODE_FOR_OP: dict = {
+    "core.tuple": None,  # native tuple spelling; batteries add math.* templates
+    "array.load": "{0}[{1}]",  # static, like the C target's — no install-order dependence
+}
 
 PYTHON = Backend(
     name="demo.simple_shader.python",

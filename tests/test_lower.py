@@ -120,11 +120,11 @@ def test_name_fates_are_loud():
 def test_missing_rule_names_syntax_and_loc():
     @jit()
     def loops(x):
-        while x > 0.0:  # statements are step-11 machinery; still a loud, located refusal
+        while x > 0.0:  # bounded `for` landed at step 11; `while` stays a loud, located refusal
             x = x - 1.0
         return x
 
-    with pytest.raises(MissingRule, match=r"While.*test_lower\.py"):
+    with pytest.raises(MissingRule, match=r"while.*test_lower\.py"):
         lower(loops, T.f64)
 
 

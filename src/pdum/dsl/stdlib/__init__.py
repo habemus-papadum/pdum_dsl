@@ -28,9 +28,11 @@ def _fold_tuple_extract(b, m):
 def install(registry: Registry) -> Registry:
     """Register the base dialect into ``registry`` (idempotent)."""
     from ..kernel.rewrite import Pat
+    from .arrays import install as install_arrays
     from .batteries import install as install_batteries
 
     registry.lower_rules.update(LOWER_RULES)  # the registry itself arrives via _build's context door
+    install_arrays(registry)  # wraps Subscript/Call: must layer over the base rules just installed
     registry.derived.update(PIPE_BUILDERS)
     # extract-of-tuple folds away wherever the target cannot spell tuples —
     # gated on "core.tuple" ∈ code_for_op, the same mechanism as decompositions:

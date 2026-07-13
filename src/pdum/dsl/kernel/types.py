@@ -83,9 +83,11 @@ class Array(Type):
     layout: str  # "C" | "F" | "A"
     byteorder: str  # "<" | ">" | "="
     writeable: bool
+    device: str = "cpu"  # the 090 dispatch axis: where the data lives IS backend choice (tier 1 at step 14)
 
     def __repr__(self) -> str:
-        return f"array<{self.dtype!r},{self.ndim}d,{self.layout}{'' if self.writeable else ',ro'}>"
+        dev = "" if self.device == "cpu" else f",{self.device}"
+        return f"array<{self.dtype!r},{self.ndim}d,{self.layout}{'' if self.writeable else ',ro'}{dev}>"
 
 
 @dataclass(frozen=True, slots=True)

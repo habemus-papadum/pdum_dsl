@@ -36,6 +36,11 @@ the mkdocs site):
     the buffer/tensor-interop contract step 11 consumes, and the
     multi-device testing ladder (fake-runtime conformance → probe-gated →
     cross-device).
+  - `100_arrays-and-axes.md` — arrays & axes (step 11): the type algebra
+    (rank-generic / ShapedArray / NamedArray), the pedantic indexing
+    decision (mandatory `isel` on named arrays), marshaling through the
+    leaves channel, statement policy (strict joins, single tail return,
+    bounded loops), the C target, and the recorded scope cuts.
 
 Also here, unnumbered: `research/` — the frozen 20-agent research corpus
 (R/V/P/J) behind 010, plus later targeted surveys appended in the same

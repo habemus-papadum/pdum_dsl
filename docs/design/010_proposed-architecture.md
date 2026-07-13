@@ -41,7 +41,9 @@ targets vs cells, three-tier backend resolution, the `dsl.demo` special
 case, the backends/ contribution contract); `090_core-and-extensions.md`
 (the punning charter: dialect and runtime core+extensions conventions,
 stdlib minimalism, the buffer/tensor-interop contract, the multi-device
-testing ladder).
+testing ladder); `100_arrays-and-axes.md` (the array type algebra and its
+two satellite refinements, the pedantic indexing decision incl. named
+axes, array marshaling, statement policy, the C target, scope cuts).
 
 ---
 
@@ -869,6 +871,59 @@ CUDA box enters at step 14 primarily via handoff-doc + parallel agent).
 DECISION: no abstract runtime class now — rule of three; extract at step
 14 from wgpu + cuda.core + Metal. The vertical seed continues: step 11
 consumes 090 §5 immediately.
+
+**2026-07-12 (step 11): DATA AND LOOPS — statements, arrays, the C target,
+and named axes (design 100).** One kernel line spent in the whole step:
+`Array.device` (090's dispatch axis; wiring waits for a second device).
+Everything else satellites. (1) **Statements**: `if`/`for` joined the base
+pack — strict joins (same type on both paths, no unification), loop
+carries as ONE yielded value (multi-name joins ride a literal
+`core.tuple`, preserving the walker's single-yield contract and keeping C
+scalarizable), single tail return ENFORCED (return inside a branch/loop is
+a policy refusal), `while`/`break`/`continue` refused BY POLICY (bounded
+loops, R11's line). SOUNDNESS CATCH made at design time: `core.param`
+identity is structural, so a loop binder reusing index 0 would collide
+with function param 0 in content keys — two different programs, one
+artifact. Loop binders carry TUPLE indices `("loop", *inline-prefix,
+seq)` — unique across inlining AND deterministic from source order alone
+(the first draft's shared counter made content keys depend on process
+history; review-caught, now pinned by a determinism test). Also
+review-driven: names born in only one `if` suite are branch-local
+temporaries that DIE with the suite (the first draft refused them,
+outlawing innocent scratch variables); an empty-carry loop lowers its
+body before refusing, so nested unsupported constructs surface their OWN
+refusal instead of a misleading carry complaint. (2) **Arrays are captures**
+(v1: read-only, C-contiguous, indexed to scalars; args/views/writes are
+recorded cuts, 100 §6): rank-generic `Array` summary — shape and strides
+are STAGING VALUES (i64 slots legalized through the ordinary `core.env`
+sub-path → `abi.slot` route, zero new legalization), the payload rides the
+leaves channel bound by the one new dialect op `array.buffer`;
+`ShapedArray` turns the §13 dial (shape in type, strides const-fold,
+staging shrinks). The thesis extends to data: new shape = cache hit.
+(3) **Named axes — the xarray exercise** (user-directed: "the most
+pedantic possible, as long as the machine code is efficient"):
+`NamedArray.dims` in the type; `isel(y=…, x=…)` keywords MANDATORY on
+named arrays, positional REFUSED (no back door for the transposition
+bug); label-based `sel` deferred (labels are host-side values). The
+refinement is ERASED at emission, so a named kernel and its positional
+twin produce IDENTICAL content keys — tier 2 compiles ONE artifact for
+both (pinned by test; first draft leaked `NamedArray` into the buffer
+node's type and the artifact cache caught the lie: 2 artifacts). xarray's
+`DataArray` adopts via its numpy payload, dims read from the value —
+renamed dims are a different type. (4) **The C target** (`backends/c.py`,
+the contribution point's first citizen; bucket raised 150→500
+consciously): C99 via the shared dominator walker (which grew `core.for`
++ a statement-skip so C can scalarize tuples into lane variables — no
+structs), `cc -O2 -shared` + ctypes, scalar returns v1, never claims the
+default route. Numeric policy enforced BOTH sides now: the python twin
+spells i64 div/mod as trunc (`int(a/b)`, `int(math.fmod)`) — C's native
+behavior; differential-tested on all four sign combinations.
+(5) **Ray-march spike verdict** (M3, ch12): expressiveness GO — a 32-step
+sphere tracer is `for`+`if`+carries+batteries; python 22.4 µs/ray vs C
+3.2 µs/ray (~7× body speedup), but ~2.4 µs of the C number is DISPATCH —
+per-pixel-per-call is the wrong granularity for CPU frames; frames want
+domain calls (ch10's `out=`) or DPS out-arrays (chaining/step 14). Tests
+199; notebooks 19/19 (ch12-data-and-loops + ch12a delta interlude).
 
 ---
 
