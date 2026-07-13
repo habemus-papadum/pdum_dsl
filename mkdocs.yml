@@ -34,6 +34,7 @@ nav:
       - "100 — Arrays & axes": design/100_arrays-and-axes.md
       - "110 — Transforms & derivatives": design/110_transforms-and-derivatives.md
       - "120 — Events & instrumentation (proposal)": design/120_events-and-instrumentation.md
+      - "130 — Tensors, tiles, and over (proposal)": design/130_tensors-tiles-and-over.md
   - The Book:
       - "Chapter 0 — The thesis": book/ch00-thesis.ipynb
       - "Chapter 1 — Types are values": book/ch01-types-are-values.ipynb
