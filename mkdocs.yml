@@ -45,6 +45,7 @@ nav:
       - "Chapter 10 — The GPU and the seam": book/ch10-the-gpu-and-the-seam.ipynb
       - "Chapter 11 — The five surfaces": book/ch11-the-five-surfaces.ipynb
       - "11a — Lay of the land": book/ch11a-lay-of-the-land.ipynb
+      - "11b — Measuring the machine": book/ch11b-measuring-the-machine.ipynb
       - Glossary: book/GLOSSARY.md
   - M0 reference asset (frozen):
       - Overview: m0/index.md

@@ -51,6 +51,7 @@ SATELLITE_CAPS = {  # separately-counted buckets (the honesty clause): src/pdum/
     "combinators.py": 250,
     "stdlib": 1500,
     "viz.py": 450,
+    "bench.py": 350,  # step 10b: adaptive sampling, phase instrument, timelines
     "backends": 150,  # shared infra only (_emit); target packages arrive step 14 (raise then)
     "demo": 600,  # the fused ch09/ch10 simple-shader pair (080: special-cased OUT of backends/)
 }

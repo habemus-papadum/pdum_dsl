@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import html as _html
 
+from .bench import Timeline
 from .combinators import Pipeline, Stage, Terminal
 from .kernel.cache import SpecializationCache, _TierCache
 from .kernel.capture import Handle
@@ -276,9 +277,34 @@ def _log_html(log) -> str:
     return f'<div class="pv-card">{head}<table>{rows}</table></div>'
 
 
+_LANE_COLORS = {"host": "rgba(70,130,220,.55)", "gpu": "rgba(80,170,120,.65)"}
+
+
+@renderer(Timeline)
+def _timeline_html(tl) -> str:
+    """Horizontal span bars, static like everything here: width = share of the
+    total, hover = label + µs. One glance answers 'where did the frame go'."""
+    total = tl.total or 1e-9
+    bars = []
+    for label, start, dur, lane in tl.spans:
+        left, width = 100 * start / total, max(0.4, 100 * dur / total)
+        color = _LANE_COLORS.get(lane, "rgba(160,110,220,.55)")
+        u = f"{dur * 1e6:,.1f} µs"
+        bars.append(
+            f'<div style="position:relative;height:1.5em;margin:.15em 0">'
+            f'<span class="pv-dim" style="position:absolute;left:0;width:9em">{esc(label)}</span>'
+            f'<span class="pv-tip" data-tip="{esc(u)}" style="position:absolute;left:calc(9em + {left:.2f}% * 0.72);'
+            f'width:calc({width:.2f}% * 0.72);height:1.1em;top:.15em;background:{color};border-radius:3px"></span>'
+            f'<span class="pv-dim" style="position:absolute;right:0">{esc(u)}</span></div>'
+        )
+    total_pill = pill(f"{total * 1e3:.2f} ms total", "num")
+    head = f'<div class="pv-hd">{pill("timeline")}{pill(tl.title, "id")}{total_pill}</div>'
+    return f'<div class="pv-card">{head}{"".join(bars)}</div>'
+
+
 def install() -> None:
     """Attach ``_repr_html_`` to the rendered classes (class-level; slots-safe)."""
-    for cls in (Type, Handle, Region, Pipeline, Stage, Terminal, _TierCache, MatchLog):
+    for cls in (Type, Handle, Region, Pipeline, Stage, Terminal, _TierCache, MatchLog, Timeline):
         cls._repr_html_ = lambda self: render(self)._repr_html_()
 
 

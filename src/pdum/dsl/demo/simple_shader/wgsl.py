@@ -178,7 +178,8 @@ def device():
         import wgpu
 
         adapter = wgpu.gpu.request_adapter_sync(power_preference="high-performance")
-        _DEVICE = adapter.request_device_sync()
+        wanted = [f for f in ("timestamp-query",) if f in [str(x) for x in adapter.features]]
+        _DEVICE = adapter.request_device_sync(required_features=wanted)  # bench's GPU clock (ch11b)
     return _DEVICE
 
 
@@ -244,7 +245,24 @@ class ComputeProgram:
             else None
         )
         self.dbuf = dev.create_buffer(size=16, usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST)
-        self._out = None
+        self._out = self._query = None
+
+    def _encode_frame(self, staging, w, h, timestamp_writes=None):
+        """The per-frame encode sequence, shared by ``__call__`` and
+        ``timed_call`` so the timed frame can never drift from the real one."""
+        dev = device()
+        if self.has_env:
+            dev.queue.write_buffer(self.ubuf, 0, bytes(staging))
+        enc = dev.create_command_encoder()
+        cp = enc.begin_compute_pass(**({"timestamp_writes": timestamp_writes} if timestamp_writes else {}))
+        cp.set_pipeline(self.pipeline)
+        cp.set_bind_group(0, self._out[2])
+        if self.nparams == 1:
+            cp.dispatch_workgroups((w + self.wg - 1) // self.wg)
+        else:
+            cp.dispatch_workgroups((w + 7) // 8, (h + 7) // 8)
+        cp.end()
+        return enc
 
     def __call__(self, staging, leaves):
         dom = _domain(leaves, self.nparams)
@@ -267,20 +285,40 @@ class ComputeProgram:
                 )
             bg = dev.create_bind_group(layout=self.pipeline.get_bind_group_layout(0), entries=entries)
             self._out = (buf, (w, h), bg)
-        if self.has_env:
-            dev.queue.write_buffer(self.ubuf, 0, bytes(staging))
-        enc = dev.create_command_encoder()
-        cp = enc.begin_compute_pass()
-        cp.set_pipeline(self.pipeline)
-        cp.set_bind_group(0, self._out[2])
-        if self.nparams == 1:
-            cp.dispatch_workgroups((w + self.wg - 1) // self.wg)
-        else:
-            cp.dispatch_workgroups((w + 7) // 8, (h + 7) // 8)
-        cp.end()
-        dev.queue.submit([enc.finish()])
+        dev.queue.submit([self._encode_frame(staging, w, h).finish()])
         data = dev.queue.read_buffer(self._out[0], 0, size=count * 4)
         return struct.unpack(f"<{count}f", data)
+
+    def timed_call(self, staging, leaves):
+        """One frame, decomposed (bench.gpu_timeline): encode+submit host time,
+        GPU execution from begin/end-of-pass timestamps (nanoseconds, per the
+        WebGPU spec), and the blocking readback. None without the feature."""
+        import time
+
+        dev, wgpu = device(), self.wgpu
+        if "timestamp-query" not in [str(f) for f in dev.features]:
+            return None
+        dom = _domain(leaves, self.nparams)
+        w, h = dom[0], (dom[1] if len(dom) > 1 else 1)
+        self(staging, leaves)  # ensure buffers/bind group exist for this domain
+        if self._query is None:
+            qs = dev.create_query_set(type=wgpu.QueryType.timestamp, count=2)
+            qbuf = dev.create_buffer(size=16, usage=wgpu.BufferUsage.QUERY_RESOLVE | wgpu.BufferUsage.COPY_SRC)
+            self._query = (qs, qbuf)
+        qs, qbuf = self._query
+        writes = {"query_set": qs, "beginning_of_pass_write_index": 0, "end_of_pass_write_index": 1}
+        t0 = time.perf_counter()
+        enc = self._encode_frame(staging, w, h, timestamp_writes=writes)
+        enc.resolve_query_set(qs, 0, 2, qbuf, 0)
+        dev.queue.submit([enc.finish()])
+        t1 = time.perf_counter()
+        count = w * h
+        data = dev.queue.read_buffer(self._out[0], 0, size=count * 4)
+        assert len(data) == count * 4
+        t2 = time.perf_counter()
+        ticks = struct.unpack("<2Q", dev.queue.read_buffer(qbuf))
+        # some drivers report non-monotonic begin/end pass timestamps; never go negative
+        return {"encode+submit": t1 - t0, "gpu": max(0, ticks[1] - ticks[0]) / 1e9, "readback": t2 - t1}
 
 
 class FragmentProgram:

@@ -817,6 +817,32 @@ with the harness in `tools/`; V3's hook kernel compressed to ~380 in-kernel
 lines by sharing the rule matrix (overflow capped at `registry.py ≤ 150` before
 revisiting); ndarray ValueKind in `stdlib/` (packaging, not architecture).
 
+**2026-07-12 (step 10b): measurement is a satellite — zero kernel edits,
+by construction.** `bench.py` (125 lines) wraps the `FastRecord` seams the
+architecture already exposed: `extract` and `launch` are plain dataclass
+fields, so `instrument()` swaps in timestamping shims and restores them —
+the phase decomposition (key+probe / extract / pack / launch) needed no
+hook API, which is the §2.12 design paying out. `benchmark()` is
+BenchmarkTools-shaped (warmup, tune evals above a resolution floor, sample
+to budget; **minimum** as headline). GPU depth rides the demo runtime's
+`timed_call` (WebGPU `timestamp-query`, begin/end-of-pass ns). The step-9
+microbench thresholds are now real pytest gates (alarm 5 µs, fail 40 µs
+with CI margin; measured hit path 2.4 µs). **The finding that rewrites
+ch10's story:** the ~2 ms/frame is 431 µs encode+submit + **4.7 µs GPU** +
+**1629 µs readback**, and readback is ~constant from 64² (16 KB) to 1024²
+(4 MB) — it is *fixed sync latency* (submit→wait→map), not bandwidth. The
+per-frame cost ceiling is the synchronous-readback protocol, not the
+dispatch machinery — the async/persistent-surface story (graphics `draw`)
+is where that latency dies, deferred with the draw surface itself. Found
+live: an Env member named `f16` is a reserved WGSL identifier → members are
+`m{offset}` + regression golden. Review hardening: negative-tick clamp in
+`timed_call` (drivers may report non-monotonic pass timestamps); stale-record
+guards in both instruments (a guard drift mid-loop now fails loud instead of
+averaging one stale frame into the rest); and `gpu_timeline` drives its frames
+through `registry.dispatch` itself with `launch` shimmed to `timed_call` — the
+measurement tool executes the real hit path, not a hand-replayed copy that
+could drift from it.
+
 ---
 
 ## 11. What remains open (deliberately)
