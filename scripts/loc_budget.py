@@ -55,7 +55,6 @@ SATELLITE_CAPS = {  # separately-counted buckets (the honesty clause): src/pdum/
     "stdlib": 1500,
     "viz.py": 450,
     "bench.py": 350,  # step 10b: adaptive sampling, phase instrument, timelines (shrinks with 120 step 6)
-    "events.py": 300,  # the 120 recorder: traces, interning, sampling, buckets, report
     "backends": 500,  # _emit infra + the C target (step 11 pulled the first citizen forward); step 14 raises again
     "demo": 600,  # the fused ch09/ch10 simple-shader pair (080: special-cased OUT of backends/)
 }
