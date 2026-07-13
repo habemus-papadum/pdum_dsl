@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-    <title>Coverage for src/pdum/dsl/demo/simple_shader/python.py: 92%</title>
+    <title>Coverage for src/pdum/dsl/demo/simple_shader/python.py: 93%</title>
     <link rel="icon" sizes="32x32" href="favicon_32_cb_c827f16f.png">
     <link rel="stylesheet" href="style_cb_4667309f.css" type="text/css">
     <script src="coverage_html_cb_dd2e7eb5.js" defer></script>
@@ -12,7 +12,7 @@
     <div class="content">
         <h1>
             <span class="text">Coverage for </span><b>src<span class="sep">/</span>pdum<span class="sep">/</span>dsl<span class="sep">/</span>demo<span class="sep">/</span>simple_shader<span class="sep">/</span>python.py</b>:
-            <span class="pc_cov">92%</span>
+            <span class="pc_cov">93%</span>
         </h1>
         <aside id="help_panel_wrapper">
             <input id="help_panel_state" type="checkbox">
@@ -55,8 +55,8 @@
         </aside>
         <h2>
             <span class="text">98 statements &nbsp;</span>
-            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">90<span class="text"> run</span></button>
-            <button type="button" class="mis show_mis button_toggle_mis" value="mis" data-shortcut="m" title="Toggle lines missing">8<span class="text"> missing</span></button>
+            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">91<span class="text"> run</span></button>
+            <button type="button" class="mis show_mis button_toggle_mis" value="mis" data-shortcut="m" title="Toggle lines missing">7<span class="text"> missing</span></button>
             <button type="button" class="exc show_exc button_toggle_exc" value="exc" data-shortcut="x" title="Toggle lines excluded">0<span class="text"> excluded</span></button>
         </h2>
         <p class="text">
@@ -65,7 +65,7 @@
             <a id="nextFileLink" class="nav" href="z_a65555c09e3c7d13_wgsl_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.14.3">coverage.py v7.14.3</a>,
-            created at 2026-07-13 19:38 +0000
+            created at 2026-07-13 20:52 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -170,7 +170,7 @@
     <p class="mis show_mis"><span class="n"><a id="t88" href="#t88">88</a></span><span class="t">                <span class="key">raise</span> <span class="nam">VerifyError</span><span class="op">(</span><span class="fst">f"</span><span class="fst">python backend cannot cast to </span><span class="op">{</span><span class="nam">to</span><span class="op">!</span><span class="nam">r</span><span class="op">}</span><span class="fst">"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t89" href="#t89">89</a></span><span class="t">            <span class="key">return</span> <span class="fst">f"</span><span class="op">{</span><span class="nam">_CASTS</span><span class="op">[</span><span class="nam">to</span><span class="op">.</span><span class="nam">kind</span><span class="op">]</span><span class="op">}</span><span class="fst">(</span><span class="op">{</span><span class="nam">arg</span><span class="op">[</span><span class="num">0</span><span class="op">]</span><span class="op">}</span><span class="fst">)</span><span class="fst">"</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t90" href="#t90">90</a></span><span class="t">        <span class="key">if</span> <span class="nam">node</span><span class="op">.</span><span class="nam">op</span> <span class="op">==</span> <span class="str">"core.select"</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t91" href="#t91">91</a></span><span class="t">            <span class="key">return</span> <span class="fst">f"</span><span class="fst">(</span><span class="op">{</span><span class="nam">arg</span><span class="op">[</span><span class="num">1</span><span class="op">]</span><span class="op">}</span><span class="fst"> if </span><span class="op">{</span><span class="nam">arg</span><span class="op">[</span><span class="num">0</span><span class="op">]</span><span class="op">}</span><span class="fst"> else </span><span class="op">{</span><span class="nam">arg</span><span class="op">[</span><span class="num">2</span><span class="op">]</span><span class="op">}</span><span class="fst">)</span><span class="fst">"</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t91" href="#t91">91</a></span><span class="t">            <span class="key">return</span> <span class="fst">f"</span><span class="fst">(</span><span class="op">{</span><span class="nam">arg</span><span class="op">[</span><span class="num">1</span><span class="op">]</span><span class="op">}</span><span class="fst"> if </span><span class="op">{</span><span class="nam">arg</span><span class="op">[</span><span class="num">0</span><span class="op">]</span><span class="op">}</span><span class="fst"> else </span><span class="op">{</span><span class="nam">arg</span><span class="op">[</span><span class="num">2</span><span class="op">]</span><span class="op">}</span><span class="fst">)</span><span class="fst">"</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t92" href="#t92">92</a></span><span class="t">        <span class="key">if</span> <span class="nam">node</span><span class="op">.</span><span class="nam">op</span> <span class="key">in</span> <span class="op">(</span><span class="str">"core.vec"</span><span class="op">,</span> <span class="str">"core.tuple"</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t93" href="#t93">93</a></span><span class="t">            <span class="key">return</span> <span class="str">"("</span> <span class="op">+</span> <span class="str">", "</span><span class="op">.</span><span class="nam">join</span><span class="op">(</span><span class="nam">arg</span><span class="op">)</span> <span class="op">+</span> <span class="op">(</span><span class="str">","</span> <span class="key">if</span> <span class="nam">len</span><span class="op">(</span><span class="nam">arg</span><span class="op">)</span> <span class="op">==</span> <span class="num">1</span> <span class="key">else</span> <span class="str">""</span><span class="op">)</span> <span class="op">+</span> <span class="str">")"</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t94" href="#t94">94</a></span><span class="t">        <span class="key">if</span> <span class="nam">node</span><span class="op">.</span><span class="nam">op</span> <span class="op">==</span> <span class="str">"core.extract"</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
@@ -267,7 +267,7 @@
             <a class="nav" href="z_a65555c09e3c7d13_wgsl_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.14.3">coverage.py v7.14.3</a>,
-            created at 2026-07-13 19:38 +0000
+            created at 2026-07-13 20:52 +0000
         </p>
     </div>
 </footer>
