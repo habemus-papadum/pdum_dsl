@@ -11,26 +11,26 @@ The project uses a modern Python toolchain with UV for dependency management.
 ## Important Rules
 
 ### Version Management
-**NEVER modify the version number in any file.** Version numbers are managed exclusively by humans. Do not change:
+**NEVER modify the version number in any file.** Versions are written by the `release` workflow
+via `scripts/_versioning.py` — never by hand, and never by an agent. Do not change:
 - `pyproject.toml` version field
 - `src/pdum/dsl/__init__.py` `__version__` variable
 - Any version references in documentation
 
-If you think a version change is needed, inform the user but do not make the change yourself.
+Between releases the tree carries an `X.Y.Z+dev` marker (last release + a WIP flag). If you think
+a version change is needed, inform the user but do not make the change yourself.
 
 ### Release Management
-**ABSOLUTELY NEVER RUN THE RELEASE SCRIPT (`./scripts/release.sh`).** This is a production deployment script that:
-- Publishes the package to PyPI (affects real users)
-- Creates GitHub releases (public and permanent)
-- Pushes commits and tags to the repository
-- Triggers documentation deployment
+**ABSOLUTELY NEVER TRIGGER THE RELEASE WORKFLOW.** Releasing is a production deployment that
+publishes to PyPI (affects real users), creates a permanent public GitHub release, and pushes
+commits and tags. It is dispatched **by a human** from the Actions UI.
 
-**This script should ONLY be run by a human who fully understands the consequences.** Do not:
-- Execute `./scripts/release.sh` under any circumstances
-- Suggest running it unless the user explicitly asks about the release process
-- Include it in automated workflows or scripts
+Do not:
+- Run `gh workflow run release.yml` (or dispatch it by any other means) under any circumstances
+- Run `./scripts/publish.sh` (the manual PyPI fallback) under any circumstances
+- Suggest releasing unless the user explicitly asks about the release process
 
-If the user needs to make a release, explain the process but let them run the script themselves.
+If the user needs to make a release, explain the process but let them run it themselves.
 
 ## Development Commands
 
@@ -87,10 +87,9 @@ uv run mkdocs build
 **Important**: After making any changes to notebooks under `docs/` (e.g. the book chapters in `docs/book/*.ipynb`), you MUST run `./scripts/test_notebooks.sh` to verify they execute without errors. Do not consider notebook changes complete until this test passes.
 
 ### Publishing
-```bash
-# Build and publish to PyPI (requires credentials)
-./scripts/publish.sh
-```
+Releasing is **entirely CI** (see [Release Process](#release-process)) — a human dispatches the
+`release` workflow. `./scripts/publish.sh` exists only as an out-of-band manual fallback and is
+**never** run by an agent.
 
 
 ## Architecture
@@ -160,27 +159,40 @@ omit = [
 
 ### Continuous Integration
 The project uses GitHub Actions for CI (`.github/workflows/ci.yml`):
-- Runs on every push to main and pull requests- Executes linting with ruff
+- Runs on every push to main and pull requests
+- Installs a C compiler, then asserts the C backend can see it (so `tests/test_backend_c.py`
+  cannot silently skip)
+- Executes linting with ruff
 - Runs unit tests with coverage reporting
 - Builds documentation to verify it compiles
 - Posts coverage report as a PR comment
 
+This run is **the gate the release requires green** on the commit being released.
 
 ### Documentation Deployment
 Documentation is deployed to GitHub Pages (`.github/workflows/docs.yml`):
-- Triggered when a GitHub release is published
+- Triggered when a GitHub release is published (i.e. by the release workflow)
 - Can also be triggered manually via workflow_dispatch
-- Uses `./scripts/setup.sh` to ensure widgets are built before running `mkdocs build`
+- Uses `./scripts/setup.sh` before running `mkdocs build`
 
 ### Release Process
-Releases are managed by the `./scripts/release.sh` script (HUMANS ONLY):
-1. Validates git repo is clean
-2. Checks version has `-alpha` suffix
-3. Runs all validation (tests, notebooks, linting, docs)
-4. Strips `-alpha` from version for release
-5. Creates release commit and tag
-6. Publishes to PyPI
-7. Creates GitHub release
-8. Bumps to next development version with `-alpha`
+Releasing is **entirely CI** — `.github/workflows/release.yml` is the single publish path. There
+is no local release script and no tag trigger, which is what makes a local/CI double-publish
+impossible. A **human** dispatches it (Actions → release → Run workflow, or
+`gh workflow run release.yml -f bump=minor`) with three inputs: `bump` (patch/minor/major),
+`skip_ci_check`, and `dry_run`.
 
-The release script expects versions to follow the pattern: `X.Y.Z-alpha` → `X.Y.Z` → `X.Y.(Z+1)-alpha`
+The pipeline: **require the commit's `ci.yml` run green** (waits out an in-progress run) →
+compute the version → bump + tag + push → build sdist + wheel **from the tag** → publish to PyPI
+(token auth via the `PYPI_API_TOKEN` repo secret, `skip-existing`) → create the GitHub Release
+(which fires `docs.yml`) → return `main` to the `+dev` marker.
+
+Versioning is **tag-as-truth** (`scripts/_versioning.py`):
+- The last release is the highest `vX.Y.Z` git tag. This release is `bump(last_tag, level)`,
+  computed **at release time** — the size of a release is chosen against the last real release,
+  never guessed in advance. With no tags yet, a first `minor` cuts `0.1.0`.
+- Between releases the tree carries `X.Y.Z+dev`. That is a PEP 440 *local* version, which PyPI
+  refuses to upload — an accidental-publish guard. The release writes the clean `X.Y.Z` before
+  building, so artifacts are never `+dev`.
+- Every version-bearing file (root `pyproject.toml`, the `__init__.py` mirror, and any
+  `packages/*` workspace member) is written in lockstep; agreement is enforced.

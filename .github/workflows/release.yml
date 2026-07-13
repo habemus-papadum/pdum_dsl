@@ -1,0 +1,208 @@
+# Release pipeline — the single, CI-driven way pdum.dsl is released (AGENTS.md).
+#
+# Trigger it from the GitHub UI (Actions -> release -> Run workflow) or `gh workflow run
+# release.yml -f bump=minor`. There is NO local release script and NO tag trigger — this is the
+# only publish path, which is what makes a local/CI double-publish impossible.
+#
+# Model (see scripts/_versioning.py):
+#   * TAG-AS-TRUTH: the last release is the highest vX.Y.Z tag. You pick `bump`
+#     (patch/minor/major) at trigger time; CI computes next = bump(last_tag, bump). The size of
+#     the release is decided against the last real release, when you release — never guessed ahead.
+#     With no tags yet, the first `minor` release cuts 0.1.0.
+#   * Between releases main carries an `X.Y.Z+dev` marker. A release writes the clean X.Y.Z,
+#     tags it, builds + publishes from that tag, then `finalize` sets main to `<new>+dev`.
+#   * PyPI publish uses the PYPI_API_TOKEN secret (token auth, not OIDC trusted publishing).
+#
+# Gate: the release does NOT re-run tests — it REQUIRES the commit's own `ci.yml` run (ruff,
+# pytest incl. the C backend, mkdocs) to be green, waiting out an in-progress run.
+# `skip_ci_check` overrides it. `dry_run` computes the version and prints the diff, then stops
+# before committing/tagging/publishing.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Release size relative to the last release tag"
+        type: choice
+        options: [patch, minor, major]
+        default: minor
+      skip_ci_check:
+        description: "Override: release even if the commit's CI isn't green (skip the gate)"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Compute the version + show the diff, but do NOT commit/tag/publish"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  # --- gate: require the commit's CI to be green -----------------------------
+  gate:
+    name: require CI green on this commit
+    if: ${{ !inputs.skip_ci_check }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # read ci.yml run status
+    steps:
+      - name: Wait for ci.yml and require success on ${{ github.sha }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          # ci.yml's per-push run is a single `test` job (ruff, pytest + coverage, mkdocs build).
+          # It is not continue-on-error, so a run-level `success` means the suite was green.
+          # Wait out an in-progress run, then require success.
+          jq_row='if length>0 then (.[0] | [.status, (.conclusion // ""), .url] | @tsv) else "" end'
+          for i in $(seq 1 60); do # up to ~30 min (60 × 30s)
+            ROW=$(gh run list -w ci.yml -c "$SHA" -e push -L 1 --json status,conclusion,url --jq "$jq_row")
+            if [ -z "$ROW" ]; then echo "no ci.yml push run for $SHA yet… ($i/60)"; sleep 30; continue; fi
+            IFS=$'\t' read -r STATUS CONCL URL <<<"$ROW"
+            echo "ci.yml: status=$STATUS conclusion=${CONCL:-<pending>}  $URL"
+            if [ "$STATUS" = "completed" ]; then
+              if [ "$CONCL" = "success" ]; then echo "::notice::CI green on $SHA ✓"; exit 0; fi
+              echo "::error::ci.yml concluded '$CONCL' on $SHA — fix CI, or re-dispatch with skip_ci_check=true."
+              exit 1
+            fi
+            sleep 30
+          done
+          echo "::error::Timed out (30 min) waiting for ci.yml on $SHA. Re-dispatch when CI is green, or use skip_ci_check=true."
+          exit 1
+
+  # --- decide the version + cut the tag -------------------------------------
+  prepare:
+    name: bump + tag (last release + bump)
+    needs: [gate]
+    # Runs when the gate passed OR was skipped (skip_ci_check=true); blocks if CI wasn't green.
+    if: ${{ !cancelled() && needs.gate.result != 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the release commit + tag to main
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # need every tag for latest_release_tag()
+      - uses: astral-sh/setup-uv@v7
+      - name: Compute this release's version
+        id: ver
+        run: |
+          RELEASE=$(python3 scripts/_versioning.py compute-release "${{ inputs.bump }}")
+          LAST=$(python3 scripts/_versioning.py latest-tag)
+          echo "Last release: ${LAST:-<none>}  ->  this (${{ inputs.bump }}): $RELEASE"
+          echo "version=$RELEASE" >> "$GITHUB_OUTPUT"
+          echo "tag=v$RELEASE" >> "$GITHUB_OUTPUT"
+      - name: Write the release version across every file
+        run: |
+          python3 scripts/_versioning.py set "${{ steps.ver.outputs.version }}"
+          uv lock
+          {
+            echo "### Release ${{ steps.ver.outputs.version }} — file changes"
+            echo '```'
+            git --no-pager diff --stat
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Dry run — stop here (no commit/tag/publish)
+        if: ${{ inputs.dry_run }}
+        run: echo "::notice::DRY RUN — computed ${{ steps.ver.outputs.version }}; nothing committed, tagged, or published."
+      - name: Commit, tag, push
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "${{ steps.ver.outputs.version }}"
+          git tag -a "${{ steps.ver.outputs.tag }}" -m "${{ steps.ver.outputs.version }}"
+          git push origin "HEAD:${GITHUB_REF_NAME}" "refs/tags/${{ steps.ver.outputs.tag }}"
+
+  # --- build from the freshly-cut tag ---------------------------------------
+  build:
+    name: build habemus-papadum-dsl (sdist + wheel)
+    needs: [prepare]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.tag }} # build the tagged tree, never a moving branch
+      - uses: astral-sh/setup-uv@v7
+      - name: Build
+        run: |
+          uv build --package habemus-papadum-dsl --sdist
+          uv build --package habemus-papadum-dsl --wheel
+      - name: Verify the artifacts carry the release version
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          # A +dev marker here means the release commit didn't take — PyPI would reject the
+          # upload anyway (local versions are refused), so fail loudly and early instead.
+          ls -l dist/
+          test -f "dist/habemus_papadum_dsl-${VERSION}.tar.gz" \
+            || { echo "::error::no sdist for ${VERSION} (found: $(ls dist))"; exit 1; }
+          test -f "dist/habemus_papadum_dsl-${VERSION}-py3-none-any.whl" \
+            || { echo "::error::no wheel for ${VERSION} (found: $(ls dist))"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+
+  # --- publish --------------------------------------------------------------
+  pypi-publish:
+    name: publish PyPI
+    needs: [build]
+    runs-on: ubuntu-latest
+    # Token auth (PYPI_API_TOKEN secret) rather than OIDC trusted publishing, matching pdum_rfb.
+    # Set the secret once: gh secret set PYPI_API_TOKEN --repo habemus-papadum/pdum_dsl
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }} # user defaults to __token__
+          packages-dir: dist/
+          skip-existing: true # idempotent retries
+          attestations: false # PEP 740 attestations need id-token:write (OIDC); off for token auth
+
+  # --- finish: GitHub release + return main to the +dev marker --------------
+  github-release:
+    name: create GitHub Release
+    needs: [prepare, pypi-publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release (fires docs.yml -> Pages)
+    steps:
+      - uses: actions/checkout@v5
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          generate_release_notes: true
+
+  finalize:
+    name: back to dev (<new>+dev)
+    needs: [prepare, pypi-publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the +dev marker commit to main
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }} # main HEAD is the release commit we just pushed
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+      - name: Set the +dev marker and push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          python3 scripts/_versioning.py set "${{ needs.prepare.outputs.version }}+dev"
+          uv lock
+          git commit -am "back to dev (${{ needs.prepare.outputs.version }}+dev)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"

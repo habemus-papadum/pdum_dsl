@@ -20,6 +20,6 @@ from . import stdlib as _stdlib  # noqa: F401  — base dialect + batteries (nee
 from .kernel.api import jit
 from .kernel.cache import no_compile
 
-__version__ = "0.1.0-alpha"
+__version__ = "0.0.0+dev"  # release-managed mirror of pyproject.toml (scripts/_versioning.py)
 
 __all__ = ["__version__", "jit", "no_compile"]
