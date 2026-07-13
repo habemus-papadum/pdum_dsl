@@ -30,6 +30,7 @@ nav:
       - "060 — Rendering notes": design/060_rendering-notes.md
       - "070 — Backends notes": design/070_backends-notes.md
       - "080 — Backend organization": design/080_backend-organization.md
+      - "090 — Core & extensions (punning charter)": design/090_core-and-extensions.md
   - The Book:
       - "Chapter 0 — The thesis": book/ch00-thesis.ipynb
       - "Chapter 1 — Types are values": book/ch01-types-are-values.ipynb

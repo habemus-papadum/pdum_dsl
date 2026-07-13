@@ -293,6 +293,25 @@ the machine" — decompose ch10's ~2 ms/frame into host / bridge / GPU /
 readback. **Exit:** the step-9 microbench thresholds become real gates;
 walkthrough.
 
+### The post-10b pause (2026-07-12): the punning charter
+
+Before step 11, a user-driven design pause produced
+`090_core-and-extensions.md` (canon): stdlib minimalism + the squatting
+test (`Color` and the 2D helpers moved to `dsl.demo.graphics`,
+explicit-import by design); core+extensions conventions at the dialect
+layer (vendor op namespaces, capability flags) and the runtime layer
+(do/refuse charter, artifact capability protocols, `record.artifact` as
+the escape hatch); the buffer/tensor-interop contract (device axis in
+Array types, OWNED/ADOPTED leaves, zero-copy both directions, async
+readback) **which step 11 consumes on arrival**; and the multi-device
+testing ladder (fake-runtime conformance suite → probe-gated device tests
+→ cross-device differential). Runtime abstraction *in code* is deferred to
+step 14 — rule of three: extract from wgpu + cuda.core + Metal, bench as
+first generic consumer. A user-provided Linux+CUDA box is available:
+primary mode at step 14 is a handoff document + parallel agent running on
+the box; direct SSH for short ABI-validation bursts (optionally a cheap
+CUDA-C compile-check spike during step 11's C-backend work).
+
 ---
 
 ## Phase IV — width (steps 11–15; each still ends in a chapter + walkthrough)

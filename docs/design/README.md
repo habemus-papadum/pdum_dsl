@@ -30,6 +30,12 @@ the mkdocs site):
   - `080_backend-organization.md` — families vs targets vs cells (the
     sparse matrix), three-tier backend resolution, why the fused demos live
     at `dsl.demo`, the namespace-package + entry-point contribution contract.
+  - `090_core-and-extensions.md` — the punning charter: core+extensions at
+    the dialect AND runtime layers (vendor namespaces, capability flags,
+    artifact protocols, the runtime's do/refuse list), stdlib minimalism,
+    the buffer/tensor-interop contract step 11 consumes, and the
+    multi-device testing ladder (fake-runtime conformance → probe-gated →
+    cross-device).
 
 Also here, unnumbered: `research/` — the frozen 20-agent research corpus
 (R/V/P/J) behind 010, plus later targeted surveys appended in the same

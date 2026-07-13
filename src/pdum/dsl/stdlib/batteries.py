@@ -1,4 +1,4 @@
-"""The first batteries: math intrinsics + DSL-written helpers + Color.
+"""The first batteries: math intrinsics + DSL-written scalar helpers.
 
 Two economics, deliberately mixed (the numba 2:1 lesson, architecture risk
 #4): ops that GPUs have natively are *intrinsics* (an op + a per-target
@@ -13,14 +13,17 @@ those names are *globals* — invisible to capture (env stays empty), resolved
 through the overload table at lower time. Defined inside a function they
 would close over each other and trip the capture-free rule.
 
+The stdlib stays deliberately SMALL (090's minimalism policy): scalar math
+only. Domain vocabulary — even something as innocent-looking as a Color
+record — belongs to demo or ecosystem packages, because the whole point of
+the five surfaces is that such a package is an ordinary import away.
+
 Nothing here touches the kernel; ``install(registry)`` is the whole API.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-from .surfaces import defop, intrinsic, overload, record, spell
+from .surfaces import defop, intrinsic, overload, spell
 
 _PY = "demo.simple_shader.python"
 _WGSL = ("demo.simple_shader.wgsl.compute", "demo.simple_shader.wgsl.fragment")
@@ -78,32 +81,7 @@ def fract(x):
     return x - floor(x)
 
 
-def dot2(a, b):
-    return a[0] * b[0] + a[1] * b[1]
-
-
-def length2(v):
-    return sqrt(dot2(v, v))
-
-
-def lerp2(a, b, t):
-    return (mix(a[0], b[0], t), mix(a[1], b[1], t))
-
-
-_DSL_BATTERIES = (clamp, mix, step, smoothstep, fract, dot2, length2, lerp2)
-
-
-@dataclass(frozen=True)
-class Color:
-    r: float
-    g: float
-    b: float
-
-    def luminance(self):
-        return 0.2126 * self.r + 0.7152 * self.g + 0.0722 * self.b
-
-    def scaled(self, k):
-        return (self.r * k, self.g * k, self.b * k)
+_DSL_BATTERIES = (clamp, mix, step, smoothstep, fract)
 
 
 def install(registry) -> None:
@@ -117,4 +95,3 @@ def install(registry) -> None:
                 spell(registry, name, op, wgsl)
     for fn in _DSL_BATTERIES:
         overload(registry, fn.__name__)(fn)
-    record(registry, Color)

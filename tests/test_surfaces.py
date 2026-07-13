@@ -116,6 +116,7 @@ def test_overload_must_be_capture_free():
 
 
 def test_tuple_batteries_run_on_both_backends():
+    from pdum.dsl.demo import graphics  # noqa: F401  — length2 is demo vocabulary, explicitly imported
     from pdum.dsl.demo.simple_shader import wgsl
 
     @jit()
@@ -139,8 +140,8 @@ def test_tuple_batteries_run_on_both_backends():
 
 
 def test_record_roundtrip_fields_methods_and_thesis():
+    from pdum.dsl.demo.graphics import Color
     from pdum.dsl.kernel.cache import no_compile
-    from pdum.dsl.stdlib.batteries import Color
 
     def tint(c):
         @jit()

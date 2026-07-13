@@ -38,7 +38,10 @@ ride-vs-own verdicts, the compute invocation surface, the graphics draw
 surface, packaging/CI — informing §2.10's remaining columns and revising
 §5's step-14 module-map line); `080_backend-organization.md` (families vs
 targets vs cells, three-tier backend resolution, the `dsl.demo` special
-case, the backends/ contribution contract).
+case, the backends/ contribution contract); `090_core-and-extensions.md`
+(the punning charter: dialect and runtime core+extensions conventions,
+stdlib minimalism, the buffer/tensor-interop contract, the multi-device
+testing ladder).
 
 ---
 
@@ -842,6 +845,30 @@ averaging one stale frame into the rest); and `gpu_timeline` drives its frames
 through `registry.dispatch` itself with `launch` shimmed to `timed_call` — the
 measurement tool executes the real hit path, not a hand-replayed copy that
 could drift from it.
+
+**2026-07-12 (post-10b pause): the punning charter — 090.** User-driven
+pause before step 11, two threads. (1) **Stdlib minimalism as policy**: the
+squatting test (would a third-party library plausibly own this name with
+richer semantics? → not stdlib) extends 080's kind-hygiene rule from names
+to packages. `Color` + `dot2/length2/lerp2` moved from `stdlib/batteries`
+to `pdum.dsl.demo.graphics`, which is NOT auto-imported — one explicit
+import wires it in, demonstrating the ecosystem-package workflow the five
+surfaces exist for. Stdlib = base pack + scalar intrinsic core + scalar
+lingua-franca helpers, full stop. (2) **Core+extensions ("punning") at the
+dialect and runtime layers** — 090 charters both: vendor op namespaces
+(spelled by one backend, never decomposed = visible portability opt-out),
+capability flags checked at build (step 14), the runtime's do/refuse list
+(cuda.core IS the CUDA runtime; we own only the contract + the thin Metal
+shim), artifact capability protocols (`timed_call` the shipped precedent;
+`record.artifact` public = the runtime escape hatch), the buffer/interop
+contract (device axis in Array types; OWNED/ADOPTED leaves; zero-copy both
+directions via DLPack/CAI/buffer-protocol; readback may degenerate to a
+sync on unified memory), and the multi-device testing ladder (fake-runtime
+conformance suite → probe-gated device layer → cross-device differential;
+CUDA box enters at step 14 primarily via handoff-doc + parallel agent).
+DECISION: no abstract runtime class now — rule of three; extract at step
+14 from wgpu + cuda.core + Metal. The vertical seed continues: step 11
+consumes 090 §5 immediately.
 
 ---
 

@@ -10,7 +10,11 @@ expected to be target packages serving families through thin cells. The
 demos predate that split on purpose — they are the book's teaching
 artifacts, frozen to their chapters' shape.
 
-Importing this package wires the demo backends into DEFAULT (batteries).
+Importing this package wires the demo backends into DEFAULT (batteries —
+the stdlib's intrinsic spellings need the demo backends to exist first).
+``demo.graphics`` (the toy Color record + 2D helpers) is NOT auto-imported:
+consuming it is one explicit import, which is the lesson — domain vocabulary
+arrives like any ecosystem package would (090's stdlib-minimalism policy).
 """
 
 from . import simple_shader  # noqa: F401

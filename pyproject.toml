@@ -67,6 +67,7 @@ exclude = ["archive"]  # historical material, not maintained code
 # BY DESIGN, and the book must show them bare.
 "docs/book/*.ipynb" = ["F821"]
 "src/pdum/dsl/stdlib/batteries.py" = ["F821"]  # battery cross-refs resolve via the overload table
+"src/pdum/dsl/demo/graphics.py" = ["F821"]  # same: sqrt/mix are overload-table names, not globals
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
