@@ -518,8 +518,19 @@ is credible *because* that bucket is on the books, not hidden.
 The prime directive made mechanical — all gates land with the vertical slice,
 not later:
 
-1. **Kernel line cap** ≤1150 + per-file caps + per-backend caps (≤300 render,
-   ≤220 runtime) + PR line-delta bot.
+1. **Kernel line cap** (1500 as of 2026-07-13; see the ledger) + per-file
+   caps + per-backend caps (≤300 render, ≤220 runtime) + PR line-delta bot.
+   **The policy, restated after the cap did its job** (the kernel froze at
+   1147 across two satellite-only steps): caps are **tripwires for a
+   conversation, not walls**. Crossing any cap requires a ledger entry
+   stating what the lines bought; the test stays exactly as strict as ever
+   (a soft-warn gate is a dead gate) — only the numbers move, deliberately.
+   And one virtue is INVERTED now that it has bitten twice: a satellite
+   that needs visibility or a hook must **ask for a seam** (ledger entry,
+   cap negotiation) — monkeypatching live kernel state to avoid a
+   negotiation is what is forbidden. "Zero kernel edits" remains the
+   default posture for FUNCTIONALITY; it was never meant to price
+   OBSERVABILITY out of the kernel (design 120 §1.3 is the case study).
 2. **Extension-locality test:** adding `sinh`, a record method, and a new
    statement form must produce **zero kernel diffs**. Run in M1, not M5.
 3. **Thesis test:** 300 frames of the disk demo with moving captures ⇒
@@ -969,6 +980,26 @@ batch matmul for free (matches np.matmul; new batch AND inner extents =
 cache hits, trip count reads the shape slot). The "rules engine" fear
 dissolved into a dozen lines shaped like a type rule; einsum generality
 deliberately not built.
+
+**2026-07-13 (the budget conversation): caps become tripwires; the kernel
+buys its event seam.** The 1150 cap did exactly what it was for — the kernel
+froze at 1147 through two satellite-only steps and five surfaces — and then
+began producing the wrong artifact: with 3 lines of headroom, step 10b's
+instrumentation shipped as a MONKEYPATCH on live `FastRecord` fields rather
+than as a seam, and the entire miss path (lower/rewrite/render/`cc`) stayed
+dark because its phases are locals no satellite can reach (120 §1.3). Policy
+change, user-directed: `KERNEL_TOTAL_CAP` 1150 → **1500** (a tripwire, not a
+wall; every cap crossing still demands a ledger entry; the budget TEST stays
+exactly as strict); per-file caps `cache.py` 165→175, `registry.py` 110→125,
+new `events.py` 55 (kernel) and 300 (recorder satellite). One virtue
+inverted, now that it has bitten twice: satellites needing visibility must
+ASK FOR A SEAM — monkeypatching live kernel state is what is forbidden.
+Implementation of 120 (event seam, recorder, `Memo`, monkeypatch deletion)
+proceeds with three review amendments: `capture.py`'s weak/plain memo
+containers keep their lifetime semantics (events only, no `Memo` migration);
+the recorder keys its span stacks per-thread (a depth column alone
+interleaves wrongly under the cross-thread compiles §8 champions); and the
+forbidden-miss path preserves `_explain`'s "nearest entry differs in" text.
 
 ---
 
