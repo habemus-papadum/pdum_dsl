@@ -19,7 +19,8 @@ import contextvars
 from contextlib import contextmanager
 from time import perf_counter_ns
 
-SINKS: list = []  # satellites append a callable (name, key, dur_ns, depth) -> None
+SINKS: list = []  # satellites append a callable (name, key, dur_ns, depth, detail) -> None
+# `detail` is None or a LAZY zero-arg callable; a sink may invoke it (ideally sampled).
 _FORBID = contextvars.ContextVar("pdum_forbid", default=())
 _DEPTH = contextvars.ContextVar("pdum_depth", default=0)
 
@@ -41,7 +42,7 @@ def emit(name: str, key: object = None, dur_ns: int = 0, detail=None) -> None:
     if _FORBID.get():
         _check(name, key, detail)
     for sink in SINKS:
-        sink(name, key, dur_ns, _DEPTH.get())
+        sink(name, key, dur_ns, _DEPTH.get(), detail)
 
 
 @contextmanager
@@ -61,7 +62,7 @@ def span(name: str, key: object = None):
         _DEPTH.reset(token)
         dur = perf_counter_ns() - t0
         for sink in SINKS:
-            sink(name, key, dur, depth)
+            sink(name, key, dur, depth, None)
 
 
 @contextmanager

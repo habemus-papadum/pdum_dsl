@@ -21,16 +21,16 @@ def test_dark_path_is_a_noop():
         pass
 
 
-def test_sink_receives_the_four_scalars(sink):
+def test_sink_receives_the_protocol_tuple(sink):
     emit("guard.drift", key=("K",), dur_ns=7)
-    assert sink == [("guard.drift", ("K",), 7, 0)]
+    assert sink == [("guard.drift", ("K",), 7, 0, None)]
 
 
 def test_span_times_and_nests(sink):
     with span("outer", "a"):
         with span("inner", "b"):
             pass
-    (n1, k1, d1, depth1), (n2, k2, d2, depth2) = sink
+    (n1, k1, d1, depth1, _), (n2, k2, d2, depth2, _) = sink
     assert (n1, depth1) == ("inner", 1) and (n2, depth2) == ("outer", 0)
     assert d1 >= 0 and d2 >= d1  # the outer span contains the inner
 
