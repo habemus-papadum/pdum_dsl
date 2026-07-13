@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-    <title>Coverage for src/pdum/dsl/kernel/pack.py: 97%</title>
+    <title>Coverage for src/pdum/dsl/kernel/pack.py: 99%</title>
     <link rel="icon" sizes="32x32" href="favicon_32_cb_c827f16f.png">
     <link rel="stylesheet" href="style_cb_4667309f.css" type="text/css">
     <script src="coverage_html_cb_dd2e7eb5.js" defer></script>
@@ -12,7 +12,7 @@
     <div class="content">
         <h1>
             <span class="text">Coverage for </span><b>src<span class="sep">/</span>pdum<span class="sep">/</span>dsl<span class="sep">/</span>kernel<span class="sep">/</span>pack.py</b>:
-            <span class="pc_cov">97%</span>
+            <span class="pc_cov">99%</span>
         </h1>
         <aside id="help_panel_wrapper">
             <input id="help_panel_state" type="checkbox">
@@ -55,8 +55,8 @@
         </aside>
         <h2>
             <span class="text">136 statements &nbsp;</span>
-            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">132<span class="text"> run</span></button>
-            <button type="button" class="mis show_mis button_toggle_mis" value="mis" data-shortcut="m" title="Toggle lines missing">4<span class="text"> missing</span></button>
+            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">134<span class="text"> run</span></button>
+            <button type="button" class="mis show_mis button_toggle_mis" value="mis" data-shortcut="m" title="Toggle lines missing">2<span class="text"> missing</span></button>
             <button type="button" class="exc show_exc button_toggle_exc" value="exc" data-shortcut="x" title="Toggle lines excluded">0<span class="text"> excluded</span></button>
         </h2>
         <p class="text">
@@ -65,7 +65,7 @@
             <a id="nextFileLink" class="nav" href="z_7b1868a9906006d1_printer_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.14.3">coverage.py v7.14.3</a>,
-            created at 2026-07-13 14:57 +0000
+            created at 2026-07-13 18:37 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -225,7 +225,7 @@
     <p class="pln"><span class="n"><a id="t143" href="#t143">143</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t144" href="#t144">144</a></span><span class="t"><span class="key">def</span> <span class="nam">packed_dest</span><span class="op">(</span><span class="nam">path</span><span class="op">:</span> <span class="nam">LeafPath</span><span class="op">,</span> <span class="nam">leaf</span><span class="op">:</span> <span class="nam">object</span><span class="op">,</span> <span class="nam">offset</span><span class="op">:</span> <span class="nam">int</span><span class="op">)</span> <span class="op">-></span> <span class="nam">tuple</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t145" href="#t145">145</a></span><span class="t">    <span class="key">if</span> <span class="key">not</span> <span class="nam">isinstance</span><span class="op">(</span><span class="nam">leaf</span><span class="op">,</span> <span class="nam">ScalarLeaf</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t146" href="#t146">146</a></span><span class="t">        <span class="key">return</span> <span class="key">None</span><span class="op">,</span> <span class="nam">offset</span>  <span class="com"># buffer-class leaf: travels the leaves channel</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t146" href="#t146">146</a></span><span class="t">        <span class="key">return</span> <span class="key">None</span><span class="op">,</span> <span class="nam">offset</span>  <span class="com"># buffer-class leaf: travels the leaves channel</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t147" href="#t147">147</a></span><span class="t">    <span class="nam">fmt</span> <span class="op">=</span> <span class="nam">_FMTS</span><span class="op">[</span><span class="nam">leaf</span><span class="op">.</span><span class="nam">kind</span><span class="op">]</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t148" href="#t148">148</a></span><span class="t">    <span class="key">return</span> <span class="nam">PackedDest</span><span class="op">(</span><span class="nam">offset</span><span class="op">,</span> <span class="nam">fmt</span><span class="op">)</span><span class="op">,</span> <span class="nam">offset</span> <span class="op">+</span> <span class="nam">struct</span><span class="op">.</span><span class="nam">calcsize</span><span class="op">(</span><span class="nam">fmt</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t149" href="#t149">149</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
@@ -277,7 +277,7 @@
     <p class="run"><span class="n"><a id="t195" href="#t195">195</a></span><span class="t">        <span class="key">if</span> <span class="nam">spec</span><span class="op">.</span><span class="nam">convert</span> <span class="key">is</span> <span class="key">not</span> <span class="key">None</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t196" href="#t196">196</a></span><span class="t">            <span class="nam">v</span> <span class="op">=</span> <span class="nam">spec</span><span class="op">.</span><span class="nam">convert</span><span class="op">(</span><span class="nam">v</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t197" href="#t197">197</a></span><span class="t">        <span class="key">if</span> <span class="nam">spec</span><span class="op">.</span><span class="nam">dest</span> <span class="key">is</span> <span class="key">None</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t198" href="#t198">198</a></span><span class="t">            <span class="nam">leaves</span><span class="op">.</span><span class="nam">append</span><span class="op">(</span><span class="nam">v</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t198" href="#t198">198</a></span><span class="t">            <span class="nam">leaves</span><span class="op">.</span><span class="nam">append</span><span class="op">(</span><span class="nam">v</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t199" href="#t199">199</a></span><span class="t">        <span class="key">else</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t200" href="#t200">200</a></span><span class="t">            <span class="nam">struct</span><span class="op">.</span><span class="nam">pack_into</span><span class="op">(</span><span class="nam">spec</span><span class="op">.</span><span class="nam">dest</span><span class="op">.</span><span class="nam">fmt</span><span class="op">,</span> <span class="nam">staging</span><span class="op">,</span> <span class="nam">spec</span><span class="op">.</span><span class="nam">dest</span><span class="op">.</span><span class="nam">offset</span><span class="op">,</span> <span class="nam">v</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t201" href="#t201">201</a></span><span class="t">    <span class="key">return</span> <span class="nam">tuple</span><span class="op">(</span><span class="nam">leaves</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
@@ -392,7 +392,7 @@
             <a class="nav" href="z_7b1868a9906006d1_printer_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.14.3">coverage.py v7.14.3</a>,
-            created at 2026-07-13 14:57 +0000
+            created at 2026-07-13 18:37 +0000
         </p>
     </div>
 </footer>
