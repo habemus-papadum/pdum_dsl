@@ -46,7 +46,10 @@ two satellite refinements, the pedantic indexing decision incl. named
 axes, array marshaling, statement policy, the C target, scope cuts);
 `110_transforms-and-derivatives.md` (the SIMT-vmap spike finding, named
 vmap, the tangent engine behind jvp and the in-kernel `D`, named
-contraction).
+contraction); `120_events-and-instrumentation.md` (**proposal**: the event
+seam that generalizes the ad-hoc cache counters and `no_compile()`,
+structured sampled tracebacks, the `Memo` primitive, the §6 budget increase
+it asks for, and the removal of `bench.py`'s monkeypatch).
 
 ---
 

@@ -46,6 +46,13 @@ the mkdocs site):
     transform machinery), named-first vmap, the one tangent engine behind
     `jvp` and the in-kernel `D` (analytic shader derivatives), and named
     contraction with batching for free.
+  - `120_events-and-instrumentation.md` — **proposal, not implemented**:
+    the event seam (`emit`/`span`/`forbid`) that generalizes the four ad-hoc
+    cache counters and `no_compile()`, the recorder satellite (structured
+    interned tracebacks, sampling, the phase tree), the `Memo` primitive so
+    fingerprint-keyed analyses are instrumented by construction, the kernel
+    line-budget increase this costs (1150 → 1235, with numbers), and the
+    removal of `bench.py`'s live-cache-entry monkeypatch.
 
 Also here, unnumbered: `research/` — the frozen 20-agent research corpus
 (R/V/P/J) behind 010, plus later targeted surveys appended in the same

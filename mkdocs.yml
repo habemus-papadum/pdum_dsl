@@ -33,6 +33,7 @@ nav:
       - "090 — Core & extensions (punning charter)": design/090_core-and-extensions.md
       - "100 — Arrays & axes": design/100_arrays-and-axes.md
       - "110 — Transforms & derivatives": design/110_transforms-and-derivatives.md
+      - "120 — Events & instrumentation (proposal)": design/120_events-and-instrumentation.md
   - The Book:
       - "Chapter 0 — The thesis": book/ch00-thesis.ipynb
       - "Chapter 1 — Types are values": book/ch01-types-are-values.ipynb
