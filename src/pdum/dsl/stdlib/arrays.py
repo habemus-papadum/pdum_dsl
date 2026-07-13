@@ -297,12 +297,25 @@ def make_call_rule(prev):
                 raise MissingRule(f"isel() needs a NAMED array, got {base.type!r} [{fmt(ctx.loc(node))}]")
             dims = base.type.dims
             given = {kw.arg: kw.value for kw in node.keywords}
-            if node.args or set(given) != set(dims):
+            woven = ctx.rules.get("__woven__") or {}
+            active = {d: woven[d] for d in dims if d in woven}  # vmap owns these axes here
+            if set(given) & set(active):
+                raise MissingRule(
+                    f"axis {sorted(set(given) & set(active))!r} is mapped away here (vmap owns it) "
+                    f"[{fmt(ctx.loc(node))}]"
+                )
+            if node.args or set(given) != set(dims) - set(active):
                 raise MissingRule(
                     f"isel is pedantic on purpose: name every axis exactly once as a keyword — "
-                    f"expected {set(dims)!r}, got {set(given)!r} [{fmt(ctx.loc(node))}]"
+                    f"expected {set(dims) - set(active) or '{}'!r}, got {set(given) or '{}'!r} "
+                    f"[{fmt(ctx.loc(node))}]"
                 )
-            return _linear_index(ctx, node, base, [ctx.lower(given[d]) for d in dims])
+            if active:
+                hits = ctx.rules.get("__woven_hits__")
+                if hits is not None:
+                    hits.append(tuple(active))
+            indices = [active[d] if d in active else ctx.lower(given[d]) for d in dims]
+            return _linear_index(ctx, node, base, indices)
         return prev(ctx, node)
 
     return _call

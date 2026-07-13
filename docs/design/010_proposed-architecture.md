@@ -43,7 +43,10 @@ case, the backends/ contribution contract); `090_core-and-extensions.md`
 stdlib minimalism, the buffer/tensor-interop contract, the multi-device
 testing ladder); `100_arrays-and-axes.md` (the array type algebra and its
 two satellite refinements, the pedantic indexing decision incl. named
-axes, array marshaling, statement policy, the C target, scope cuts).
+axes, array marshaling, statement policy, the C target, scope cuts);
+`110_transforms-and-derivatives.md` (the SIMT-vmap spike finding, named
+vmap, the tangent engine behind jvp and the in-kernel `D`, named
+contraction).
 
 ---
 
@@ -924,6 +927,45 @@ sphere tracer is `for`+`if`+carries+batteries; python 22.4 µs/ray vs C
 per-pixel-per-call is the wrong granularity for CPU frames; frames want
 domain calls (ch10's `out=`) or DPS out-arrays (chaining/step 14). Tests
 199; notebooks 19/19 (ch12-data-and-loops + ch12a delta interlude).
+
+**2026-07-12 (step 12): TRANSFORMS — vmap, jvp, in-kernel `D`, and named
+contraction (design 110).** THE SPIKE FINDING, which reshaped the step:
+**our vmap is SIMT-shaped, not SIMD-shaped.** It never widens values with
+a batch dimension (JAX's way — where batched predicates force
+execute-both-and-select, breaking lazy branches, and batched trip counts
+need masking); it adds ONE trailing i64 lane parameter and WEAVES it into
+accesses whose NamedArray captures carry the mapped axis — the same move
+that made compute-family params thread coordinates. Consequences:
+intermediates stay scalar, `if`/`for` need ZERO new transform machinery,
+the lazy-branch guarantee survives vmap (no `where` wart), and the
+priced 180-lines-per-region-op tax never materializes: the transforms
+satellite landed at 338 counted lines after review hardening (<350 — NO
+re-hear). Recorded loss:
+cross-lane collectives have no home in a woven representation (GPU-shaped,
+deferred). Surfaces: `vmap(f, axis="name")` — named-first (user-directed):
+weaves named captures, broadcasts the rest, REFUSES when nothing carries
+the axis; the woven name is scoped away inside the body (`isel` of it
+refuses); axis name rides the `Derived("vmap", …)` identity — new batch
+size = 0 recompiles. `jvp(f)(*args, *tangents)` → (primal, tangent): ONE
+tangent engine (per-op linearization rules, surface-A-shaped column;
+None-is-zero algebra so untouched slices cost nothing; branches get a
+parallel lazy `core.if`; loops WIDEN — carry becomes (primal, tangent),
+primal consumers re-pointed at lane 0) — matches finite differences
+through branches AND loops (|Δ|≈9e-9); fresh closures under transforms =
+0 compiles (the thesis survives its first transform). **`D(x)`**
+(user-directed, GLSL's dFdx analytically): partials of any intermediate
+w.r.t. the enclosing kernel's params via basis seeding of the SAME engine;
+structured values differentiate structurally; D-free kernels mint
+unchanged artifacts (pinned); compute shaders have no quads, so analytic
+`D` is the only derivative there — ch13 demos fwidth anti-aliasing with a
+one-pixel edge at two zooms on CPU. GL vocabulary (ddx/ddy/fwidth) =
+demo.graphics batteries, not stdlib. **Named contraction** (stretch):
+`matmul(A, B, i, j)` pairs the UNIQUE shared axis name — woven axes
+excluded FIRST, which is exactly why `vmap(cell, axis="batch")` gives
+batch matmul for free (matches np.matmul; new batch AND inner extents =
+cache hits, trip count reads the shape slot). The "rules engine" fear
+dissolved into a dozen lines shaped like a type rule; einsum generality
+deliberately not built.
 
 ---
 

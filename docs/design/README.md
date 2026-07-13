@@ -41,6 +41,11 @@ the mkdocs site):
     decision (mandatory `isel` on named arrays), marshaling through the
     leaves channel, statement policy (strict joins, single tail return,
     bounded loops), the C target, and the recorded scope cuts.
+  - `110_transforms-and-derivatives.md` — transforms (step 12): the spike
+    finding (SIMT weaving, not SIMD widening — control flow needs zero
+    transform machinery), named-first vmap, the one tangent engine behind
+    `jvp` and the in-kernel `D` (analytic shader derivatives), and named
+    contraction with batching for free.
 
 Also here, unnumbered: `research/` — the frozen 20-agent research corpus
 (R/V/P/J) behind 010, plus later targeted surveys appended in the same

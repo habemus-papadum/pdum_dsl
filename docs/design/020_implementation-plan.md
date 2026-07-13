@@ -324,6 +324,24 @@ CUDA-C compile-check spike during step 11's C-backend work).
 | 14 — CUDA + Metal backends (revised 2026-07-12, 070/R13/R14: OWN both stacks) | `backends/cuda/` on **cuda.core** (opt-in-cache off; escalation: once-per-FastRecord pointer table into staging via `cuLaunchKernel`); `backends/metal/` on **ctypes-objc/PyObjC** (`setBytes`=staging, `setBuffer`=leaves); cupy/MLX demoted to optional fallback runtimes/allocators; CUDA developed design-for-skip + Modal burst (**parallel agents**, one per backend); `raw_kernel` escape hatch | `ch15-four-targets-one-ir` [platform-gated cells]: same kernel on every available target, differentially compared | multi-backend claim at N=4–5 |
 | 15 — units | `Dim`/`Quantity`, unit aspect column, `Affine` pack converters | `ch16-dimensions-and-units`: mm→inch knob tweak with **zero recompiles** (pack-tier miss only, counters shown); dimension error naming both locs | two-tier law under a real domain |
 
+### Step 12 outcome (2026-07-12): the spike verdict and the user additions
+
+The vmap-over-`if`/`for` spike concluded **SIMT weaving, not SIMD
+widening** (110 §1): vmap adds a lane coordinate and weaves it into
+named-capture accesses; control flow needs zero transform machinery; the
+satellite landed at 338 counted lines after review hardening (<350 — no re-hear). User-directed
+scope that rode the step: the in-kernel analytic derivative `D` (dual
+numbers via the same tangent engine as jvp; `ddx`/`ddy`/`fwidth` as
+demo.graphics batteries; ch13's one-pixel-edge anti-aliasing demo),
+named-first vmap (`axis="name"`), the batching-ignorance demo arc, and
+named contraction (`matmul` pairing the unique shared axis name, woven
+axes excluded first → batch matmul via vmap for free). Deferred with
+reasons (110 §5): positional in_axes/out_axes, collectives over woven
+axes, `D(x, wrt=local)` (step 13's question), second-order `D∘D`, vmap
+over scalar args (blocked on array args). Chapter:
+`ch13-transforms-are-rules` (no delta interlude — the step widened no
+base-pack syntax; `D`/`matmul` are call-door special forms).
+
 **Later, unscheduled** (each becomes a step+chapter when pulled forward):
 t-string mini-language (`ch17-einops-in-a-tstring`), disk cache, an appendix
 chapter implementing a §12 solver satellite (egglog units *or* Z3 bounds — the

@@ -32,6 +32,7 @@ nav:
       - "080 — Backend organization": design/080_backend-organization.md
       - "090 — Core & extensions (punning charter)": design/090_core-and-extensions.md
       - "100 — Arrays & axes": design/100_arrays-and-axes.md
+      - "110 — Transforms & derivatives": design/110_transforms-and-derivatives.md
   - The Book:
       - "Chapter 0 — The thesis": book/ch00-thesis.ipynb
       - "Chapter 1 — Types are values": book/ch01-types-are-values.ipynb
@@ -50,6 +51,7 @@ nav:
       - "11b — Measuring the machine": book/ch11b-measuring-the-machine.ipynb
       - "Chapter 12 — Data and loops": book/ch12-data-and-loops.ipynb
       - "12a — Lay of the land": book/ch12a-lay-of-the-land.ipynb
+      - "Chapter 13 — Transforms are rules": book/ch13-transforms-are-rules.ipynb
       - Glossary: book/GLOSSARY.md
   - M0 reference asset (frozen):
       - Overview: m0/index.md

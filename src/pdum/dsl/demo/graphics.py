@@ -39,6 +39,22 @@ def lerp2(a, b, t):
     return (mix(a[0], b[0], t), mix(a[1], b[1], t))
 
 
+# GL derivative vocabulary (110 §3): one-line sugar over the analytic `D`.
+# GLSL's dFdx is a finite difference across the pixel QUAD; ours is exact —
+# and compute shaders have no quads, so analytic is the only derivative there.
+def ddx(v):
+    return D(v)[0]
+
+
+def ddy(v):
+    return D(v)[1]
+
+
+def fwidth(v):
+    d = D(v)
+    return abs(d[0]) + abs(d[1])
+
+
 @dataclass(frozen=True)
 class Color:
     r: float
@@ -53,7 +69,7 @@ class Color:
 
 
 def install(registry) -> None:
-    for fn in (dot2, length2, lerp2):
+    for fn in (dot2, length2, lerp2, ddx, ddy, fwidth):
         overload(registry, fn.__name__)(fn)
     record(registry, Color)
 
