@@ -64,6 +64,55 @@ def test_overed_kernel_is_one_more_coordinate():
     assert np.allclose(out, data.array.T * 10.0)
 
 
+def test_grid_contract_refusals_and_nested_over():
+    """Stage-2 review: the artifact carries its contract (kind + rank) and
+    the launcher enforces it — every case below was silent corruption."""
+    from pdum.dsl.kernel.ir import VerifyError
+    from pdum.dsl.stdlib.transforms import jvp
+
+    g = grid_registry()
+
+    @jit()
+    def icell(i, j):
+        return i * j + 7  # i64 result: allocation must follow the KERNEL's kind
+
+    out = g.dispatch(icell, (), (3, 4))
+    assert out.dtype == np.int64 and out[2, 3] == 13
+
+    @jit()
+    def fcell(i, j):
+        return float(i) + float(j) / 2.0
+
+    with pytest.raises(VerifyError, match="dtype"):
+        g.dispatch(fcell, (), np.zeros((2, 2), dtype=np.float32))
+    with pytest.raises(VerifyError, match="C-contiguous"):
+        g.dispatch(fcell, (), np.zeros((4, 6))[:, ::2])
+    with pytest.raises(VerifyError, match="rank"):
+        g.dispatch(fcell, (), (5,))
+
+    # nested over = two more coordinates, working (was an AttributeError)
+    data = Named(np.arange(24.0).reshape(2, 3, 4), ("bx", "by", "x"))
+
+    def make(t):
+        @jit()
+        def k(i):
+            return t.isel(x=i) * 2.0
+
+        return k
+
+    nested = over(over(make(data), axis="by"), axis="bx")
+    got = g.dispatch(nested, (), np.empty((4, 3, 2)))  # (i, by-lane, bx-lane)
+    assert np.allclose(np.transpose(got, (2, 1, 0)), data.array * 2.0)
+
+    with pytest.raises(VerifyError, match="no domain contract"):
+
+        @jit()
+        def sq(x):
+            return x * x
+
+        g.dispatch(jvp(sq), (), (4,))
+
+
 def make_attn(Q, K, V, S, scale):
     @jit()
     def cell(t, d):

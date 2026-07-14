@@ -101,7 +101,9 @@ def render(region: Region, plan: PackPlan, backend=None, name: str = "kernel", *
                 return f"c{attrs['index']}"
             spec = args_by_index.get(attrs["index"])
             if spec is None:
-                raise VerifyError(f"argument {attrs['index']} has no scalar slot — did you mean a grid call?")
+                raise VerifyError(
+                    f"argument {attrs['index']} has no scalar slot (composite arguments are a recorded cut)"
+                )
             return f"{_LOADER[spec.dest.fmt]}(staging + {spec.dest.offset})"
         if node.op == "abi.slot":
             return f"{_LOADER[attrs['fmt']]}(staging + {attrs['offset']})"
@@ -214,7 +216,7 @@ def render(region: Region, plan: PackPlan, backend=None, name: str = "kernel", *
         ot = _ctype(result.type)
         sig = f"void {name}(const unsigned char* staging, void* const* bufs, {ot}* out, const int64_t* dom)"
         return (
-            f"/* pdum-restype: grid */\n{_PRELUDE}\n"
+            f"/* pdum-restype: grid {result.type.kind} rank {rank} */\n{_PRELUDE}\n"
             f"#if defined(_WIN32)\n__declspec(dllexport)\n#endif\n"
             f"{sig} {{\n" + "\n".join(heads) + f"\n{body}\n{write}\n" + "\n".join(tails) + "\n}\n"
         )
@@ -243,7 +245,8 @@ def compile_source(source: str, name: str = "kernel"):
         raise VerifyError(f"cc failed:\n{proc.stderr}\n--- source ---\n{source}")
     dll = CDLL(str(lib))
     fn = getattr(dll, name)
-    kind = source.split("pdum-restype: ", 1)[1].split(" ", 1)[0]
+    meta = source.split("pdum-restype: ", 1)[1].split(" */", 1)[0].split()
+    kind = meta[0]
     if kind == "grid":  # domain kernel: void fn(staging, bufs, out, dom)
         fn.restype = None
         fn.argtypes = (c_char_p, c_void_p, c_void_p, c_void_p)
@@ -254,6 +257,11 @@ def compile_source(source: str, name: str = "kernel"):
     class CProgram:
         __pdum_source__ = source
         _keepalive = (dll, d)
+        # The grid CONTRACT rides the artifact (stage-2 review: the launcher
+        # cannot validate what it cannot see — dtype/rank mismatches were
+        # silent corruption): element kind + domain rank, from the header.
+        grid_kind = meta[1] if kind == "grid" else None
+        grid_rank = int(meta[3]) if kind == "grid" else None
 
         @staticmethod
         def call(staging, buffers):
@@ -280,12 +288,15 @@ def compile_source(source: str, name: str = "kernel"):
 
 
 def _grid_param_types(target) -> tuple:
-    pyfunc = getattr(target, "pyfunc", None)
-    if pyfunc is None:  # transformed kernels expose their base's arity via captures
-        base = target.captures[0]
-        n = base.pyfunc.__code__.co_argcount + (1 if type(target).__name__ == "Over" else 0)
-        return (i64,) * n
-    return (i64,) * pyfunc.__code__.co_argcount
+    from ..stdlib.transforms import Over
+
+    lanes, t = 0, target
+    while not hasattr(t, "pyfunc"):  # unwrap over-chains: each adds one coordinate
+        if isinstance(t, Over):
+            lanes, t = lanes + 1, t.captures[0]
+            continue
+        raise VerifyError(f"the grid launches kernels and over-chains; {type(t).__name__} has no domain contract")
+    return (i64,) * (t.pyfunc.__code__.co_argcount + lanes)
 
 
 def _grid_plan(env_types, arg_types, table):
@@ -298,6 +309,9 @@ def render_grid(region: Region, plan: PackPlan, backend=None, name: str = "kerne
     return render(region, plan, backend, name, grid=True)
 
 
+_NPKIND = {"f64": "float64", "f32": "float32", "i64": "int64", "i32": "int32", "u64": "uint64", "u32": "uint32"}
+
+
 def make_grid_launcher(artifact, plan: PackPlan):
     def launch(staging, leaves):
         import numpy as np
@@ -307,11 +321,18 @@ def make_grid_launcher(artifact, plan: PackPlan):
             raise VerifyError("grid kernels need a domain: k(out=(N, ...)) or an out ARRAY to fill")
         spec = dom_spec[-1].value
         buffers = tuple(x for x in leaves if not isinstance(x, Out))
+        want = np.dtype(_NPKIND[artifact.grid_kind])
         if isinstance(spec, np.ndarray):
+            if spec.dtype != want:  # raw pointer writes: a mismatch is heap corruption, not coercion
+                raise VerifyError(f"grid out dtype {spec.dtype} != kernel result {want} — pass a matching array")
+            if not spec.flags["C_CONTIGUOUS"]:
+                raise VerifyError("grid out must be C-contiguous (the artifact writes row-major from the base)")
             out = spec  # adopt: the array's shape IS the domain
         else:
             shape = (spec,) if isinstance(spec, int) else tuple(spec)
-            out = np.empty(shape, dtype=np.float64)
+            out = np.empty(shape, dtype=want)
+        if out.ndim != artifact.grid_rank:
+            raise VerifyError(f"this kernel has {artifact.grid_rank} domain coordinate(s); out has rank {out.ndim}")
         return artifact.grid_call(staging, buffers, out, out.shape)
 
     return launch
