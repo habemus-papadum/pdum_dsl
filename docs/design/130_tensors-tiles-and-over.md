@@ -101,7 +101,21 @@ protocol) becomes kernel seams per 120's policy (§7).
   a kernel whose result type is an Array writes into a caller-provided
   destination riding the leaves channel (`Out` already exists); the
   ResultPlan mirror already speaks buffer leaves. NO shape inference —
-  out shapes come from declared out-shape rules (070 decision 4).
+  and the unification that makes this cheap: **the out array's named shape
+  IS the launch domain**, exactly the compute family's `out=(W,H)`
+  contract generalized. A map-loop's extent binds to the out shape (a
+  staging value like any capture shape — `_build_slots` already walks an
+  "out" root); extent mismatch against woven capture extents follows the
+  100 no-bounds-check posture on scalar targets and becomes a checked
+  refusal where a backend can afford it.
+- **Mechanics pinned for stage 2a** (so the ABI lands whole): argument
+  arrays reuse the capture machinery symmetrically — the plan already
+  walks arg roots; lowering gains `array.dim(src=(root, i), sub=(k,))`
+  resolved by renderers FROM THE PLAN (the same pattern as
+  `array.buffer`, whose `slot` attr generalizes to a rooted `src`), so
+  shape/stride reads work for args exactly as `core.env` sub-paths do for
+  captures. Stores stay OUT of the IR in v1: a `map`-kind loop *is* the
+  write-to-out semantics, emitted by renderers — purity stays untouched.
 - Elementwise arithmetic on same-axes tensors; broadcast ONLY against
   scalars (axis alignment is by NAME and must be exact — the pedantic
   posture extends: no positional broadcasting, ever).
@@ -220,7 +234,7 @@ seam"), the asks:
 | `Lowerer.context` (typed dict threaded through `inline`; root params/argcount exposed) | `lower.py` | ~20 | all five string doors, the root-argc gymnastics |
 | `lower_handle(prefix=…)` + derived-base re-entry | `lower.py` | ~10 | `_lower_base`/`build_pipe` duplication; UNBLOCKS transform composition |
 | `DerivedValue` protocol + one ValueKind | `capture.py` or new | ~25 | Pipeline/VMapped/Jvp triplication; the missed-kind bug class |
-| Binder allocation (deterministic tuple indices) | `ir.py` Builder | ~8 | the satellite-owned soundness invariant |
+| Binder allocation (deterministic tuple indices) | `lower.py` (`Lowerer.binder`, as landed) | ~8 | the satellite-owned soundness invariant |
 | `core.for` kind/reduce type rules | `ops.py` | ~10 | — (new capability) |
 | Array-result ABI (ResultPlan buffer leaves; launcher adoption) | `pack.py`/`registry.py` | ~15 | the array-results cut |
 | Token type | `types.py` | ~3 | — (new capability) |

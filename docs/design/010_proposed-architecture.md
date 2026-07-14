@@ -1003,7 +1003,7 @@ wrapper protocol + ONE MRO-covered ValueKind; Pipeline/Over/Jvp are
 subclasses; `_guards` recurses into wrapper captures (closing the step-11
 noted gap). RENAME: vmap → **`over`** (no users; the JAX prior contradicts
 ours on every axis — argument-position vs capture-name, call-once-batched
-vs per-lane coordinate). Kernel 1274/1500. ALSO: the book builder moved
+vs per-lane coordinate). Kernel 1280/1500 (measured by scripts/loc_budget.py at commit time — the audit caught a stale pre-commit number here once; totals are pasted from fresh runs now). ALSO: the book builder moved
 INTO the repo (`scripts/book/build_chapters.py`) after two parallel
 sessions edited the same chapter from separate scratchpads — the single
 source of truth for docs/book is now PR-visible (the ch11b lesson).

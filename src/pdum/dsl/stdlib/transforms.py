@@ -357,10 +357,9 @@ def _matmul(ctx, node):
         )
     inner = shared[0]
     outs = [d for d in adims if d != inner] + [d for d in bdims if d != inner]
-    if len(set(outs)) != len(outs):
-        raise MissingRule(
-            f"matmul: output axes must have distinct names, got {outs!r} — rename one side [{fmt(ctx.loc(node))}]"
-        )
+    # Duplicate OUT names are impossible: a name on both sides would be a
+    # second SHARED name, refused above (dominance; stage-1 audit killed the
+    # dead guard that used to sit here).
     if len(idx) != len(outs):
         raise MissingRule(
             f"matmul: {len(outs)} output indices for axes {outs!r}, got {len(idx)} [{fmt(ctx.loc(node))}]"

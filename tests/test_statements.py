@@ -235,7 +235,6 @@ def test_loop_binder_keys_are_deterministic():
 
     ops = {**CORE_OPS, **DEFAULT.ops}
     rules = dict(DEFAULT.lower_rules)
-    rules["__registry__"] = DEFAULT
     k1 = lower_handle(build(), rules, ops, arg_types=(T.f64,)).key
     lower_handle(other, rules, ops, arg_types=(T.f64,))  # would advance any shared counter
     k2 = lower_handle(build(), rules, ops, arg_types=(T.f64,)).key

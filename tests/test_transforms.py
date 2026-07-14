@@ -1,5 +1,5 @@
 """Step 12 — transforms: jvp (forward AD) vs finite differences, the
-in-kernel `D`, SIMT vmap with named weaving, and named/batched matmul."""
+in-kernel `D`, SIMT `over` with named weaving, and named/batched matmul."""
 
 import pytest
 
@@ -334,7 +334,7 @@ def test_jvp_of_over_refuses_on_the_lane_type():
 
 
 def test_transformed_kernels_are_capturable():
-    """A vmapped kernel SUMMARIZES like a Pipeline (ValueKind); calling it
+    """An over'd kernel SUMMARIZES like a Pipeline (ValueKind); calling it
     in-body still refuses downstream (first-class kernel values, later)."""
     data = Named(np.ones((2, 3)), ("batch", "x"))
 
