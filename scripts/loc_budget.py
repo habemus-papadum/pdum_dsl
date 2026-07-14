@@ -40,6 +40,7 @@ FILE_CAPS = {
     "ops.py": 110,
     "printer.py": 80,
     "rewrite.py": 150,
+    "derived.py": 45,  # 130 §7: the ONE wrapper protocol (DerivedValue + its ValueKind)
     "lower.py": 170,  # the fused driver; rule PACKS live in the satellite bucket (V1 calibration)
     # §5 estimated 80 for the input half alone. The real file also carries the
     # OUTPUT half (ResultPlan/unflatten — 040 §3b made marshaling bidirectional

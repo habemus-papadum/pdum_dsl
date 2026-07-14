@@ -1,6 +1,9 @@
 # 110 — Transforms & derivatives: vmap, jvp, and the in-kernel `D`
 
-**Status:** canon (2026-07-12, step 12 opening). Companions: 100 (arrays &
+**Status:** canon (2026-07-12, step 12 opening); AMENDED 2026-07-13 —
+vmap is renamed **`over`** and transform COMPOSITION landed with the
+step-13 seams (130 §7): §2's nesting note and §5's composition deferral
+are resolved; the woven-map merge lives in `build_over`. Companions: 100 (arrays &
 axes — the named-axis machinery this builds on), 030 (deep-learning notes),
 020 step-12 row. User-directed additions this step: the analytic
 shader-derivative operator `D` (dual numbers, "only when necessary"),

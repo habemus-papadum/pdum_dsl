@@ -262,18 +262,10 @@ def _assigned_names(stmts):
 
 
 def _fresh_binder(ctx, type):
-    """Loop binders need indices that can NEVER collide with function params
-    or each other: `core.param` identity is structural, so two binders with
-    equal (index, type) would be THE SAME node to the content key — distinct
-    loops could share an artifact. The index is a TUPLE — ("loop", *inline
-    prefix, per-function sequence) — so it is unique (prefix separates
-    inlined callees, the sequence separates loops within one function),
-    DETERMINISTIC (source order only — the same kernel gets the same keys in
-    every process; review caught a shared counter making keys depend on
-    process history), and collision-free with integer function params."""
-    seq = getattr(ctx, "_binder_seq", 0)
-    ctx._binder_seq = seq + 1
-    return ctx.builder.param(("loop", *ctx.prefix, seq), type)
+    """Region binders come from the KERNEL seam now (Lowerer.binder — the
+    uniqueness/determinism invariant is kernel law, 130 §7); this shim stays
+    as the pack's local name for it."""
+    return ctx.binder(type)
 
 
 def _for_stmt(ctx, node):
@@ -366,9 +358,7 @@ def _pass(ctx, node):
 def _call(ctx, node):
     if node.keywords:
         raise MissingRule(f"keyword arguments are not in the base pack [{fmt(ctx.loc(node))}]")
-    registry = ctx.rules.get(
-        "__registry__"
-    )  # planted by Registry._build per build; string keys never collide with ast types
+    registry = ctx.context.get("registry")  # planted by Registry._build (the 130 §7 context seam)
     args = tuple(ctx.lower(a) for a in node.args)
     if isinstance(node.func, ast.Attribute):  # method call: Record overload_method (surface B)
         base = ctx.lower(node.func.value)

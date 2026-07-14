@@ -1,8 +1,8 @@
-"""Transforms: vmap (named, woven), jvp (forward AD), and in-kernel ``D``.
+"""Transforms: over (named axis binding), jvp (forward AD), in-kernel ``D``.
 
 Design: ``110_transforms-and-derivatives.md``. The load-bearing choices:
 
-- **vmap is SIMT-shaped, not SIMD-shaped**: it adds one trailing i64
+- **over is SIMT-shaped, not SIMD-shaped**: it adds one trailing i64
   coordinate parameter and WEAVES it into every access to a capture whose
   NamedArray type carries the mapped axis. Intermediates stay scalar, each
   lane runs its own branches and trip counts — control flow needs zero new
@@ -25,10 +25,10 @@ from __future__ import annotations
 
 import ast
 
+from ..kernel.derived import DerivedValue
 from ..kernel.ir import Builder, Region, VerifyError
-from ..kernel.lower import Lowerer, MissingRule, check_coherence, fmt
-from ..kernel.registry import DEFAULT
-from ..kernel.types import Derived, FnType, Scalar, Tuple, i64
+from ..kernel.lower import MissingRule, fmt, lower_handle
+from ..kernel.types import Scalar, Tuple, i64
 
 
 class _Tangents:
@@ -228,67 +228,34 @@ JVP_RULES = {
 }
 
 
-# --- the wrappers (FnType-shaped, like Pipeline) --------------------------------
-class _Transformed:
-    __slots__ = ("base", "fntype", "fp", "captures")
+# --- the wrappers (DerivedValue subclasses: ONE protocol, 130 §7) ---------------
+class Over(DerivedValue):
+    """`over(f, axis="batch")`: the axis-binding transform. v1 lowering is
+    the SIMT weave (the lane arrives as a trailing i64 coordinate); the
+    map-loop IR form arrives with the tensor step (130 §4.3) without
+    changing this identity."""
 
-    def __init__(self, base, tag, static, fp):
-        self.base = base
-        self.captures = (base,)
-        self.fntype = FnType(Derived(tag, base.fntype.template, static), (base.fntype,))
-        self.fp = fp
+    __slots__ = ("base", "axis")
 
-    @property
-    def kind(self):
-        return self.base.kind
-
-    @property
-    def env_types(self):
-        return self.fntype.env_types
-
-    def __call__(self, *args, out=None):
-        return DEFAULT.dispatch(self, args, out)
-
-
-class VMapped(_Transformed):
     def __init__(self, base, axis: str):
-        super().__init__(base, "vmap", (("axis", axis),), ("V", axis, base.fp))
-        self.axis = axis
-
-    __slots__ = ("axis",)
+        self.base, self.axis = base, axis
+        super().__init__("over", base.fntype.template, (base.fntype,), (("axis", axis),), ("O", axis, base.fp), (base,))
 
 
-class Jvp(_Transformed):
-    __slots__ = ()
+class Jvp(DerivedValue):
+    __slots__ = ("base",)
 
     def __init__(self, base):
-        super().__init__(base, "jvp", (), ("J", base.fp))
+        self.base = base
+        super().__init__("jvp", base.fntype.template, (base.fntype,), (), ("J", base.fp), (base,))
 
 
-class _TransformedKind:
-    """A transformed kernel is capturable, exactly like a Pipeline: its type
-    is its FnType, its fingerprint precomputed, its leaves its base's."""
-
-    def typeof(self, v, table):
-        return v.fntype
-
-    def fingerprint(self, v, table):
-        return v.fp
-
-    def flatten(self, v, table):
-        return tuple(leaf for val in v.captures for leaf in table.flatten(val))
-
-
-from ..kernel.valuekind import BUILTINS as _BUILTINS  # noqa: E402
-
-_BUILTINS.register(VMapped, _TransformedKind())
-_BUILTINS.register(Jvp, _TransformedKind())
-
-
-def vmap(f, *, axis: str):
-    """SIMT vmap: `vmap(f, axis="batch")(*args, b)` runs lane `b`. Captures
-    carrying the named axis are woven; everything else broadcasts."""
-    return VMapped(f, axis)
+def over(f, *, axis: str):
+    """This kernel, over that axis: `over(f, axis="batch")(*args, b)` runs
+    lane `b`. Captures carrying the named axis are woven; everything else
+    broadcasts. Composes: `over(over(g, axis="x"), axis="y")(*args, bx, by)`
+    — lanes trail in application order, outermost LAST."""
+    return Over(f, axis)
 
 
 def jvp(f):
@@ -296,73 +263,62 @@ def jvp(f):
     return Jvp(f)
 
 
-def _lower_base(base, rules, ops, arg_types, derived, prefix=(0,)):
-    """build_pipe's move: the wrapper's env is (base,), so the base lowers
-    under prefix (0,) to keep capture paths aligned with the plan."""
-    if isinstance(base, _Transformed):
-        raise VerifyError(
-            "transform composition (vmap∘vmap, jvp∘vmap, …) is not wired yet — it arrives with "
-            "step 13's transform driver; apply one transform per kernel for now"
-        )
-    check_coherence(base)
-    ctx = Lowerer(base, rules, ops, derived, prefix=prefix)
-    code = base.pyfunc.__code__
-    names = code.co_varnames[: code.co_argcount]
-    if len(arg_types) != len(names):
-        raise VerifyError(f"{base.fntype.template.label} takes {len(names)} args; got {len(arg_types)}")
-    params = tuple(ctx.builder.param(i, t) for i, t in enumerate(arg_types))
-    ctx.locals.update(zip(names, params))
-    return ctx, params, ctx.run_body()
-
-
-def build_vmap(w: VMapped, rules, ops, arg_types, derived):
+def build_over(w: Over, rules, ops, arg_types, derived, *, context=None, prefix=()):
+    """Composition IS lower_handle re-entry (130 §7): a Derived base
+    dispatches to its own build rule with the merged context intact — no
+    special composition mechanism exists or is needed."""
+    context = dict(context or {})
     if not arg_types or arg_types[-1] != i64:
-        raise VerifyError(f"vmap adds a trailing i64 lane coordinate: call g(*args, b); got {arg_types!r}")
-    b = Builder(ops)
-    lane = b.param(len(arg_types) - 1, i64)
-    rules2 = dict(rules)
-    rules2["__woven__"] = {w.axis: lane}
-    hits = rules2["__woven_hits__"] = []
-    # D differentiates w.r.t. the BASE's params — the lane is not a direction:
-    rules2["__root_argc__"] = len(arg_types) - 1
-    ctx, params, result = _lower_base(w.base, rules2, ops, arg_types[:-1], derived)
-    if not hits:
+        raise VerifyError(f"over adds a trailing i64 lane coordinate: call g(*args, b); got {arg_types!r}")
+    woven = dict(context.get("woven") or {})
+    if w.axis in woven:
+        raise VerifyError(f"over axis {w.axis!r} is already mapped by an enclosing over — axes nest, never repeat")
+    lane = Builder(ops).param(len(arg_types) - 1, i64)
+    woven[w.axis] = lane
+    hits = context.setdefault("woven_hits", [])
+    context["woven"] = woven
+    inner = lower_handle(
+        w.base, rules, ops, arg_types=arg_types[:-1], derived=derived, context=context, prefix=(*prefix, 0)
+    )
+    if not any(w.axis in entry for entry in hits):
         raise VerifyError(
-            f"vmap axis {w.axis!r}: no capture carries it — name the axis on the data (Named/xarray), or drop the vmap"
+            f"over axis {w.axis!r}: no capture carries it — name the axis on the data (Named/xarray), or drop the over"
         )
-    return Region(params=(*params, lane), body=(ctx.builder.emit("core.yield", result),))
+    return Region(params=(*inner.params, lane), body=inner.body)
 
 
-def build_jvp(w: Jvp, rules, ops, arg_types, derived):
+def build_jvp(w: Jvp, rules, ops, arg_types, derived, *, context=None, prefix=()):
     n = len(arg_types) // 2
     if len(arg_types) != 2 * n or arg_types[:n] != arg_types[n:]:
         raise VerifyError(f"jvp doubles the args: call jf(*args, *tangents) with matching types; got {arg_types!r}")
     for t in arg_types[:n]:
         if not (isinstance(t, Scalar) and t.kind[0] == "f"):
             raise VerifyError(f"jvp differentiates w.r.t. float args; got {t!r}")
-    rules2 = dict(rules)
-    rules2["__root_argc__"] = n  # an in-body D under jvp sees the base's params
-    ctx, params, result = _lower_base(w.base, rules2, ops, arg_types[:n], derived)
-    tparams = tuple(ctx.builder.param(n + i, t) for i, t in enumerate(arg_types[n:]))
-    eng = _Tangents(ctx.builder.emit, lambda k, t: tparams[k], {})
+    inner = lower_handle(
+        w.base, rules, ops, arg_types=arg_types[:n], derived=derived, context=dict(context or {}), prefix=(*prefix, 0)
+    )
+    b = Builder(ops)
+    result = inner.body[-1].args[0]
+    tparams = tuple(b.param(n + i, t) for i, t in enumerate(arg_types[n:]))
+    eng = _Tangents(b.emit, lambda k, t: tparams[k] if k < len(tparams) else None, {})
     tangent = eng.mat(eng.of(result), result)
-    out = ctx.builder.emit("core.tuple", result, tangent)
+    out = b.emit("core.tuple", result, tangent)
     if eng.replace:  # widened loops: re-point EVERY consumer (primal AND the old
-        out = _substitute(out, eng.replace, ctx.builder.emit)  # nodes inside tangent products)
-    return Region(params=(*params, *tparams), body=(ctx.builder.emit("core.yield", out),))
+        out = _substitute(out, eng.replace, b.emit)  # nodes inside tangent products)
+    return Region(params=(*inner.params, *tparams), body=(b.emit("core.yield", out),))
 
 
 # --- the in-kernel doors: D and matmul ------------------------------------------
 def _d_operator(ctx, node):
-    argc = ctx.rules.get("__root_argc__")
-    if argc is None:
-        raise MissingRule(f"D needs the enclosing kernel's params (derived builds later) [{fmt(ctx.loc(node))}]")
+    argc = len(ctx.root.params)  # the kernel's own params, however deep the inlining (the root seam)
+    if argc == 0:
+        raise MissingRule(f"D needs the enclosing kernel's params (none in this build) [{fmt(ctx.loc(node))}]")
     if node.keywords or len(node.args) != 1:
         raise MissingRule(f"D takes exactly one positional value [{fmt(ctx.loc(node))}]")
     x = ctx.lower(node.args[0])
     parts = []
     for j in range(argc):
-        memo = ctx.rules.setdefault(("__tangents__", j), {})
+        memo = ctx.context.setdefault("tangents", {}).setdefault(j, {})
 
         def seed(k, t, j=j, node=node):
             if k != j:
@@ -390,7 +346,7 @@ def _matmul(ctx, node):
     for m in (A, B):
         if not isinstance(m.type, NamedArray):
             raise MissingRule(f"matmul pairs axes BY NAME; got {m.type!r} — name your arrays [{fmt(ctx.loc(node))}]")
-    woven = ctx.rules.get("__woven__") or {}
+    woven = ctx.context.get("woven") or {}
     adims = [d for d in A.type.dims if d not in woven]
     bdims = [d for d in B.type.dims if d not in woven]
     shared = [d for d in adims if d in bdims]
@@ -426,7 +382,7 @@ def _matmul(ctx, node):
     def load(m, dims):
         used = [d for d in dims if d in woven]
         if used:
-            hits = ctx.rules.get("__woven_hits__")
+            hits = ctx.context.get("woven_hits")
             if hits is not None:
                 hits.append(tuple(used))
         order = [woven[d] if d in woven else (iv if d == inner else given[d]) for d in dims]
@@ -440,10 +396,6 @@ def _matmul(ctx, node):
 
 def make_call_rule(prev):
     def _call(ctx, node):
-        if ctx.prefix == ():  # EVERY root-context call plants (Name, method, battery —
-            # inlined D anywhere below reads it; review-caught: the Name-only plant
-            # stranded D inside record methods and under vmap/jvp builds)
-            ctx.rules["__root_argc__"] = ctx.handle.pyfunc.__code__.co_argcount
         f = node.func
         if isinstance(f, ast.Name) and f.id in ("D", "matmul"):
             shadowed = f.id in ctx.locals or f.id in getattr(ctx.handle, "env", {})
@@ -455,6 +407,6 @@ def make_call_rule(prev):
 
 
 def install(registry) -> None:
-    registry.derived["vmap"] = build_vmap
+    registry.derived["over"] = build_over
     registry.derived["jvp"] = build_jvp
     registry.lower_rules[ast.Call] = make_call_rule(registry.lower_rules[ast.Call])

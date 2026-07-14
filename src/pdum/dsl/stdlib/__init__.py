@@ -34,7 +34,7 @@ def install(registry: Registry) -> Registry:
 
     registry.lower_rules.update(LOWER_RULES)  # the registry itself arrives via _build's context door
     install_arrays(registry)  # wraps Subscript/Call: must layer over the base rules just installed
-    install_transforms(registry)  # wraps Call again (D/matmul doors) + registers vmap/jvp build rules
+    install_transforms(registry)  # wraps Call again (D/matmul doors) + registers over/jvp build rules
     registry.derived.update(PIPE_BUILDERS)
     # extract-of-tuple folds away wherever the target cannot spell tuples —
     # gated on "core.tuple" ∈ code_for_op, the same mechanism as decompositions:

@@ -981,6 +981,33 @@ cache hits, trip count reads the shape slot). The "rules engine" fear
 dissolved into a dozen lines shaped like a type rule; einsum generality
 deliberately not built.
 
+**2026-07-13 (step 13, stage 1): THE SEAMS — and vmap becomes `over`
+(design 130 §7, under 120's tripwire policy).** The step-12 review traced
+four of its nine bug classes to ONE cluster: build-scoped state smuggled
+through the rules dict (five string-keyed doors), a duplicated lower tail,
+and three hand-rolled wrapper protocols. Bought from the kernel, each cap
+move ledgered: (1) `Lowerer.context` — one dict per build threaded through
+`inline`; the registry plants itself in it, transforms merge woven axes,
+tangent memos live in it; ALL string doors deleted. (2) `Lowerer.root` +
+`params` — the in-kernel derivative reads the kernel's own params from the
+seam; the root-argc planting dance is gone. (3) `Lowerer.binder` — the
+deterministic tuple-index invariant (("b", *prefix, seq)) is kernel law
+now, not a satellite convention. (4) `lower_handle(context=, prefix=)`
+with Derived-base RE-ENTRY: a build rule that lowers its base re-enters
+lower_handle, so a Derived base dispatches to its own build rule with the
+merged context — **transform composition is this re-entry, not a
+mechanism**. `over(over(g, axis="b2"), axis="b1")` works (lanes trail
+outermost-last; duplicate axes refuse); jvp∘over refuses on the lane type.
+(5) `kernel/derived.py` (NEW, cap 45, 26 used): `DerivedValue` — the ONE
+wrapper protocol + ONE MRO-covered ValueKind; Pipeline/Over/Jvp are
+subclasses; `_guards` recurses into wrapper captures (closing the step-11
+noted gap). RENAME: vmap → **`over`** (no users; the JAX prior contradicts
+ours on every axis — argument-position vs capture-name, call-once-batched
+vs per-lane coordinate). Kernel 1274/1500. ALSO: the book builder moved
+INTO the repo (`scripts/book/build_chapters.py`) after two parallel
+sessions edited the same chapter from separate scratchpads — the single
+source of truth for docs/book is now PR-visible (the ch11b lesson).
+
 **2026-07-13 (the budget conversation): caps become tripwires; the kernel
 buys its event seam.** The 1150 cap did exactly what it was for — the kernel
 froze at 1147 through two satellite-only steps and five surfaces — and then

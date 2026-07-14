@@ -297,11 +297,11 @@ def make_call_rule(prev):
                 raise MissingRule(f"isel() needs a NAMED array, got {base.type!r} [{fmt(ctx.loc(node))}]")
             dims = base.type.dims
             given = {kw.arg: kw.value for kw in node.keywords}
-            woven = ctx.rules.get("__woven__") or {}
-            active = {d: woven[d] for d in dims if d in woven}  # vmap owns these axes here
+            woven = ctx.context.get("woven") or {}
+            active = {d: woven[d] for d in dims if d in woven}  # over owns these axes here
             if set(given) & set(active):
                 raise MissingRule(
-                    f"axis {sorted(set(given) & set(active))!r} is mapped away here (vmap owns it) "
+                    f"axis {sorted(set(given) & set(active))!r} is mapped away here (over owns it) "
                     f"[{fmt(ctx.loc(node))}]"
                 )
             if node.args or set(given) != set(dims) - set(active):
@@ -311,7 +311,7 @@ def make_call_rule(prev):
                     f"[{fmt(ctx.loc(node))}]"
                 )
             if active:
-                hits = ctx.rules.get("__woven_hits__")
+                hits = ctx.context.get("woven_hits")
                 if hits is not None:
                     hits.append(tuple(active))
             indices = [active[d] if d in active else ctx.lower(given[d]) for d in dims]

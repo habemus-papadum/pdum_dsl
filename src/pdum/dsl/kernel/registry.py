@@ -43,6 +43,7 @@ from time import perf_counter_ns
 from . import events
 from .cache import ArtifactCache, FastRecord, SpecializationCache
 from .capture import Handle
+from .derived import DerivedValue
 from .ir import VerifyError
 from .lower import lower_handle
 from .ops import CORE_OPS
@@ -83,11 +84,12 @@ def _guards(target) -> tuple:
     if isinstance(target, Handle):
         cells = dict(zip(target.freevars, target.pyfunc.__closure__ or ()))
         own = tuple((cells[name], "cell_contents", expected) for name, expected in target.env.items())
-        # Recurse into captured kernels: an INNER handle's cell drifting is the
-        # same staleness as an outer one (review-caught hole — inlined callees
-        # are baked into the artifact, so their drift must guard the entry).
-        return own + tuple(g for v in target.captures if isinstance(v, Handle) for g in _guards(v))
-    return tuple(g for h in target.captures for g in _guards(h))  # a Pipeline guards its stages
+        # Recurse into captured kernels AND derived values: an INNER cell
+        # drifting is the same staleness as an outer one, whether it arrives
+        # through a Handle or a wrapper (step-11 review noted the wrapper gap).
+        deep = (v for v in target.captures if isinstance(v, (Handle, DerivedValue)))
+        return own + tuple(g for v in deep for g in _guards(v))
+    return tuple(g for h in target.captures for g in _guards(h))  # pipelines/transforms guard their bases
 
 
 class Registry:
@@ -167,9 +169,10 @@ class Registry:
             raise VerifyError(f"{backend.name} derives the params; pass the launch domain via out=")
         arg_types = derived_params if derived_params is not None else tuple(self.table.typeof(a) for a in args)
         ops = {**CORE_OPS, **ABI_OPS, **self.ops}
-        rules = {**self.lower_rules, "__registry__": self}  # rule packs' context door (surface B lives there)
+        rules = dict(self.lower_rules)
+        context = {"registry": self}  # THE build context (130 §7): rule packs read ctx.context, never the rules dict
         with events.span("lower", target.fp):
-            region = lower_handle(target, rules, ops, arg_types=arg_types, derived=self.derived)
+            region = lower_handle(target, rules, ops, arg_types=arg_types, derived=self.derived, context=context)
         plan = (backend.plan or plan_from_types)(target.env_types, arg_types, self.table)
         with events.span("rewrite", target.fp):  # decompositions + the two ABI stages
             gated = [r for op, r in self.decompositions if op not in backend.code_for_op]
