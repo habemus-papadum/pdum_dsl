@@ -176,7 +176,7 @@ The proof of concept proved the thesis but earned a redesign
 | ch09 — End to end on the CPU | the Python backend + the hot path | `backends/python.py`, `api.py` |
 | ch10 — The GPU and the seam | the WGSL backend; **M1 complete** | `backends/wgsl/` |
 | ch11 — The five surfaces | batteries, records, registry | `stdlib/` |
-| ch12+ | arrays/loops/C, vmap/jvp, grad, more backends, units, … | per plan |
+| ch12+ | arrays/loops/C · `over`/jvp · tensors on CPU · grad · CUDA/Metal + tiles · units (020, re-sequenced at the 130 fork) | per plan |
 
 Budgets are architecture: the kernel is CI-capped at 1150 counted lines
 (`scripts/loc_budget.py`), and "a new capability lands with zero kernel edits"
@@ -3576,7 +3576,8 @@ to contort v1.
   free from xarray), are enforced at lower time, and compile to the SAME
   artifact as positional code. Pedantry priced at zero is the two-tier
   cache doing exactly what ch03 promised.
-- Next: transforms — vmap and the jvp precursor (step 12), where these
+- Next: transforms — `over` and the jvp precursor (step 12; `over` was
+  born as "vmap" and renamed at step 13 — ch13 tells that story), where these
   loops and arrays meet their first IR-to-IR columns."""),
 ]
 

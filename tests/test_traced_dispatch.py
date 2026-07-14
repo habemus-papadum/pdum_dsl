@@ -63,11 +63,27 @@ def matrix():
 
         return f
 
+    def overed(t):
+        from pdum.dsl.stdlib.transforms import jvp, over
+
+        @jit()
+        def f(k):
+            return t.isel(x=k) * 10.0
+
+        @jit()
+        def g(x):
+            return x * x + 1.0
+
+        return (over(f, axis="batch"), (1, 1)), (jvp(g), (1.5, 1.0))
+
+    ov, jv = overed(Named(np.arange(8.0).reshape(2, 4), ("batch", "x")))
     return [
         (scalar(2.0), (1.5,)),
         (carries(0.3), (0.75,)),
         (arrays(table), (1, 2)),
         (named(nt), (1, 2)),
+        ov,  # DerivedValue targets: the traced twin must handle wrapper
+        jv,  # captures/kinds identically to Handles (stage-1 review gap)
     ]
 
 
