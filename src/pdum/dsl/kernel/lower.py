@@ -79,14 +79,38 @@ def check_coherence(handle: Handle) -> None:
 
 
 class Lowerer:
-    """Per-function lowering context: services for rules, nesting for inlining."""
+    """Per-function lowering context: services for rules, nesting for inlining.
 
-    def __init__(self, handle: Handle, rules: dict, ops: dict, derived: dict, prefix=(), wrap=None):
+    ``context`` is THE seam for build-scoped state (design 130 §7): one dict
+    per build, shared down the inline chain — the registry plants itself in
+    it, transforms merge woven axes into it, tangent memos live in it. Rule
+    packs read ``ctx.context``; smuggling state through the rules dict is
+    what this seam retires. ``root`` is the outermost Lowerer of the build:
+    its ``params`` are the kernel's own parameters (what an in-kernel
+    derivative differentiates against, however deep the inlining)."""
+
+    def __init__(
+        self, handle: Handle, rules: dict, ops: dict, derived: dict, prefix=(), wrap=None, context=None, root=None
+    ):
         self.handle, self.rules, self.ops, self.derived = handle, rules, ops, derived
         self.prefix, self.wrap = prefix, wrap
+        self.context: dict = {} if context is None else context
+        self.root: Lowerer = root if root is not None else self
+        self.params: tuple = ()
+        self._binders = 0
         self.builder = Builder(ops)
         self.locals: dict[str, Node] = {}
         self._bound = list(handle.env)  # bound freevar names, capture order (= env paths)
+
+    def binder(self, type) -> Node:
+        """A region binder (loop var, carry, accumulator): index ("b",
+        *inline-prefix, sequence) — never colliding with integer function
+        params, never depending on process history. `core.param` identity is
+        structural, so uniqueness+determinism here are ARTIFACT-KEY
+        soundness, not style (step-11/12 reviews); the kernel owns the
+        invariant now instead of a satellite convention."""
+        self._binders += 1
+        return self.builder.param(("b", *self.prefix, self._binders - 1), type)
 
     def loc(self, node) -> Loc | CallLoc:
         snap = self.handle.snapshot
@@ -118,7 +142,16 @@ class Lowerer:
 
     def inline(self, callee: Handle, idx: int, args: tuple, call_node) -> Node:
         check_coherence(callee)
-        sub = Lowerer(callee, self.rules, self.ops, self.derived, self.prefix + (idx,), self.loc(call_node))
+        sub = Lowerer(
+            callee,
+            self.rules,
+            self.ops,
+            self.derived,
+            self.prefix + (idx,),
+            self.loc(call_node),
+            context=self.context,
+            root=self.root,
+        )
         names = callee.pyfunc.__code__.co_varnames[: callee.pyfunc.__code__.co_argcount]
         if len(names) != len(args):
             raise VerifyError(f"{callee.fntype.template.label} takes {len(names)} args, got {len(args)}")
@@ -140,22 +173,31 @@ def fmt(p) -> str:
     return format_loc(p)
 
 
-def lower_handle(handle, rules: dict, ops: dict, *, arg_types=(), derived: dict | None = None) -> Region:
-    """Source (or a Derived build rule) -> a verified, typed core Region."""
+def lower_handle(
+    handle, rules: dict, ops: dict, *, arg_types=(), derived: dict | None = None, context: dict | None = None, prefix=()
+) -> Region:
+    """Source (or a Derived build rule) -> a verified, typed core Region.
+
+    ``context``/``prefix`` thread through Derived BUILD RULES: a build rule
+    that lowers its base re-enters here, so a Derived base dispatches to ITS
+    build rule with the outer context intact — transform composition is this
+    re-entry, not a mechanism (130 §7)."""
     derived = derived or {}
+    context = {} if context is None else context
     template = handle.fntype.template
     if isinstance(template, Derived):
         build = derived.get(template.tag)
         if build is None:
             raise MissingRule(f"no build rule for Derived template {template.tag!r}")
-        return build(handle, rules, ops, arg_types, derived)
+        return build(handle, rules, ops, arg_types, derived, context=context, prefix=prefix)
     check_coherence(handle)
-    ctx = Lowerer(handle, rules, ops, derived)
+    ctx = Lowerer(handle, rules, ops, derived, prefix=prefix, context=context)
     code = handle.pyfunc.__code__
     names = code.co_varnames[: code.co_argcount]
     if len(arg_types) != len(names):
         raise VerifyError(f"{handle.fntype.template.label} takes {len(names)} args; got types for {len(arg_types)}")
     params = tuple(ctx.builder.param(i, t) for i, t in enumerate(arg_types))
+    ctx.params = params
     ctx.locals.update(zip(names, params))
     result = ctx.run_body()
     return Region(params=params, body=(ctx.builder.emit("core.yield", result),))

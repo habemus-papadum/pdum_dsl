@@ -1,5 +1,5 @@
 """Step 12 — transforms: jvp (forward AD) vs finite differences, the
-in-kernel `D`, SIMT vmap with named weaving, and named/batched matmul."""
+in-kernel `D`, SIMT `over` with named weaving, and named/batched matmul."""
 
 import pytest
 
@@ -12,7 +12,7 @@ from pdum.dsl.kernel.ir import VerifyError  # noqa: E402
 from pdum.dsl.kernel.lower import MissingRule  # noqa: E402
 from pdum.dsl.kernel.registry import DEFAULT  # noqa: E402
 from pdum.dsl.stdlib.arrays import Named  # noqa: E402
-from pdum.dsl.stdlib.transforms import jvp, vmap  # noqa: E402
+from pdum.dsl.stdlib.transforms import jvp, over  # noqa: E402
 
 
 def fd(f, x, eps=1e-7):
@@ -158,7 +158,7 @@ def test_D_costs_nothing_when_unused():
     assert len(ext.artifacts) == n  # no tangent machinery leaked into D-free kernels
 
 
-def test_vmap_batching_ignorance_arc():
+def test_over_batching_ignorance_arc():
     data = Named(np.arange(12.0).reshape(3, 4), ("batch", "x"))
 
     def make(t):
@@ -171,13 +171,13 @@ def test_vmap_batching_ignorance_arc():
     g = make(data)
     with pytest.raises(MissingRule, match="isel is pedantic"):  # batch unaccounted
         g(0)
-    vg = vmap(g, axis="batch")
+    vg = over(g, axis="batch")
     assert [vg(1, b) for b in range(3)] == [10.0, 50.0, 90.0]
     with no_compile():  # a bigger batch is the SAME type (rank-generic)
-        vmap(make(Named(np.ones((100, 4)), ("batch", "x"))), axis="batch")(1, 99)
+        over(make(Named(np.ones((100, 4)), ("batch", "x"))), axis="batch")(1, 99)
 
 
-def test_vmap_name_scoping_inside_the_body():
+def test_over_name_scoping_inside_the_body():
     data = Named(np.ones((3, 4)), ("batch", "x"))
 
     def make(t):
@@ -188,10 +188,10 @@ def test_vmap_name_scoping_inside_the_body():
         return g
 
     with pytest.raises(MissingRule, match="mapped away"):
-        vmap(make(data), axis="batch")(0, 0)
+        over(make(data), axis="batch")(0, 0)
 
 
-def test_vmap_refuses_when_nothing_carries_the_axis():
+def test_over_refuses_when_nothing_carries_the_axis():
     data = Named(np.ones((4,)), ("x",))
 
     def make(t):
@@ -202,10 +202,10 @@ def test_vmap_refuses_when_nothing_carries_the_axis():
         return g
 
     with pytest.raises(VerifyError, match="no capture carries it"):
-        vmap(make(data), axis="batch")(0, 0)
+        over(make(data), axis="batch")(0, 0)
 
 
-def test_vmap_runs_on_the_c_backend():
+def test_over_runs_on_the_c_backend():
     from pdum.dsl.backends import c
 
     if not c.is_available():
@@ -219,7 +219,7 @@ def test_vmap_runs_on_the_c_backend():
 
         return g
 
-    vg = vmap(make(data), axis="batch")
+    vg = over(make(data), axis="batch")
     ext = DEFAULT.extend()
     c.install(ext, default=True)
     assert ext.dispatch(vg, (2, 1)) == vg(2, 1) == 7.0
@@ -249,7 +249,7 @@ def test_D_always_returns_a_tuple_and_sugar_works_on_one_param():
     assert one(3.0) == 6.0
 
 
-def test_D_under_vmap_composes():
+def test_D_under_over_composes():
     """The two flagship features together (review-caught gap: the root-argc
     plant missed derived builds)."""
     from pdum.dsl.demo import graphics  # noqa: F401
@@ -264,7 +264,7 @@ def test_D_under_vmap_composes():
 
         return g
 
-    vg = vmap(make(data), axis="batch")
+    vg = over(make(data), axis="batch")
     assert vg(3.0, 0) == 6.0 * 1.0
     assert vg(3.0, 1) == 6.0 * 9.0
 
@@ -283,7 +283,29 @@ def test_D_inside_loop_body_refuses():
         k(1.0)
 
 
-def test_transform_composition_refuses_loudly():
+def test_over_composes_over_two_axes():
+    """Composition is lower_handle re-entry (130 §7): the outer build lowers
+    the inner WRAPPER, which dispatches to its own build rule with the merged
+    woven context. Lanes trail in application order, outermost LAST."""
+    rng = np.random.default_rng(3)
+    data = Named(rng.standard_normal((2, 3, 4)), ("b1", "b2", "x"))
+
+    def make(t):
+        @jit()
+        def g(k):
+            return t.isel(x=k) * 10.0
+
+        return g
+
+    composed = over(over(make(data), axis="b2"), axis="b1")
+    for i in range(2):
+        for j in range(3):
+            assert composed(1, j, i) == data.array[i, j, 1] * 10.0
+    with no_compile():  # a fresh closure under BOTH transforms: still one identity
+        over(over(make(Named(rng.standard_normal((5, 6, 4)), ("b1", "b2", "x"))), axis="b2"), axis="b1")(0, 0, 0)
+
+
+def test_over_duplicate_axis_refused():
     data = Named(np.ones((2, 3, 4)), ("b1", "b2", "x"))
 
     def make(t):
@@ -293,12 +315,26 @@ def test_transform_composition_refuses_loudly():
 
         return g
 
-    with pytest.raises(VerifyError, match="composition.*not wired"):
-        vmap(vmap(make(data), axis="b2"), axis="b1")(0, 0, 0)
+    with pytest.raises(VerifyError, match="already mapped by an enclosing over"):
+        over(over(make(data), axis="b1"), axis="b1")(0, 0, 0)
+
+
+def test_jvp_of_over_refuses_on_the_lane_type():
+    data = Named(np.ones((2, 4)), ("batch", "x"))
+
+    def make(t):
+        @jit()
+        def g(u):
+            return t.isel(x=0) * u
+
+        return g
+
+    with pytest.raises(VerifyError, match="floats? args"):
+        jvp(over(make(data), axis="batch"))(1.0, 0, 1.0, 0)
 
 
 def test_transformed_kernels_are_capturable():
-    """A vmapped kernel SUMMARIZES like a Pipeline (ValueKind); calling it
+    """An over'd kernel SUMMARIZES like a Pipeline (ValueKind); calling it
     in-body still refuses downstream (first-class kernel values, later)."""
     data = Named(np.ones((2, 3)), ("batch", "x"))
 
@@ -309,7 +345,7 @@ def test_transformed_kernels_are_capturable():
 
         return g
 
-    vg = vmap(make(data), axis="batch")
+    vg = over(make(data), axis="batch")
 
     @jit()
     def outer(x):
@@ -319,7 +355,7 @@ def test_transformed_kernels_are_capturable():
     def uses(x):
         return vg(0, 0) + x  # noqa: F821 — capture summarizes; the CALL refuses
 
-    assert "vmap" in repr(uses.fntype)  # typeof(VMapped) worked at the def site
+    assert "over" in repr(uses.fntype)  # typeof(Over) worked at the def site
 
 
 def test_named_matmul_matches_numpy_and_batches():
@@ -343,11 +379,11 @@ def test_named_matmul_matches_numpy_and_batches():
     rng = np.random.default_rng(7)
     Ab = Named(rng.standard_normal((5, 2, 3)), ("batch", "row", "inner"))
     Bb = Named(rng.standard_normal((5, 3, 4)), ("batch", "inner", "col"))
-    bcell = vmap(make(Ab, Bb), axis="batch")
+    bcell = over(make(Ab, Bb), axis="batch")
     got3 = np.array([[[bcell(i, j, b) for j in range(4)] for i in range(2)] for b in range(5)])
     assert np.allclose(got3, Ab.array @ Bb.array)
     with no_compile():  # new batch size AND new inner extent: all staging values
-        vmap(
+        over(
             make(
                 Named(rng.standard_normal((9, 2, 7)), ("batch", "row", "inner")),
                 Named(rng.standard_normal((9, 7, 4)), ("batch", "inner", "col")),

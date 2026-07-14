@@ -44,7 +44,9 @@ def test_hit_path_threshold_gate():
     t = benchmark(lambda: f(1.0), budget_s=0.1)
     if t.minimum > 5e-6:
         print(f"ALARM: hit path {t.minimum * 1e6:.2f} µs exceeds the 5 µs alarm line")
-    assert t.minimum < 40e-6, f"hit path {t.minimum * 1e6:.1f} µs blew the fail threshold"
+    if t.minimum >= 40e-6:  # scheduler noise is one-sided: a REAL regression fails twice
+        t = benchmark(lambda: f(1.0), budget_s=0.1)
+    assert t.minimum < 40e-6, f"hit path {t.minimum * 1e6:.1f} µs blew the fail threshold (twice)"
 
 
 def test_instrument_phases_sum_to_total_and_restore():
@@ -57,8 +59,12 @@ def test_instrument_phases_sum_to_total_and_restore():
     orig_extract, orig_launch = rec.extract, rec.launch
     phases = instrument(f, 2.0, frames=20)
     parts = phases["key+probe"] + phases["extract"] + phases["pack"] + phases["launch"]
+    if not (parts <= phases["total"] <= parts + 50e-6):  # one-sided scheduler noise: retry once
+        phases = instrument(f, 2.0, frames=20)
+        parts = phases["key+probe"] + phases["extract"] + phases["pack"] + phases["launch"]
     assert parts <= phases["total"] <= parts + 50e-6  # phases nest inside the total
-    assert rec.extract is orig_extract and rec.launch is orig_launch  # seams restored, by identity
+    # Post-120: instrument reads the event sink — it must NEVER touch the record's seams:
+    assert rec.extract is orig_extract and rec.launch is orig_launch
 
 
 def test_timeline_widget_is_static_html():

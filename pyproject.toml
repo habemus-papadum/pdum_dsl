@@ -85,6 +85,7 @@ exclude = ["archive"]  # historical material, not maintained code
 "docs/book/*.ipynb" = ["F821"]
 "src/pdum/dsl/stdlib/batteries.py" = ["F821"]  # battery cross-refs resolve via the overload table
 "src/pdum/dsl/demo/graphics.py" = ["F821"]  # same: sqrt/mix are overload-table names, not globals
+"scripts/book/build_chapters.py" = ["E501"]  # chapter PROSE inside string literals wraps at its own width
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]

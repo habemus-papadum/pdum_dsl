@@ -33,8 +33,7 @@ from dataclasses import dataclass
 from typing import Hashable
 
 from .kernel.capture import Handle
-from .kernel.types import Derived, FnType, Type
-from .kernel.valuekind import BUILTINS, KindTable
+from .kernel.derived import DerivedValue
 
 
 class IncompatibleRoles(TypeError):
@@ -178,37 +177,36 @@ def _compose(*items) -> Pipeline:
     return Pipeline(parts)
 
 
-class Pipeline:
+class Pipeline(DerivedValue):
     """An inert, first-class composition. Identity is a flattened
-    ``Derived("pipe", …)`` over the stages — value-free, rebuild-stable."""
+    ``Derived("pipe", …)`` over the stages — value-free, rebuild-stable.
+    Protocol (fntype/fp/captures + the ValueKind) comes from ``DerivedValue``
+    (130 §7) — one wrapper protocol, no hand-rolled copies."""
 
-    __slots__ = ("parts", "fntype", "fp", "captures")
+    __slots__ = ("parts",)
 
     def __init__(self, parts: tuple):
         stages = [p for p in parts if isinstance(p, Stage)]
         if not stages:
             raise IncompatibleRoles("a pipeline needs at least one kernel stage")
         self.parts = parts
-        # Precomputed, like Handle.captures: the marshaling `child` getter reads
-        # this once per nested leaf per frame — a recomputing property would
-        # re-filter `parts` and allocate a tuple on every one of those reads.
-        self.captures = tuple(s.handle for s in stages)
-        env_types: tuple[Type, ...] = tuple(s.handle.fntype for s in stages)
         static = (
             ("config", tuple(s.config for s in stages)),
             ("terminals", tuple(p.name for p in parts if isinstance(p, Terminal))),
         )
-        self.fntype = FnType(Derived("pipe", stages[0].handle.fntype.template, static), env_types)
-        self.fp = ("P", tuple(p.fp for p in parts))
+        super().__init__(
+            "pipe",
+            stages[0].handle.fntype.template,
+            tuple(s.handle.fntype for s in stages),
+            static,
+            ("P", tuple(p.fp for p in parts)),
+            tuple(s.handle for s in stages),
+        )
 
     @property
     def kind(self) -> str:  # a pipeline's role is its last non-terminal stage's role
         last = [p for p in self.parts if isinstance(p, Stage)][-1]
         return last.kind
-
-    @property
-    def env_types(self) -> tuple[Type, ...]:  # marshals exactly like a Handle
-        return self.fntype.env_types
 
     def __or__(self, other) -> Pipeline:
         return _compose(self, other)
@@ -253,10 +251,10 @@ def set_dispatcher(fn: Callable | None):
     return previous
 
 
-def build_pipe(pipeline: Pipeline, rules: dict, ops: dict, arg_types: tuple, derived: dict):
+def build_pipe(pipeline: Pipeline, rules: dict, ops: dict, arg_types: tuple, derived: dict, *, context=None, prefix=()):
     """The fusion build rule: ``Derived("pipe")`` lowers WITHOUT source — each
     stage's body is inlined in sequence, env paths prefixed by stage index.
-    This is the dress rehearsal for transforms (grad/vmap build the same way).
+    This is the dress rehearsal for transforms (grad/over build the same way).
     Terminals are runtime concerns and vanish here; config awaits schemas."""
     from .kernel.ir import Builder, Loc, Region, VerifyError
     from .kernel.lower import Lowerer, check_coherence
@@ -272,7 +270,9 @@ def build_pipe(pipeline: Pipeline, rules: dict, ops: dict, arg_types: tuple, der
         names = code.co_varnames[: code.co_argcount]
         if len(names) != 1:
             raise VerifyError(f"pipe stage {stage!r} must take exactly one argument")
-        sub = Lowerer(stage.handle, rules, ops, derived, prefix=(i,), wrap=Loc("<pipeline>", i + 1))
+        sub = Lowerer(
+            stage.handle, rules, ops, derived, prefix=(*prefix, i), wrap=Loc("<pipeline>", i + 1), context=context
+        )
         sub.locals[names[0]] = current
         current = sub.run_body()
     return Region(params=(param,), body=(builder.emit("core.yield", current),))
@@ -281,18 +281,4 @@ def build_pipe(pipeline: Pipeline, rules: dict, ops: dict, arg_types: tuple, der
 PIPE_BUILDERS = {"pipe": build_pipe}  # pass as `derived=` to lower_handle (Registry absorbs at step 8)
 
 
-class _PipelineKind:
-    """Pipelines are first-class values of the type system (capturable, composable)."""
-
-    def typeof(self, v: Pipeline, table: KindTable) -> Type:
-        return v.fntype
-
-    def fingerprint(self, v: Pipeline, table: KindTable) -> Hashable:
-        return v.fp
-
-    def flatten(self, v: Pipeline, table: KindTable) -> tuple:
-        # aligned with the FnType walker: env_types = the stages' FnTypes, in order
-        return tuple(leaf for h in v.captures for leaf in table.flatten(h))
-
-
-BUILTINS.register(Pipeline, _PipelineKind())
+# Pipeline's ValueKind comes from DerivedValue via MRO — no per-class registration.

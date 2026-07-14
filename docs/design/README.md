@@ -55,6 +55,14 @@ the mkdocs site):
     that made the miss path observable, the budget-policy change (caps are
     tripwires; 1150 → 1500), and the deletion of `bench.py`'s
     live-cache-entry monkeypatch.
+  - `130_tensors-tiles-and-over.md` — **proposed** (the fork point): axes
+    as IR lowered late — `over` (vmap renamed) emits map-loop IR instead
+    of erasing the axis; arrays become IR values (DPS results, args,
+    elementwise tiles); the named tensor dialect (`map`/`reduce`/
+    `contract` + comprehensions); memory spaces, layouts, effect tokens,
+    precision kinds; the tiled-GEMM syntax exercise; the transform seams
+    (context, composition, DerivedValue) under 120's tripwire policy; the
+    four-stage plan.
 
 Also here, unnumbered: `research/` — the frozen 20-agent research corpus
 (R/V/P/J) behind 010, plus later targeted surveys appended in the same
