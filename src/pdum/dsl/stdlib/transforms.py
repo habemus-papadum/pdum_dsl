@@ -373,8 +373,11 @@ def _matmul(ctx, node):
     # Rank-generic operands: extents are runtime staging values — mismatch is UB
     # like every unchecked index (100's no-bounds-check posture), trip count from A.
     given = dict(zip(outs, idx))
-    slot = dict(A.attrs)["slot"]
-    hi = ctx.emit("core.env", node=node, type=i64, slot=(*slot, 1 + A.type.dims.index(inner)))
+    pos = 1 + A.type.dims.index(inner)
+    if A.op == "core.env":
+        hi = ctx.emit("core.env", node=node, type=i64, slot=(*dict(A.attrs)["slot"], pos))
+    else:  # an argument array: the trip count reads its plan slot via array.dim
+        hi = ctx.emit("array.dim", node=node, src=("arg", dict(A.attrs)["index"]), sub=pos)
     zero = ctx.emit("core.const", node=node, type=A.type.dtype, value=0.0)
     iv, acc = _fresh_binder(ctx, i64), _fresh_binder(ctx, A.type.dtype)
 

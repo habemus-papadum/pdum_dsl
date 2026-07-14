@@ -59,11 +59,18 @@ def render(region: Region, plan: PackPlan, backend=None, name: str = "kernel") -
         if node.op == "abi.slot":
             return f"_u({attrs['fmt']!r}, staging, {attrs['offset']})[0]"
         if node.op == "array.buffer":  # leaves-channel position, resolved from THE plan (like abi offsets)
+            src = attrs["src"]
             chan = [s for s in plan.slots if s.dest is None]
             for k, s in enumerate(chan):
-                if s.source.root == "env" and (s.source.index, *s.source.sub) == (*attrs["slot"], 0):
+                if s.source.root == src[0] and (s.source.index, *s.source.sub) == (*src[1:], 0):
                     return f"leaves[{k}]"
-            raise VerifyError(f"no buffer leaf for capture path {attrs['slot']!r}")
+            raise VerifyError(f"no buffer leaf for {src!r}")
+        if node.op == "array.dim":  # an argument array's shape/stride staging slot, from the plan
+            src, sub = attrs["src"], attrs["sub"]
+            for s in plan.slots:
+                if s.source.root == src[0] and (s.source.index, *s.source.sub) == (*src[1:], sub):
+                    return f"_u({s.dest.fmt!r}, staging, {s.dest.offset})[0]"
+            raise VerifyError(f"no dim slot for {src!r}[{sub}]")
         if node.op == "core.const":
             v = attrs["value"]
             if isinstance(v, float) and not math.isfinite(v):

@@ -225,18 +225,28 @@ def _load_rule(args, attrs, regions) -> Type:
 
 ARRAY_OPS = {
     "array.load": OpDef("array.load", _load_rule, frozenset({"Pure"})),
-    "array.buffer": OpDef("array.buffer"),  # attrs: slot (capture index); type = the Array
+    "array.buffer": OpDef("array.buffer"),  # attrs: src=("env", *path) | ("arg", i); type = the erased Array
+    "array.dim": OpDef("array.dim", lambda a, at, r: i64),  # attrs: src, sub — a staging read the
+    #   renderer resolves from THE PLAN (arg-side twin of the env abi.slot route)
 }
 
 
 def _linear_index(ctx, node, base, indices):
     """Explicit stride arithmetic — machine code identical for named and
-    positional. Rank-generic strides read staging (core.env sub-paths →
-    abi.slot); ShapedArray strides are core.const (const-folded)."""
+    positional, and for captures vs ARGUMENTS. Rank-generic strides:
+    captures read staging via core.env sub-paths (legalized to abi.slot for
+    free); arguments read staging via `array.dim` (renderer-resolved from
+    the plan, the same pattern as `array.buffer`). ShapedArray strides are
+    core.const either way (const-folded)."""
     t = base.type
-    if base.op != "core.env":
+    if base.op == "core.env":
+        src = ("env", *dict(base.attrs)["slot"])
+    elif base.op == "core.param":
+        src = ("arg", dict(base.attrs)["index"])
+    else:
         raise MissingRule(
-            f"v1 indexes CAPTURED arrays only (args wait for the arg-side normalize) [{fmt(ctx.loc(node))}]"
+            f"array indexing needs a captured or argument array, got a computed value "
+            f"(array-valued expressions arrive with the tensor dialect) [{fmt(ctx.loc(node))}]"
         )
     if t.ndim == 0:
         raise MissingRule(f"a 0-d array has no axes to index — capture the scalar instead [{fmt(ctx.loc(node))}]")
@@ -248,15 +258,16 @@ def _linear_index(ctx, node, base, indices):
     for ix in indices:
         if ix.type != i64:
             raise TypeError(f"indices are strict i64, got {ix.type!r} [{fmt(ctx.loc(node))}]")
-    slot = dict(base.attrs)["slot"]
     if isinstance(t, ShapedArray):  # strides from the type: constants
         strides = []
         acc = 1
         for extent in reversed(t.shape):
             strides.insert(0, ctx.emit("core.const", node=node, type=i64, value=acc))
             acc *= extent
-    else:  # strides from staging: core.env sub-paths, legalized to abi.slot for free
-        strides = [ctx.emit("core.env", node=node, type=i64, slot=(*slot, 1 + t.ndim + a)) for a in range(t.ndim)]
+    elif src[0] == "env":  # capture strides: core.env sub-paths, legalized to abi.slot for free
+        strides = [ctx.emit("core.env", node=node, type=i64, slot=(*src[1:], 1 + t.ndim + a)) for a in range(t.ndim)]
+    else:  # argument strides: array.dim, renderer-resolved from the plan
+        strides = [ctx.emit("array.dim", node=node, src=src, sub=1 + t.ndim + a) for a in range(t.ndim)]
     linear = None
     for ix, st in zip(indices, strides):
         term = ctx.emit("core.mul", ix, st, node=node)
@@ -266,7 +277,7 @@ def _linear_index(ctx, node, base, indices):
     # named kernel and its positional twin produce IDENTICAL content keys —
     # tier 2 proves the pedantry is free.
     erased = Array(t.dtype, t.ndim, t.layout, t.byteorder, t.writeable, t.device)
-    buf = ctx.emit("array.buffer", node=node, type=erased, slot=slot)
+    buf = ctx.emit("array.buffer", node=node, type=erased, src=src)
     return ctx.emit("array.load", buf, linear, node=node)
 
 

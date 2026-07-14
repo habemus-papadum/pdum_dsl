@@ -104,10 +104,17 @@ def render(region: Region, plan: PackPlan, backend=None, name: str = "kernel") -
         if node.op == "abi.slot":
             return f"{_LOADER[attrs['fmt']]}(staging + {attrs['offset']})"
         if node.op == "array.buffer":
+            src = attrs["src"]
             for k, s in enumerate(channel):
-                if s.source.root == "env" and (s.source.index, *s.source.sub) == (*attrs["slot"], 0):
+                if s.source.root == src[0] and (s.source.index, *s.source.sub) == (*src[1:], 0):
                     return f"((const {_ctype(node.type.dtype)}*)bufs[{k}])"
-            raise VerifyError(f"no buffer leaf for capture path {attrs['slot']!r}")
+            raise VerifyError(f"no buffer leaf for {src!r}")
+        if node.op == "array.dim":
+            src, sub = attrs["src"], attrs["sub"]
+            for s in plan.slots:
+                if s.source.root == src[0] and (s.source.index, *s.source.sub) == (*src[1:], sub):
+                    return f"{_LOADER[s.dest.fmt]}(staging + {s.dest.offset})"
+            raise VerifyError(f"no dim slot for {src!r}[{sub}]")
         if node.op == "array.load":
             return f"{arg[0]}[{arg[1]}]"
         if node.op == "core.const":
