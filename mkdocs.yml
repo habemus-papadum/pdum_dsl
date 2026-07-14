@@ -54,6 +54,7 @@ nav:
       - "Chapter 12 — Data and loops": book/ch12-data-and-loops.ipynb
       - "12a — Lay of the land": book/ch12a-lay-of-the-land.ipynb
       - "Chapter 13 — Transforms are rules": book/ch13-transforms-are-rules.ipynb
+      - "Chapter 14 — Arguments and the grid": book/ch14-arguments-and-the-grid.ipynb
       - Glossary: book/GLOSSARY.md
   - M0 reference asset (frozen):
       - Overview: m0/index.md

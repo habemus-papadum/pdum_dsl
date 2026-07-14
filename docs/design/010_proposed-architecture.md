@@ -1003,7 +1003,33 @@ wrapper protocol + ONE MRO-covered ValueKind; Pipeline/Over/Jvp are
 subclasses; `_guards` recurses into wrapper captures (closing the step-11
 noted gap). RENAME: vmap → **`over`** (no users; the JAX prior contradicts
 ours on every axis — argument-position vs capture-name, call-once-batched
-vs per-lane coordinate). Kernel 1280/1500 (measured by scripts/loc_budget.py at commit time — the audit caught a stale pre-commit number here once; totals are pasted from fresh runs now). ALSO: the book builder moved
+vs per-lane coordinate). Kernel 1280/1500 (measured by scripts/loc_budget.py at commit time — the audit caught a stale pre-commit number here once; totals are pasted from fresh runs now).
+
+**2026-07-13 (step 14, first installment): ARGUMENT ARRAYS + THE GRID —
+and the gate falls (design 130 §4.1/§4.3, partially; the tensor dialect
+is the next installment).** (1) Argument arrays: the marshaling machinery
+was arg-generic since step 7 (plan arg roots, extractor descent) — what
+landed is lowering (`core.param` bases in `_linear_index`; `array.buffer`
+grew a rooted `src`; new `array.dim` reads arg shape/stride staging slots
+via the plan — the argument twin of the capture's env→abi.slot route) and
+renderer resolution. Everything captures could do, arguments do: named
+isel, rank-generic hits across shapes, `matmul(A, B, i, j)` with A and B
+as ARGUMENTS (trip count from the arg's plan slot). (2) THE GRID FAMILY
+(`backends.c.grid`, zero kernel lines — a Backend record): params are
+integer domain coordinates; the domain loop compiles INTO the artifact;
+`k(out=(T, D, B))` fills the array in ONE dispatch. And the SIMT design
+closed its own loop: an `over`'d kernel runs on the grid UNCHANGED — the
+lane is one more coordinate, the batch axis joins the domain, `over`
+needed no v2 break. (3) THE GATE (020 step 14, MEASURED): batch-ignorant
+attention (softmax as loops, matmul by name, no batch in source),
+`over`-batched, one grid dispatch vs per-lane scalar dispatch: **16×**
+(18.07 ms → 1.15 ms, (8,16,8,8), M3), numpy-exact; pinned as a
+retry-shaped bench test. SCOPE DISCIPLINE (capability-with-consumer): DPS
+array RESULTS deliberately deferred to the tensor-dialect installment
+where their producers (`tensor.map`) live — the grid delivers the
+economics through the EXISTING domain abstraction instead of a premature
+result ABI. Kernel 1280/1500 (fresh loc_budget run). Chapter:
+ch14-arguments-and-the-grid. ALSO: the book builder moved
 INTO the repo (`scripts/book/build_chapters.py`) after two parallel
 sessions edited the same chapter from separate scratchpads — the single
 source of truth for docs/book is now PR-visible (the ch11b lesson).

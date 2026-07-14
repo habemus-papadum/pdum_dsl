@@ -34,7 +34,7 @@ from pathlib import Path
 from ..kernel.ir import Node, Region, VerifyError
 from ..kernel.pack import PackPlan
 from ..kernel.registry import Backend, Out
-from ..kernel.types import Array, Scalar
+from ..kernel.types import Array, Scalar, i64
 from ..kernel.types import Tuple as TupleType
 
 _CTYPE = {
@@ -83,7 +83,7 @@ def _lanes(t: TupleType) -> tuple:
     return t.elems
 
 
-def render(region: Region, plan: PackPlan, backend=None, name: str = "kernel") -> str:
+def render(region: Region, plan: PackPlan, backend=None, name: str = "kernel", *, grid: bool = False) -> str:
     args_by_index = {s.source.index: s for s in plan.slots if s.source.root == "arg" and not s.source.sub}
     channel = [s for s in plan.slots if s.dest is None]
 
@@ -97,9 +97,11 @@ def render(region: Region, plan: PackPlan, backend=None, name: str = "kernel") -
         attrs = dict(node.attrs)
         arg = [nm[id(a)] for a in node.args]
         if node.op == "core.param":
+            if grid:  # the GRID family: params ARE domain coordinates (loop vars)
+                return f"c{attrs['index']}"
             spec = args_by_index.get(attrs["index"])
             if spec is None:
-                raise VerifyError(f"argument {attrs['index']} has no scalar slot (array ARGS are a recorded cut)")
+                raise VerifyError(f"argument {attrs['index']} has no scalar slot — did you mean a grid call?")
             return f"{_LOADER[spec.dest.fmt]}(staging + {spec.dest.offset})"
         if node.op == "abi.slot":
             return f"{_LOADER[attrs['fmt']]}(staging + {attrs['offset']})"
@@ -195,10 +197,27 @@ def render(region: Region, plan: PackPlan, backend=None, name: str = "kernel") -
 
     from ._emit import emit_dominated
 
-    lines, nm, result = emit_dominated(region, statement, branch_join, indent="  ", loop=loop_join)
+    indent = "  " * (len(region.params) + 1) if grid else "  "
+    lines, nm, result = emit_dominated(region, statement, branch_join, indent=indent, loop=loop_join)
     if not isinstance(result.type, Scalar):
         raise VerifyError(f"the C target returns scalars in v1, got {result.type!r} (fragment tuples are WGSL's)")
     body = "\n".join(lines)
+    if grid:
+        rank = len(region.params)
+        heads, idx = [], "c0"
+        for k in range(rank):
+            heads.append(f"{'  ' * (k + 1)}for (int64_t c{k} = 0; c{k} < dom[{k}]; ++c{k}) {{")
+            if k:
+                idx = f"({idx}) * dom[{k}] + c{k}"
+        tails = [f"{'  ' * (k + 1)}}}" for k in range(rank - 1, -1, -1)]
+        write = f"{'  ' * (rank + 1)}out[{idx}] = {nm[id(result)]};"
+        ot = _ctype(result.type)
+        sig = f"void {name}(const unsigned char* staging, void* const* bufs, {ot}* out, const int64_t* dom)"
+        return (
+            f"/* pdum-restype: grid */\n{_PRELUDE}\n"
+            f"#if defined(_WIN32)\n__declspec(dllexport)\n#endif\n"
+            f"{sig} {{\n" + "\n".join(heads) + f"\n{body}\n{write}\n" + "\n".join(tails) + "\n}\n"
+        )
     sig = f"{_ctype(result.type)} {name}(const unsigned char* staging, void* const* bufs)"
     return (
         f"/* pdum-restype: {result.type.kind} */\n{_PRELUDE}\n"
@@ -225,8 +244,12 @@ def compile_source(source: str, name: str = "kernel"):
     dll = CDLL(str(lib))
     fn = getattr(dll, name)
     kind = source.split("pdum-restype: ", 1)[1].split(" ", 1)[0]
-    fn.restype = _RESTYPE[kind]
-    fn.argtypes = (c_char_p, c_void_p)
+    if kind == "grid":  # domain kernel: void fn(staging, bufs, out, dom)
+        fn.restype = None
+        fn.argtypes = (c_char_p, c_void_p, c_void_p, c_void_p)
+    else:
+        fn.restype = _RESTYPE[kind]
+        fn.argtypes = (c_char_p, c_void_p)
 
     class CProgram:
         __pdum_source__ = source
@@ -237,7 +260,61 @@ def compile_source(source: str, name: str = "kernel"):
             ptrs = (c_void_p * max(1, len(buffers)))(*(b.ctypes.data for b in buffers))
             return fn(bytes(staging), ptrs)
 
+        @staticmethod
+        def grid_call(staging, buffers, out, dom):
+            import numpy as np
+
+            ptrs = (c_void_p * max(1, len(buffers)))(*(b.ctypes.data for b in buffers))
+            d = np.asarray(dom, dtype=np.int64)
+            fn(bytes(staging), ptrs, out.ctypes.data, d.ctypes.data)
+            return out
+
     return CProgram
+
+
+# --- the GRID family: params are integer domain coordinates (130 §4.3) ---------
+# The in-artifact domain loop — ONE dispatch fills the whole out array, which
+# is what repays the ray-march verdict (per-lane dispatch drowned a 7x body
+# win). `over`'d kernels compose unchanged: the lane is just one more
+# coordinate, and the batch axis joins the domain exactly as 110 predicted.
+
+
+def _grid_param_types(target) -> tuple:
+    pyfunc = getattr(target, "pyfunc", None)
+    if pyfunc is None:  # transformed kernels expose their base's arity via captures
+        base = target.captures[0]
+        n = base.pyfunc.__code__.co_argcount + (1 if type(target).__name__ == "Over" else 0)
+        return (i64,) * n
+    return (i64,) * pyfunc.__code__.co_argcount
+
+
+def _grid_plan(env_types, arg_types, table):
+    from ..kernel.pack import plan_from_types
+
+    return plan_from_types(env_types, (), table)  # coords are loop vars, never staging
+
+
+def render_grid(region: Region, plan: PackPlan, backend=None, name: str = "kernel") -> str:
+    return render(region, plan, backend, name, grid=True)
+
+
+def make_grid_launcher(artifact, plan: PackPlan):
+    def launch(staging, leaves):
+        import numpy as np
+
+        dom_spec = [x for x in leaves if isinstance(x, Out)]
+        if not dom_spec:
+            raise VerifyError("grid kernels need a domain: k(out=(N, ...)) or an out ARRAY to fill")
+        spec = dom_spec[-1].value
+        buffers = tuple(x for x in leaves if not isinstance(x, Out))
+        if isinstance(spec, np.ndarray):
+            out = spec  # adopt: the array's shape IS the domain
+        else:
+            shape = (spec,) if isinstance(spec, int) else tuple(spec)
+            out = np.empty(shape, dtype=np.float64)
+        return artifact.grid_call(staging, buffers, out, out.shape)
+
+    return launch
 
 
 def make_launcher(artifact, plan: PackPlan):
@@ -270,6 +347,25 @@ C = Backend(
     make_launcher=make_launcher,
     code_for_op=CODE_FOR_OP,
 )
+
+
+C_GRID = Backend(
+    name="backends.c.grid",
+    render=render_grid,
+    compile=compile_source,
+    fp=("backends.c.grid", 1),
+    plan=_grid_plan,
+    param_types=_grid_param_types,
+    make_launcher=make_grid_launcher,
+    code_for_op=CODE_FOR_OP,
+)
+
+
+def install_grid(registry, *, default: bool = False, kinds: tuple = ()) -> None:
+    """The GRID family record: explicit choice, like the scalar C target."""
+    from dataclasses import replace
+
+    registry.register_backend(replace(C_GRID, code_for_op=dict(C_GRID.code_for_op)), default=default, kinds=kinds)
 
 
 def install(registry, *, default: bool = False) -> None:

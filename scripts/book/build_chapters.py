@@ -3958,3 +3958,180 @@ except Exception as e:
 ]
 
 notebook(ch13, "docs/book/ch13-transforms-are-rules.ipynb")
+
+# ══════════════════════════════════════════ ch14 ══════════════════════════════
+
+ch14 = [
+    md("""\
+# Chapter 14 — Arguments and the grid
+
+The tensor push, first installment (design 130; steps 13–14 of the
+re-sequenced plan). Step 13 rebuilt the transform plumbing on kernel seams
+and renamed vmap to **`over`** — this chapter shows what landed on top:
+**argument arrays** (kernels finally take data the way libraries do) and
+the **grid family** (the domain loop moves INSIDE the artifact, which is
+what the ray-march verdict demanded).
+
+Honest scope note up front: the named tensor DIALECT — `tensor.map` /
+`reduce` / `contract` as IR values, comprehensions, DPS array results —
+is the NEXT installment. This chapter is the part of 130 that pays for
+itself immediately, using abstractions that already existed: the plan's
+arg roots (built at step 7, dark until now) and the compute family's
+domain contract (step 9), completed for CPU."""),
+    code("""\
+import numpy as np
+
+import pdum.dsl  # noqa: F401
+from pdum.dsl import jit, no_compile
+from pdum.dsl.kernel.registry import DEFAULT
+from pdum.dsl.stdlib.arrays import Named
+from pdum.dsl.stdlib.transforms import over"""),
+    md("""\
+## Arguments: the other half of the seam
+
+Since step 11, arrays could only be CAPTURES. The marshaling machinery
+was arg-generic all along — `plan_from_types` walks arg roots, the
+compiled extractor descends them — what was missing was lowering: a
+`core.param` base in the indexing path, and a way for arg shape/stride
+reads to reach staging (`array.dim`, the argument twin of the capture's
+`core.env` → `abi.slot` route). Now:"""),
+    code("""\
+@jit()
+def load2(t, i, j):
+    return t[i, j] * 2.0
+
+
+x = np.arange(12.0).reshape(3, 4)
+print("t[1,2]*2 =", load2(x, 1, 2))
+c0 = DEFAULT.specializations.compiles
+with no_compile():  # a NEW SHAPE as an argument: rank-generic, like captures
+    load2(np.full((7, 9), 5.0), 6, 8)
+print("new arg shape -> compiles:", DEFAULT.specializations.compiles - c0)
+
+
+@jit()
+def mm(A, B, i, j):
+    return matmul(A, B, i, j)  # noqa: F821 — contraction over ARGUMENT arrays
+
+
+A = Named(np.arange(6.0).reshape(2, 3), ("row", "inner"))
+B = Named(np.arange(12.0).reshape(3, 4), ("inner", "col"))
+got = np.array([[mm(A, B, i, j) for j in range(4)] for i in range(2)])
+print("matmul over args == numpy:", np.allclose(got, A.array @ B.array))"""),
+    md("""\
+## The grid: one dispatch, whole domain
+
+The ray-march verdict (ch12): the C body won 7×, then drowned — ~2.4 µs
+of DISPATCH per ray against a sub-µs body. The fix was never "faster
+dispatch"; it was the GPU's move, ported: put the domain loop in the
+artifact. The **grid family** (`backends.c.grid`) treats params as
+integer domain coordinates — `cell(i, j)` called as `cell(out=(3, 4))`
+runs the nested loops in compiled C and fills the array in ONE dispatch:"""),
+    code("""\
+from pdum.dsl.backends import c
+
+grid = DEFAULT.extend()
+c.install_grid(grid, default=True)
+
+
+def make(scale):
+    @jit()
+    def cell(i, j):
+        return float(i) * scale + float(j)
+
+    return cell
+
+
+out = grid.dispatch(make(10.0), (), np.empty((3, 4)))
+print(out)"""),
+    md("""\
+And here the SIMT story completes. `over` adds a trailing lane
+COORDINATE — which is exactly what a grid axis is. An `over`'d kernel
+runs on the grid unchanged; the batch axis just joins the domain:"""),
+    code("""\
+data = Named(np.arange(8.0).reshape(2, 4), ("batch", "x"))
+
+
+def make_g(t):
+    @jit()
+    def g(k):
+        return t.isel(x=k) * 10.0
+
+    return g
+
+
+vg = over(make_g(data), axis="batch")
+out = grid.dispatch(vg, (), np.empty((4, 2)))  # domain = (k, lane)
+print("over on the grid == numpy:", np.allclose(out, data.array.T * 10.0))"""),
+    md("""\
+## The gate: batched attention, batch-ignorant source
+
+The stage exit gate (020 step 14): write attention for ONE example —
+softmax as explicit loops, `matmul` pairing axes by name, no batch
+anywhere in the source — then batch it by declaration and demand the
+economics. The full arc, live:"""),
+    code("""\
+def make_attn(Q, K, V, S, scale):
+    @jit()
+    def cell(t, d):
+        den = 0.0
+        for s in range(S):
+            den = den + exp(matmul(Q, K, t, s) * scale)  # noqa: F821
+        acc = 0.0
+        for s in range(S):
+            w = exp(matmul(Q, K, t, s) * scale) / den  # noqa: F821
+            acc = acc + w * V.isel(kseq=s, dim=d)
+        return acc
+
+    return cell
+
+
+def ref_attn(q, k, v, scale):
+    sc = (q @ np.swapaxes(k, -1, -2)) * scale
+    w = np.exp(sc) / np.exp(sc).sum(-1, keepdims=True)
+    return w @ v
+
+
+rng = np.random.default_rng(0)
+B, S, E, Dv = 8, 16, 8, 8
+qb = Named(rng.standard_normal((B, S, E)), ("batch", "seq", "embed"))
+kb = Named(rng.standard_normal((B, S, E)), ("batch", "kseq", "embed"))
+vb = Named(rng.standard_normal((B, S, Dv)), ("batch", "kseq", "dim"))
+bcell = over(make_attn(qb, kb, vb, S, 1 / np.sqrt(E)), axis="batch")
+
+got = grid.dispatch(bcell, (), np.empty((S, Dv, B)))
+ref = ref_attn(qb.array, kb.array, vb.array, 1 / np.sqrt(E))
+print("batched attention == numpy:", np.allclose(np.moveaxis(got, -1, 0), ref))"""),
+    code("""\
+from pdum.dsl.bench import benchmark
+
+scalar = DEFAULT.extend()
+c.install(scalar, default=True)
+per_lane = benchmark(
+    lambda: [[[scalar.dispatch(bcell, (t, d, b)) for b in range(B)] for d in range(Dv)] for t in range(S)],
+    budget_s=0.3,
+)
+one = benchmark(lambda: grid.dispatch(bcell, (), np.empty((S, Dv, B))), budget_s=0.3)
+print(f"per-lane dispatch : {per_lane.minimum * 1e3:6.2f} ms")
+print(f"one grid dispatch : {one.minimum * 1e3:6.2f} ms")
+print(f"                  -> {per_lane.minimum / one.minimum:.0f}x  (gate: >=10x)")"""),
+    md("""\
+## Things to notice
+
+- **Zero kernel lines.** Argument arrays lit up machinery built at step 7;
+  the grid family is a Backend record. The seams paid for step 13; this
+  chapter collected.
+- **The lane is a coordinate** — `over`'s SIMT design met the domain
+  abstraction and they were the same thing. Batch efficiency did not need
+  `over` to change; it needed a target that takes domains.
+- **Capability-with-consumer**: DPS array RESULTS were deliberately NOT
+  landed here — their producers are `tensor.map` ops, and they arrive
+  together in the tensor-dialect installment (130 §4.2), followed by grad
+  over textbook adjoints.
+- The GPT-2 question from the fork conversation now has its skeleton:
+  batch-ignorant attention, named contraction, one-dispatch batching —
+  what remains is activation FLOW (array results) and the reduction
+  vocabulary."""),
+]
+
+notebook(ch14, "docs/book/ch14-arguments-and-the-grid.ipynb")
