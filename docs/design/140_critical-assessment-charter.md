@@ -79,7 +79,9 @@ The lowest level. Principles:
 - They correspond to **concrete kernel types that exist in mainstream use**:
   vertex shaders, fragment shaders, and compute kernels (WebGPU, Metal,
   CUDA). We are not inventing kernel kinds; we are giving good syntax to
-  real ones.
+  real ones. The three compute targets are **equal citizens**: CUDA, Metal,
+  and WebGPU carry equal weight, and no probe or design may treat one of
+  them as the neutral default.
 - Maximal common syntax across kernel types and backends, with
   backend-specific escapes where needed (the 090 punning charter).
 - The full machinery is in scope at this level: shared memory, barriers,
@@ -190,7 +192,7 @@ Each probe writes complete, aspirational programs in our DSL. Rules:
 
 The founding thesis (see 010, 060, 090). Write the pair of shaders for a
 non-trivial draw and the host code that uses them **inside an existing
-render loop that we do not own** (WebGPU is the primary target).
+render loop that we do not own** (the render target is WebGPU).
 
 Must cover, on the defining side:
 - a vertex shader's two input kinds — **vertex arrays** and **uniforms** —
@@ -266,6 +268,10 @@ Must cover:
   named axes or deliberately do not (§6.4 prior: they do).
 - invocation: what the launch looks like, and what is refused on hardware
   without the required features.
+- backend parity (§2): the tensor-core-shaped contraction examined against
+  all three compute targets — CUDA tensor cores, Metal simdgroup matrices,
+  WebGPU's subgroup-level limits — so the syntax does not quietly encode
+  CUDA's model as the neutral one.
 - the standing constraint from the fork discussion: **we do not lower too far
   and then un-lower** — the syntax must keep contraction/tile structure
   visible until target selection, so tensor cores are a *selection*, not a
@@ -352,9 +358,7 @@ Answered once, informed by all four probes:
    gradients with respect to a *selected subset* of tensors only. Open
    questions the assessment should scope (boundary verdicts welcome): memory
    management of the backward pass, activation checkpointing, distributed
-   training. Possibly also gradients "with respect to a specific kernel"
-   (**[OPEN 2]** — meaning needs clarification: per-kernel custom adjoints?
-   stopping gradients at a kernel boundary?).
+   training.
 
    **Forward:** consumed *inside* kernels — `fwidth` is the canonical
    example. Today's in-kernel `D` differentiates with respect to *the
@@ -370,8 +374,21 @@ Answered once, informed by all four probes:
    side); the assessment should decide whether that is an accident or a
    commitment.
 
-   The assessment maps the whole family — which operator lives at which
-   level, with what syntax, and how selection (`wrt`, freezing) reads.
+   **Two lenses, orthogonal to the two kinds.** Differentiation can be
+   asked for in a *value-centric* way — start from a computed value and ask
+   for its gradient with respect to other input values (the PyTorch lens) —
+   or in a *function-centric* way — take a function, in **any of the three
+   languages of the hierarchy**, and ask for its **VJP** or **JVP** with
+   respect to some of its arguments or parameters, getting back a new
+   function to specify and then to call (the functional lens). Both lenses
+   may be wanted at every level, in forward or backward mode. The prompt is
+   deliberately imprecise here and the assessment owes the precision: for
+   each level, which lens(es) exist, what the syntax is for *specifying*
+   the differential computation, and what the syntax is for *using* the
+   resulting function or value.
+
+   The assessment maps the whole family — kind × lens × level — with
+   concrete syntax, including how selection (`wrt`, freezing) reads.
 6. **Where do tensors come in?** We have deliberately *not* built a
    tensor-focused library. The no-extent-loops principle (§2 level 0) forces
    the question: extent iteration must live in map/reduce/contract
@@ -424,15 +441,21 @@ findings → cross-cutting synthesizer (§6) + hierarchy judge (§2) →
 adversarial verification of every flaw claim against source → report
 assembly. Findings that fail verification are dropped, not softened.
 
-## 10. Open items to resolve before launching the run
+## 10. Resolution log
 
-- **[OPEN 2]** "Computing gradients with respect to a specific kernel"
-  (§6.5): clarify intent — per-kernel custom adjoint rules (à la
-  `jax.custom_vjp`), gradient stopping at kernel boundaries, or something
-  else.
-- **[OPEN 3]** Probe A treats WebGPU as the primary target (draw commands
-  and the compute list — WebGPU/Metal/CUDA — both say so); the spoken prompt
-  twice said "WebGL render loop." Confirm WebGPU-first is right and WebGL
-  was shorthand.
-- **[OPEN 5]** "Gradient clashing" transcribed → interpreted as gradient
-  *clipping* in Probe D. Confirm.
+All open items were resolved in review (2026-07-18); the charter is
+launch-ready pending a final human read.
+
+- **OPEN 1** (truncated founding example) — restored: naive per-pixel host
+  dispatch of a kernel across an image; now anchors §1.
+- **OPEN 2** ("gradients with respect to a specific kernel") — retracted as
+  a misstatement; replaced by the two-lenses framing (value-centric vs
+  function-centric VJP/JVP) in §6.5.
+- **OPEN 3** (WebGL vs WebGPU) — "WebGL" was a misstatement: the render
+  target is WebGPU, and the compute story gives CUDA, Metal, and WebGPU
+  equal representation (§2, Probe C).
+- **OPEN 4** (the "two different types of objects" seam) — text recovered;
+  now in Probe A (uniforms as normal Python objects copied per draw;
+  backend-allocated vertex arrays; third-party allocation).
+- **OPEN 5** ("gradient clashing") — confirmed as gradient *clipping*
+  (Probe D).
