@@ -132,3 +132,26 @@ before the compute layer lands on top.
     loud, not silent. `pointwise` outputs materialize; only pristine
     view-chains of iota stay tight, which is exactly what a compiler wants
     to detect.
+
+19. **Cotangents live on the lattice — charts are stripped in backward
+    programs.** The AD transform strips charts/labels from the seed and
+    from every forward value it references, so gradient tensors carry no
+    physical labeling. Whether a gradient *should* inherit its primal's
+    chart (it is a cotangent — arguably it lives on the dual axis, and its
+    value-unit is 1/unit(primal)·unit(loss)) is a real design question for
+    the compute layer's unit checking. Deferred deliberately.
+
+20. **The differentiable subset is explicit and partial.** Markers:
+    add/sub/neg/mul/div/exp/log/maximum/minimum/where (comparisons and iota
+    are gradient-free by design). Reducers: sum/mean/max/min (max/min with
+    the tie caveat); prod deferred. scan(sum) only. decimate's adjoint
+    needs a factor-divisible domain (pad the source first); n-ary diagonal
+    adjoints deferred. Each gap raises loudly.
+
+21. **`materialize` is the IR's one copying op.** Adjoints of split (and
+    decimate) must merge, and merge needs real stride nesting that an
+    arbitrary cotangent chain does not guarantee — so the transform inserts
+    an explicit materialize (identity, chosen dim order). This is honest
+    (export order is a materialization property, D5) but it is also the
+    first place the *correctness* layer forces a copy; the memory layer
+    (REPRESENTATIONS.md) will want to elide it when nesting already holds.

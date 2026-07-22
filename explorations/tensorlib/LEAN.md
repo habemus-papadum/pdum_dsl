@@ -1,0 +1,287 @@
+# Lean 4 modeling diary
+
+Working notes, not a plan of record. The contract for this document: every
+time the Python side grows a feature, this file gets a dated entry saying how
+that feature would be modeled (or why it wouldn't be), at whatever level of
+detail is honest. Lean snippets are *sketches* — none have been checked by
+Lean yet. When we start the actual Lean package, this diary becomes its
+design rationale.
+
+Guiding taste: pragmatic before beautiful. Prefer shallow embeddings and
+`omega`-sized proofs first; postpone dependently-typed IRs until something
+actually needs to quantify over programs. Use Mathlib aggressively.
+
+---
+
+## 2026-07-22 — initial layout of the whole cake
+
+### The layer map (Python artifact → Lean artifact)
+
+| Python | Lean |
+|---|---|
+| dim names, D5 order-free | an index *type* `δ` (DecidableEq, Fintype) — order never exists |
+| raw lattice domains [start, stop) | `Box δ := (lo hi : δ → ℤ)`; coords are subtype functions |
+| abstract tensor (COMPUTE.md §8 layer 1) | `Tensor δ b α := Coord b → α` — Mathlib `Matrix` generalized |
+| Layout (strides, offset) | `Layout δ` structure + `loc : Coord b → ℤ` |
+| Buffer / read seam | `Buffer α := ℤ → α` (element-granular; bytes abstracted away) |
+| FunctionalBuffer | a *definable* affine `Buffer ℚ` |
+| guards + fill | totalized denotation: `if guards hold then buffer (loc c) else fill` |
+| Chart / Quantity / units | `Qty (d : Dims) := ℚ` type family; `Dims := String →₀ ℤ` |
+| categorical labels | `Fin n ↪ Name` (an injection; the nominal rung) |
+| markers (pw/red) | typeclass instances / bundled structures with proofs |
+| carriers | the `α` in `Tensor … α` + instance constraints per marker |
+| programs (linear sequences) | shallow: composed Lean functions; deep (later): inductive IR |
+| machine model | cost semantics over the deep IR (vision) |
+
+Three pleasant surprises fell out of writing this table:
+
+1. **Lean is the canonical quotient.** Python keeps a presentation order and
+   needs `canonical()`; in Lean, dims are a type, so order never existed.
+   The D5 decision was secretly "make the Python data structure a
+   presentation of the Lean one."
+2. **Alignment dissolves into typing.** `pointwise` on abstract tensors is
+   just `fun c => f (A c) (B c)` — it *only typechecks* when both operands
+   share `δ` and `b`. Python's `alignment()` diagnosis is exactly the
+   construction of that shared type; the recipes (flip/shift/slice/repeat)
+   are the transport maps. "Alignment is a proof obligation" is literal.
+3. **Layout ops are linear maps.** Every view op induces an `ℝ`-linear map
+   `Tensor b₁ ℝ →ₗ[ℝ] Tensor b₂ ℝ` (repeat, slice-as-restriction, window,
+   decimate — all linear; pointwise(mul) bilinear; reduce(add) linear). The
+   AD adjoint table in COMPUTE.md §7 is then Mathlib's `LinearMap.adjoint`
+   on finite-dimensional inner-product spaces — repeat†=reduce-sum and
+   slice†=zero-pad become *computations*, not new theory.
+
+### Sketches for what exists today
+
+Coordinates and abstract tensors (unchecked):
+
+```lean
+structure Box (δ : Type) where
+  lo hi : δ → ℤ
+
+def Coord (b : Box δ) := ∀ d, {i : ℤ // b.lo d ≤ i ∧ i < b.hi d}
+
+def ATensor (b : Box δ) (α : Type) := Coord b → α
+```
+
+Concern noted immediately: `Fin n` would be more ergonomic than ℤ-subtypes,
+but raw coordinates (D3) are load-bearing in the Python design, so we bite
+the ℤ bullet and expect `omega` to eat the interval arithmetic. If it gets
+painful, an iso `Coord b ≃ ∀ d, Fin (size d)` is a one-time lemma.
+
+Layout, denotation, guards:
+
+```lean
+structure Layout (δ : Type) [Fintype δ] where
+  stride : δ → ℤ
+  offset : ℤ
+
+def loc (L : Layout δ) (c : Coord b) : ℤ :=
+  L.offset + ∑ d, L.stride d * (c d).val
+
+structure Guard (δ) where
+  coeff : δ → ℤ   -- finitely many nonzero
+  lo hi : ℤ
+
+def Guard.ok (g : Guard δ) (c : Coord b) : Prop :=
+  g.lo ≤ (∑ d, g.coeff d * (c d).val) ∧ (∑ d, g.coeff d * (c d).val) < g.hi
+
+def denote (L : Layout δ) (gs : List (Guard δ)) (buf : ℤ → α) (fill : α) :
+    ATensor b α :=
+  fun c => if ∀ g ∈ gs, g.ok c then buf (loc L c) else fill
+```
+
+Modeling decision: **buffers are element-granular functions ℤ → α**. Byte
+strides, itemsize, dtype decoding — all representation, all skipped. The
+semantics only needs locations to be an ℤ with affine structure. If we ever
+want byte-level fidelity (aliasing across dtypes, field selection into
+structured dtypes), that is a refinement layer `decode : Bytes → α` we can
+add without disturbing anything above it. field() therefore denotes as an
+offset shift composed with a different decode — fine, later.
+
+Units without partiality — the type-family trick:
+
+```lean
+abbrev Dims := String →₀ ℤ            -- dimension exponent vectors
+abbrev Qty (d : Dims) := ℚ            -- magnitude in base units
+
+-- addition is only defined within Qty d: dimension errors are type errors
+structure Chart (d : Dims) where
+  origin : Qty d
+  step   : Qty d
+  step_ne : step ≠ 0
+```
+
+This makes the Python runtime check ("cannot add 1 um and 1 s") a *static*
+impossibility in the model. The exactness discipline (D8) means everything
+here is ℚ — no floats exist anywhere in the semantic layer, so no numerical
+analysis exists anywhere in the proofs. This was the point of D8 all along.
+
+The axis invariant becomes an actual theorem statement:
+
+```lean
+def physPos (axis : String) (charts : …) (c : Coord b) : Qty d :=
+  ∑ dims tagged axis, (chart _).origin + (c _).val • (chart _).step
+
+theorem select_preserves_physPos : … -- the "glued labels" theorem, for real
+```
+
+Compute primitives (shallow):
+
+```lean
+def pointwise (f : α → β → γ) (A : ATensor b α) (B : ATensor b β) :
+    ATensor b γ := fun c => f (A c) (B c)
+
+def reduce [CommMonoid α] (A : ATensor b α) (r : Finset δ) :
+    ATensor (b.drop r) α := fun c => ∑ over the dropped sub-box, A (c ⊕ _)
+
+-- markers-as-declarations ↦ typeclass instances: red.sum is AddCommMonoid,
+-- red.max is a (linearly ordered) semilattice; associativity is not a
+-- flag, it is an instance argument.
+```
+
+`scan` is `List.scanl` along one ℤ-interval (which, unlike an abstract
+Fintype, is ordered — scan is the one primitive that *uses* the order of a
+dim, worth remembering). The Blelloch equivalence (`scanl f = parallel scan`
+given associativity) is a classic verified-algorithms exercise and slots in
+whenever the machine model needs it.
+
+`iota` and the closure invariant: iota is `fun c => (c d).val` — the
+identity. The tightness theorem is an induction over op sequences:
+
+```lean
+theorem iota_stays_affine (ops : List ViewOp) :
+    ∃ a : ℤ, ∃ w : δ' → ℤ, ⟦apply ops iotaT⟧ = fun c => a + ∑ d, w d * (c d).val
+```
+
+which is the Lean form of "FunctionalBuffer ∘ any layout chain is affine."
+The Python invariant test (`W.buffer is I.buffer`) is the operational shadow
+of this statement.
+
+Carriers: the abstract tensor's `α`, constrained per marker — `exp` demands
+`ℝ` (or `RCLike`), comparisons land in `Bool`/`Prop`, `div` picks its
+meaning from the instance. The coercion chain ℤ →+* ℚ →+* ℝ →+* ℂ is stock
+Mathlib. The "carrier rat represented as float64" tensor denotes an
+ℚ-tensor, full stop — representation does not exist here.
+
+### Theorem shopping list (deliberately ordered)
+
+1. **Warm-ups that pin the core**: `loc` affine; footprint containment
+   (`∀ c ∈ box, loc c ∈ [lo, hi)`); `simplify` soundness (a guard vacuous
+   over the box can be dropped — interval arithmetic, `omega`).
+2. **Op simulation lemmas** — for each view op, denotation commutes with the
+   abstract definition: `⟦window T⟧ (x, k) = ⟦T⟧ (x + k)`,
+   `⟦decimate T f p⟧ j = ⟦T⟧ (f*j + p)`, split/merge round-trip, flip
+   involution. Each Python test is a quarry for the statement; most proofs
+   should be `simp`+`ring`+`omega`.
+3. **The guarded-footprint λ-lemma** — when guard coefficients are
+   proportional to strides, the footprint honoring the guard is exact. This
+   is the one subtle argument the adversarial review only verified
+   empirically (300 random chains); Lean settles it forever. High
+   value-per-line.
+4. **Axis invariance** — select-compensation preserves `physPos`; shift and
+   flip glue labels to data. The design's central "theorem, not convention"
+   claim, made checkable.
+5. **Adjoint pairs** — `⟨repeat x, y⟩ = ⟨x, reduceSum y⟩`, slice/pad, the
+   window/overlap-add pair. Sets up AD.
+6. **The milestone with a flag on it**: the matmul program
+   (repeat·mul·reduce) denotes `Matrix.mul`. Connecting our normal form to
+   Mathlib's matrix algebra is the moment the model has teeth.
+7. Then and only then: the deep embedding.
+
+### The vision layers (future, shape only)
+
+**Shallow now, deep later.** Program *transformations* (fusion, reordering,
+AD-as-transformation, cost) need programs as data — an inductive IR. Typed
+deeply (IR indexed by boxes) it's honest but expensive; untyped with a
+well-formedness predicate is the pragmatic middle. Decision deferred until
+target 6 above is done; premature deep embedding is how Lean projects die.
+Until then, transformations are stated as equational lemmas about composed
+functions (`pointwise f ∘ pointwise g = pointwise (f ∘ g)` and friends) —
+genuinely useful already.
+
+**AD.** Two-stage plan matching COMPUTE.md §7: (a) leaf lemmas — per-marker
+derivatives, mostly stock Mathlib (`Real.exp` has a derivative; bilinearity
+of mul is free); (b) the reverse-mode transformation on the deep IR, proved
+against `fderiv` composition. The linear-map realization above means the
+layout-op half of the tape needs no calculus at all — just adjoints of
+linear maps on `EuclideanSpace`. Fan-out/accumulation is `LinearMap.add`.
+Max-reduce subgradient: state the a.e./tie-caveat version only; do not
+litigate subdifferentials.
+
+**Machine model.** Deep IR + a cost interpretation: memory levels with
+capacities and bandwidths (ℕ-valued resources), execution hierarchy, tensor
+cores as special-cased cost rules for matmul-shaped nodes, precision =
+bytes-per-element entering *only* cost, never denotation (the carrier/dtype
+split, again). Claims have the shape "denotation-preserving ∧ cost(S) ≤
+cost(S')" — performance is model-relative and provable; accuracy is
+empirical and deliberately unprovable here. This is the genuinely novel
+research; everything before it is established technique.
+
+### Bridging Python ↔ Lean without full verification
+
+The real correctness contract today is Lean-model ↔ Python-tests, and that
+bridge can be mechanical without being formal: have Python emit concrete
+test vectors (random layout chains, their op sequences, item()-level
+expectations) as Lean `example` statements over ℚ/ℤ, discharged by
+`decide`/`native_decide` in CI. Cheap, brutal, and it catches divergence in
+either direction the day it happens. Worth doing as soon as the Lean package
+exists — long before any interesting theorem is proved.
+
+### Concerns / issues (diary-honest)
+
+- ℤ-interval coordinates everywhere: `omega` should cope, but sums over
+  `Finset.Ico` are clunkier than `Fin n` sums. Mitigation: the one-time iso.
+- Names: Lean wants index types, Python wants strings. The mapping is
+  bookkeeping (a `δ := {x, y, z}`-style enum per example, or `String`
+  subtypes); do not try to make Lean kwargs happen.
+- Guarded denotation totalizes with `fill` — good for pointwise semantics,
+  but it means "the real region" is a *proposition* about coordinates, and
+  theorems must quantify over it. Fine, just noisy.
+- Structured dtypes/field() sit below the element-granular buffer
+  abstraction. Punt until something needs it (the complex-as-two-fields
+  story will eventually).
+- Categorical labels have almost no proof content yet (an injection and a
+  refusal list). That is honest: nominal data has no algebra — the model
+  should be equally silent.
+- `Fraction` growth (CONCERNS #12) has no Lean analogue — ℚ is ℚ. The
+  fixed-point normalization pass is a *representation* concern; it will
+  appear in the machine model, not the semantics.
+- Mathlib is a heavy dependency with real build times; accept it (the
+  alternative — reinventing `Finsupp`, `omega`, linear algebra — is worse).
+- Biggest modeling risk: the deep-IR typing decision. Wrong choice = months.
+  Hence: postponed, with the shallow layer generating the requirements.
+
+## 2026-07-22 (later) — the IR and reverse-mode AD landed in Python
+
+(1) *Denotation*: `ir.Program` is the deep embedding this diary deferred —
+linear SSA, no branching. Its denotation is a fold of per-instruction
+denotations over an environment; `ir.run` is that fold over the reference
+layer, `ir.infer` is the same fold over layouts only (a second, abstract
+interpretation — Lean will recognize this as two algebras over one syntax,
+begging for a generic fold). `materialize` denotes the identity (its whole
+content is representation).
+
+(2) *Theorems touched*: the AD transformation is now a concrete function on
+programs, so "AD correctness" has a precise statement: for differentiable
+programs P and scalar target t, ⟦grad(P, t)⟧ computes ∇⟦P⟧ — provable
+against `fderiv` composition given the marker-derivative leaf lemmas. The
+adjoint table is pinned per-op by finite-difference tests; each row is a
+lemma statement (the linear-map/adjoint realization from the initial entry
+applies verbatim). The seed contract (VJP) matches `LinearMap.adjoint`
+applied to the output functional.
+
+(3) *Vision moved*: the deep-IR typing question now has data — the Python
+IR is *untyped with runtime/inference-time checking* (shadows), and the AD
+transform only ever needed `infer`'s layouts, not a dependent index. That
+argues for the untyped-IR + well-formedness-predicate route in Lean, with
+`infer` as the shape-checking function whose success is the WF proof.
+Checkpointing/scheduling (REPRESENTATIONS.md) will want programs-as-data
+too; same embedding serves.
+
+### Update protocol
+
+When a Python feature lands, add a dated entry here answering three
+questions: (1) what is its denotation (or: why has it none)? (2) which
+existing theorems does it touch? (3) does it move anything from the vision
+layers into reach? Keep entries short; this is a diary, not a spec.

@@ -1,9 +1,11 @@
 # tensorlib
 
 A design exploration for a tensor library about **memory layout and views**,
-with no compute layer. See [DESIGN.md](DESIGN.md) for the full design
-discussion and the agreed decisions (D1–D18), and [CONCERNS.md](CONCERNS.md)
-for the open edges.
+plus a minimal compute layer over it. See [DESIGN.md](DESIGN.md) for the
+layout-layer decisions (D1–D18), [COMPUTE.md](COMPUTE.md) for the compute
+vision, [LEAN.md](LEAN.md) for the Lean 4 modeling diary,
+[REPRESENTATIONS.md](REPRESENTATIONS.md) for the memory/scheduling levels
+above the IR, and [CONCERNS.md](CONCERNS.md) for the open edges.
 
 ## The three steps
 
@@ -72,6 +74,18 @@ those views as virtual. Matmul = repeat·mul·reduce; conv = window/stencil
 ·mul·reduce; softmax = reduce→repeat→pointwise; causal masks via iota —
 all pinned in `tests/test_compute.py`.
 
+**The IR and autodiff** (`ir.py`, `autodiff.py`): programs as linear SSA —
+(var, op, operands, params) over layout ops + the primitives, plus leaves
+(`input`/`const`/`iota`) and `materialize` (identity copy in a chosen dim
+order). `run` interprets over the reference layer; `infer` propagates
+layouts only. `grad(prog, target, input_layouts, seed=None)` is reverse-mode
+AD as a program transformation: one backward pass yields d(target)/d(v) for
+every SSA var, the generated gradient is itself IR, and every adjoint rule
+is validated against finite differences in `tests/test_autodiff.py`
+(repeat†=reduce-sum, slice†=pad, window/stencil†=overlap-add,
+decimate†=zero-stuffing, scan(sum)†=reverse scan, ...). Scalar targets seed
+with 1; non-scalar targets require an explicit seed (VJPs).
+
 ## Quick taste
 
 ```python
@@ -105,6 +119,10 @@ charts, guards):
 4. `04_guarded_layouts.ipynb` — pad, stencil with physical taps, guard
    rewrites under select/shift/split, `simplify` collapsing back to the core
    family.
+5. `05_autodiff_cheatsheet.ipynb` — the adjoint of every instruction, each
+   with a one-line inner-product derivation and finite-difference
+   validation; the chain rule mechanically; seeds as VJPs; softmax's
+   analytic gradient; training a linear model end to end in the IR.
 
 Re-run them with
 `uv run jupyter nbconvert --to notebook --execute --inplace notebooks/0*.ipynb`.
