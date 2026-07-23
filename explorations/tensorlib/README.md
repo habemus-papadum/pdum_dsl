@@ -155,6 +155,13 @@ before/after on the layout (dims, strides, offset, charts, guards):
    recurrence), associativity as a declared claim, BPTT emitted as IR (with
    the derived registry and the generated matrix-linrec backward scan),
    training through the scan, and op counts over composite trees.
+8. `08_fold_tensor_state.ipynb` — `fold`, the tensor-state scan: the step as
+   a first-class IR Program, the scalar case agreeing with 07's composite
+   reducer, gated linear attention's matrix state, the carry/`final`/chart
+   refusals, the adjoint derived by self-application (the folds the backward
+   pass generates), FDTD leapfrog with the space-time trajectory and
+   gradients w.r.t. the initial fields, the empty fold, per-step op counts,
+   and units surviving the carry fixed point.
 
 Re-run them with
 `uv run jupyter nbconvert --to notebook --execute --inplace notebooks/0*.ipynb`.
