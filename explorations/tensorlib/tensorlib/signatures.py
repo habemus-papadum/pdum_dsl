@@ -212,6 +212,24 @@ def infer_signatures(prog, inputs=None) -> dict[str, VInfo]:
         elif ins.op == "with_value_units":
             vu = p["value_units"]
             sigs[ins.var] = VInfo(sigs[ins.operands[0]].carrier, vu if isinstance(vu, Unit) else None)
+        elif ins.op == "fold":
+            state_names, elem_names = tuple(p["state"]), tuple(p["element"])
+            carry = dict(p["carry"])
+            sigmap = {n: sigs[o] for n, o in zip(state_names + elem_names, ins.operands)}
+            ss = {}
+            for _ in range(len(CARRIERS) + 1):  # carry fixed point, like reducers
+                ss = infer_signatures(p["step"], sigmap)
+                merged = {
+                    sn: VInfo(
+                        _join(sigmap[sn].carrier, ss[carry[sn]].carrier),
+                        _same_unit("fold.carry", sigmap[sn].unit, ss[carry[sn]].unit),
+                    )
+                    for sn in state_names
+                }
+                if all(merged[sn] == sigmap[sn] for sn in state_names):
+                    break
+                sigmap.update(merged)
+            sigs[ins.var] = ss[p["out"][1]]
         elif ins.op == "materialize" or ins.op in _LAYOUT_OPS:
             # layout ops move coordinates, never values (pad fills unchecked)
             sigs[ins.var] = sigs[ins.operands[0]]

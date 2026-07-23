@@ -279,6 +279,37 @@ argues for the untyped-IR + well-formedness-predicate route in Lean, with
 Checkpointing/scheduling (REPRESENTATIONS.md) will want programs-as-data
 too; same embedding serves.
 
+## 2026-07-23 (later) — LEVELS.md and the fold combinator
+
+(1) *Denotation.* `fold` is the first STRUCTURED combinator in the IR:
+denotationally `List.foldl step init elems` with per-step emission — the
+single most proof-friendly control structure there is (every property is
+one induction over the step list). This is much better than unrolling:
+theorems about time-stepped programs (FDTD, SSM recurrences) become
+statements about one induction scheme instead of n-instruction syntactic
+blobs. The carry contract (step preserves the state layout, checked at
+run/infer) is precisely the invariant the induction carries.
+
+(2) *Theorems touched.* The fold adjoint is DERIVED by self-application:
+grad of a scalarized wrapper around the step gives the VJP program, and the
+adjoint is the reverse fold of that program over the stored trajectory. So
+its correctness theorem is MODULAR: "if grad is correct on the step
+program, the reverse fold computes the fold's derivative" — an induction
+over steps that never inspects the step's internals. This is the
+compositional shape we hoped AD proofs would take: one lemma per
+combinator, leaf obligations discharged by the existing per-marker story.
+
+(3) *Vision moved.* LEVELS.md fixes the formal architecture for the whole
+machine-modeling arc: levels are WF-predicates over ONE IR, lowerings are
+denotation-preserving functions between them, cost models are monoid
+homomorphisms out of per-level resource semantics, and equivalence
+assurance is stratified (numeric check → decidable layout normalization →
+Lean-certified rewrite rules, with Python verifying rule-chain
+applications). Lean never faces "prove these two programs equal" — only
+"prove this rewrite rule once." The machine tree is data, so no machine
+detail ever enters the logic; machine-bound dims are chartless by
+discipline, which keeps the chart/unit theorems untouched by lowering.
+
 ## 2026-07-23 — signatures, the SSM backward pass, and counting
 
 (1) *Denotation.* The signature pass is a TYPING JUDGMENT laid over the

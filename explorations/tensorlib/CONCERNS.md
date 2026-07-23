@@ -207,3 +207,20 @@ before the compute layer lands on top.
     operands count over the guard BOX (reference semantics evaluates
     fills); λ-proportional counts and memory-traffic modeling
     (REPRESENTATIONS.md Level 1) remain future work.
+
+24. **`fold` (the tensor-state scan) is sequential, and its reference
+    adjoint stores everything.** The step is an IR Program (the one
+    structured combinator; still no branching); the carry must keep the
+    state's exact layout (checked, D17-style); the scan dim must be
+    chartless in the reference (strip first, glue charts back after).
+    The adjoint is DERIVED by self-application — grad of a scalarized
+    wrapper around the step yields the VJP program, folded in reversed
+    time — which means: forward state trajectories are re-emitted per
+    state component and held whole (store-everything BPTT; the L1
+    checkpointing work will trade this off properly), each element/init
+    cotangent re-runs the reverse fold (one fold per output, like the
+    state_scanner pattern), and out=("final", v) is restricted to carry
+    vars. An associative tensor COMBINE (the Mamba-2 chunk-parallel
+    license) is a declaration the compiler may exploit later; it does not
+    change the sequential denotation. Second-order through fold is
+    untested.

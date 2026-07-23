@@ -2,6 +2,9 @@
 
 Recorded from the memory-optimization pre-discussion (2026-07-22). Nothing
 here is implemented; this is the map for the levels above the linear SSA IR.
+(2026-07-23: LEVELS.md is now the umbrella — the full ladder to L6, the
+machine tree, surface discipline, zoo, and order of attack. This document's
+Levels 0–3 are LEVELS.md's L0–L3; the memory-level detail stays here.)
 Scope note: this is about *intermediary* memory — activations kept for the
 backward pass, buffer lifetimes, placement — NOT kernel-level concerns like
 the naive matmul's materialized m×k×n product (that is fusion's job, one
