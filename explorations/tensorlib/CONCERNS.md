@@ -112,18 +112,36 @@ before the compute layer lands on top.
     pick ONE canonical spelling (a record of same-typed fields is a
     categorical dim in disguise) rather than supporting both forever.
 
-16. **Carriers are inferred-and-unchecked.** The carrier field (bool/int/
-    rat/real/complex) is threaded metadata; marker carrier signatures
-    (`exp : real → real`, per-carrier `div`, comparisons → bool) and the
-    coercion chain are declared in COMPUTE.md but not enforced anywhere.
-    The compute layer should harden this when marker signatures land —
-    until then `exp(iota)` silently "works" in the reference layer.
+16. **RESOLVED: markers have carrier/unit signatures** (signatures.py).
+    One pass propagates (carrier, unit) facts through trees, primitives,
+    reducers (fixed-point over structured state), and whole programs —
+    `exp` of micrometers, `x_volts + t_seconds`, and cross-dimension
+    comparisons now REFUSE, statically (`infer_signatures`) and at run time
+    (`pointwise` enforces `marker_signature`). Policy: None = unknown
+    unifies with anything (unlabeled programs pass untouched); nonzero
+    constants are dimensionless, zero is unit-polymorphic; carriers join
+    bool<int<rat<real<complex. Payoff: `grad` infers `target_unit` from
+    the target's signature — units-in-gradients needs no annotation when
+    inputs declare units. Honest gaps: `prod` of a dimensioned quantity
+    (needs static extent), pad fills, structured-dtype unit maps.
 
-17. **Scan is single-dim and ufunc-only in the reference layer.** Multi-dim
-    scan is deliberately absent (order ambiguity); pair-state associative
-    scans (SSM recurrences h_t = a_t·h_{t-1} + b_t) need the marker DSL —
-    the reference `ufunc.accumulate` cannot express them. Reverse scan is
-    spelled flip∘scan∘flip rather than a parameter; revisit if it grates.
+17. **PARTLY RESOLVED: pair-state scans exist via the marker DSL.**
+    `defreducer` defines structured-state reducers (lift / associative
+    combine / init / project) and `scan`/`reduce` evaluate them over
+    multiple aligned element tensors — the SSM recurrence h_t = a_t·h_{t-1}
+    + b_t is `linrec` (pair combine, associativity property-tested; a Lean
+    lemma later). Composite-reducer ADJOINTS now DERIVE too
+    (autodiff.composite_scan_adjoint): the state cotangent of a
+    structured-state scan is itself a linear recurrence in reversed time,
+    emitted as a generated matrix-linrec composite scan over derived
+    Jacobian trees; reduce† = embed-at-last then scan†. The boundary needs
+    no special case BECAUSE init is the monoid identity (C(init, r) = r ⇒
+    ∂C/∂right = I there) — an obligation to state in Lean. Still open:
+    multi-dim scan stays deliberately absent; reverse scan stays
+    flip∘scan∘flip. The reference sweep is a sequential Python loop — the
+    O(log n) parallel evaluation licensed by declared associativity is the
+    compiler's job, and the adjoint re-scans the forward per state
+    component (k extra scans) rather than caching the trajectory.
 
 18. **FunctionalBuffer reads assume layout-respecting locs.** A functional
     read raises on byte locations that are not multiples of its scale;
@@ -133,20 +151,28 @@ before the compute layer lands on top.
     view-chains of iota stay tight, which is exactly what a compiler wants
     to detect.
 
-19. **Cotangents live on the lattice — charts are stripped in backward
-    programs.** The AD transform strips charts/labels from the seed and
-    from every forward value it references, so gradient tensors carry no
-    physical labeling. Whether a gradient *should* inherit its primal's
-    chart (it is a cotangent — arguably it lives on the dual axis, and its
-    value-unit is 1/unit(primal)·unit(loss)) is a real design question for
-    the compute layer's unit checking. Deferred deliberately.
+19. **RESOLVED (2026-07-22): gradients carry their primal's labeling.**
+    Implemented: every cotangent contribution is restamped with its
+    primal's coordinate charts and labels at the moment it is recorded
+    (with_charts/with_labels metadata ops), which also absorbs select's
+    axis-compensation; composite adjoints (decimate, diagonal) work on the
+    bare lattice internally and are restamped on the way out. Value units:
+    `grad(..., target_unit=u_L)` annotates gradients of unit-bearing inputs
+    with u_L/u_v (u_L alone when the input is unlabeled); a runtime seed
+    should carry u_L/u_target. Remaining honest gap: u_L is
+    caller-declared, because forward unit propagation through markers
+    (CONCERNS #16) does not exist yet — when marker unit signatures land,
+    target_unit becomes inferable and seed units checkable.
 
-20. **The differentiable subset is explicit and partial.** Markers:
-    add/sub/neg/mul/div/exp/log/maximum/minimum/where (comparisons and iota
-    are gradient-free by design). Reducers: sum/mean/max/min (max/min with
-    the tie caveat); prod deferred. scan(sum) only. decimate's adjoint
-    needs a factor-divisible domain (pad the source first); n-ary diagonal
-    adjoints deferred. Each gap raises loudly.
+20. **The differentiable subset is explicit and partial — but no longer
+    closed.** Primitives: add/sub/neg/mul/div/exp/log/tanh/maximum/minimum/
+    where (comparisons and iota gradient-free by design), and every
+    COMPOSITE marker differentiates automatically via derived partials
+    (mdsl.diff) — the hand table stops growing. Reducers: sum/mean/max/min
+    (tie caveat) and every composite reducer (BPTT as generated IR, #17);
+    prod deferred; plain scan(sum) plus all composite scans. decimate's
+    adjoint needs a factor-divisible domain; n-ary diagonal adjoints
+    deferred. Each remaining gap raises loudly.
 
 21. **`materialize` is the IR's one copying op.** Adjoints of split (and
     decimate) must merge, and merge needs real stride nesting that an
@@ -155,3 +181,29 @@ before the compute layer lands on top.
     (export order is a materialization property, D5) but it is also the
     first place the *correctness* layer forces a copy; the memory layer
     (REPRESENTATIONS.md) will want to elide it when nesting already holds.
+
+22. **Marker-DSL registries are process-level — and naming is a live design
+    tension.** Composite markers/reducers resolve by name, like PW/RED —
+    programs stay pure data, but deserializing in a fresh process requires
+    re-registering composites first; derived machinery (`name.d0`,
+    `name.C0`, `name.adj0`) registers on demand. Mitigation landed:
+    `defmarker(None, ...)` derives a CONTENT-ADDRESSED name (`m_<digest>`
+    of the tree) and re-registration of an equal body is a no-op — the
+    registry behaves as a cache keyed by structure, which is the main
+    repo's build-in-a-loop philosophy rather than a namespace one. Open
+    (deliberately unresolved until pdum.dsl integration): registries as
+    LIBRARIES — multiple registries with dependencies, so precompiled
+    marker packages can ship; and whether reducers get content addressing
+    too. Also: traced bodies are trees, not DAGs — reuse duplicates
+    subtrees (correct; CSE is the compiler's job), and derivative trees
+    grow multiplicatively for deep compositions.
+
+23. **The ops-count model counts names, not flops** (opcount.py). Exact
+    per-instruction Counters keyed by primitive name; cost is a separate
+    weights dict (`ProgramOps.weighted`), because what an exp or a div
+    costs is a machine property, not a program property. MACs are a
+    recognized FUSION (mul consumed solely by reduce-sum → "mac", adds
+    absorbed), not a primitive — matmul counts m·n·k macs. Guarded
+    operands count over the guard BOX (reference semantics evaluates
+    fills); λ-proportional counts and memory-traffic modeling
+    (REPRESENTATIONS.md Level 1) remain future work.

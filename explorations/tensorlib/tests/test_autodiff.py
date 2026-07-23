@@ -343,3 +343,197 @@ def test_grad_softmax_cross_entropy():
     sm = np.exp(s - s.max(1, keepdims=True))
     sm /= sm.sum(1, keepdims=True)
     np.testing.assert_allclose(env[grads["S"]].to_numpy(order=("i", "v")), sm - onehot, rtol=1e-5, atol=1e-8)
+
+
+# ----------------------------------------------------------------------
+# review regressions (adversarial + cleanliness findings)
+# ----------------------------------------------------------------------
+
+
+def test_grad_stencil_tap_entirely_outside_source():
+    # far-top dilated taps used to emit an un-runnable pad; now: zero contribution
+    ins = [
+        I("x", "input"),
+        I("xs", "stencil", ["x"], name="i", k=(0, 3), fill=0.0, dilation=2),
+        I("y", "reduce", ["xs"], f="sum", dims=("i", "i_k")),
+    ]
+    check(ins, {"x": T(RNG.standard_normal(4), ("i",))}, "x")
+
+
+def test_grad_diagonal_disjoint_parts_is_zero():
+    ins = [
+        I("x", "input"),
+        I("sh", "shift", ["x"], deltas={"j": 5}),
+        I("d", "diagonal", ["sh"], parts=("i", "j"), name="z"),
+        I("y", "reduce", ["d"], f="sum", dims=("z",)),
+    ]
+    prog = Program(tuple(ins))
+    x = T(RNG.standard_normal((3, 3)), ("i", "j"))
+    joint, grads = grad(prog, "y", {"x": x})
+    env = run(joint, {"x": x})
+    np.testing.assert_allclose(env[grads["x"]].to_numpy(), np.zeros((3, 3)))
+
+
+def test_reduce_max_tie_overcount_is_pinned():
+    # documented caveat: every tied element receives the full cotangent
+    ins = [
+        I("x", "input"),
+        I("m", "reduce", ["x"], f="max", dims=("i",)),
+    ]
+    prog = Program(tuple(ins))
+    x = T([3.0, 3.0, 1.0], ("i",))
+    joint, grads = grad(prog, "m", {"x": x})
+    env = run(joint, {"x": x})
+    np.testing.assert_allclose(env[grads["x"]].to_numpy(), [1.0, 1.0, 0.0])
+
+
+def test_unknown_differentiable_marker_raises_not_silent_zero():
+    from tensorlib.compute import Marker
+    from tensorlib.ir import PW
+
+    PW["sqrt_tmp"] = Marker("sqrt_tmp", np.sqrt)
+    try:
+        ins = [
+            I("x", "input"),
+            I("s", "pointwise", ["x"], f="sqrt_tmp"),
+            I("y", "reduce", ["s"], f="sum", dims=("i",)),
+        ]
+        prog = Program(tuple(ins))
+        with pytest.raises(NotImplementedError):
+            grad(prog, "y", {"x": T([1.0, 4.0], ("i",))})
+    finally:
+        del PW["sqrt_tmp"]
+
+
+def test_grad_contract_errors_are_clear():
+    prog = Program((I("x", "input"), I("y", "reduce", ["x"], f="sum", dims=("i",))))
+    with pytest.raises(KeyError):
+        grad(prog, "nope", {"x": T([1.0], ("i",))})
+    with pytest.raises(ValueError, match="collides"):
+        grad(prog, "y", {"x": T([1.0], ("i",))}, seed="x")
+
+
+def test_instr_params_are_snapshotted():
+    shared = {"f": "sum", "dims": ("i",)}
+    a = I("x", "input")
+    bb = Instr("y", "reduce", ("x",), shared)
+    shared["dims"] = ("corrupted",)  # caller mutation must not leak in
+    prog = Program((a, bb))
+    env = run(prog, {"x": T([1.0, 2.0], ("i",))})
+    assert env["y"].item() == 3.0
+    with pytest.raises(TypeError):
+        bb.params["dims"] = ("nope",)  # mappingproxy refuses
+
+
+def test_second_order_differentiation():
+    ins = (
+        I("x", "input"),
+        I("x2", "pointwise", ["x", "x"], f="mul"),
+        I("x3", "pointwise", ["x2", "x"], f="mul"),
+        I("y", "reduce", ["x3"], f="sum", dims=("i",)),
+    )
+    x = T([1.0, -2.0, 3.0], ("i",))
+    j1, g1 = grad(Program(ins), "y", {"x": x})
+    p2 = Program(j1.instrs + (Instr("gy", "reduce", (g1["x"],), {"f": "sum", "dims": ("i",)}),))
+    j2, g2 = grad(p2, "gy", {"x": x})
+    env = run(j2, {"x": x})
+    np.testing.assert_allclose(env[g1["x"]].to_numpy(), 3 * x.to_numpy() ** 2)
+    np.testing.assert_allclose(env[g2["x"]].to_numpy(), 6 * x.to_numpy())
+
+
+# ----------------------------------------------------------------------
+# units in gradients (CONCERNS #19 resolution)
+# ----------------------------------------------------------------------
+
+
+def test_gradients_carry_primal_charts():
+    from tensorlib import q
+
+    x = T(RNG.standard_normal(5), ("i",)).with_charts(i=("0 nm", "25 nm"))
+    ins = [
+        I("x", "input"),
+        I("xs", "stencil", ["x"], name="i", k=(-1, 1), fill=0.0),
+        I("y", "reduce", ["xs"], f="sum", dims=("i", "i_k")),
+    ]
+    prog = Program(tuple(ins))
+    joint, grads = grad(prog, "y", {"x": x})
+    env = run(joint, {"x": x})
+    g = env[grads["x"]]
+    assert g.layout.dim("i").chart == x.layout.dim("i").chart
+    # physical indexing of the gradient works: entry FOR the sample at 50 nm
+    assert g.item(i=q("50 nm")) == g.item(i=2)
+    want = numeric_grad(prog, "y", "x", {"x": x})  # chart-preserving FD
+    np.testing.assert_allclose(g.to_numpy(), want, rtol=1e-4, atol=1e-7)
+
+
+def test_select_compensation_paths_accumulate_when_charted():
+    # the crux: one contribution flows through split+select (whose forward
+    # promotes/compensates sibling charts), another directly — both must be
+    # restamped onto x's chart and add cleanly
+    x = T(RNG.standard_normal(6), ("i",)).with_charts(i=("0 um", "0.25 um"))
+    ins = [
+        I("x", "input"),
+        I("b", "split", ["x"], name="i", parts={"ib": 3, "ii": 2}),
+        I("s", "select", ["b"], coords={"ii": 1}),
+        I("p", "reduce", ["s"], f="sum", dims=("ib",)),
+        I("d", "reduce", ["x"], f="sum", dims=("i",)),
+        I("y", "pointwise", ["p", "d"], f="add"),
+    ]
+    prog = Program(tuple(ins))
+    joint, grads = grad(prog, "y", {"x": x})
+    env = run(joint, {"x": x})
+    g = env[grads["x"]]
+    assert g.layout.dim("i").chart == x.layout.dim("i").chart
+    np.testing.assert_allclose(g.to_numpy(), [1, 2, 1, 2, 1, 2])  # 1 + phase-hit
+    want = numeric_grad(prog, "y", "x", {"x": x})
+    np.testing.assert_allclose(g.to_numpy(), want, rtol=1e-4, atol=1e-7)
+
+
+def test_gradients_carry_primal_labels():
+    x = T(RNG.standard_normal((3, 4)), ("c", "i")).with_labels(c=("R", "G", "B"))
+    ins = [
+        I("x", "input"),
+        I("sq", "pointwise", ["x", "x"], f="mul"),
+        I("y", "reduce", ["sq"], f="sum", dims=("c", "i")),
+    ]
+    joint, grads = grad(Program(tuple(ins)), "y", {"x": x})
+    env = run(joint, {"x": x})
+    g = env[grads["x"]]
+    assert g.layout.dim("c").labels == ("R", "G", "B")
+    np.testing.assert_allclose(g.item(c="G", i=1), 2 * x.item(c="G", i=1), rtol=1e-12)
+
+
+def test_gradient_value_units():
+    from tensorlib import u
+
+    volt = u.define("V_ad", dim="voltage_ad")
+    x = T(RNG.standard_normal(4), ("i",)).with_value_units(volt)
+    w = T(RNG.standard_normal(4), ("i",))  # no declared unit
+    ins = [
+        I("x", "input"),
+        I("w", "input"),
+        I("p", "pointwise", ["x", "w"], f="mul"),
+        I("L", "reduce", ["p"], f="sum", dims=("i",)),
+    ]
+    joint, grads = grad(Program(tuple(ins)), "L", {"x": x, "w": w}, target_unit=volt * volt)
+    env = run(joint, {"x": x, "w": w})
+    assert env[grads["x"]].value_units == volt  # V²/V
+    assert env[grads["w"]].value_units == volt * volt  # V²/1
+    # without target_unit: no annotation
+    j2, g2 = grad(Program(tuple(ins)), "L", {"x": x, "w": w})
+    assert run(j2, {"x": x, "w": w})[g2["x"]].value_units is None
+
+
+def test_charted_window_gradient_charts_flow_naturally():
+    x = T(RNG.standard_normal(6), ("t",)).with_charts(t=("0 ms", "1 ms"))
+    ins = [
+        I("x", "input"),
+        I("w", "window", ["x"], name="t", k_name="k", k=3),
+        I("y", "reduce", ["w"], f="sum", dims=("t", "k")),
+    ]
+    prog = Program(tuple(ins))
+    joint, grads = grad(prog, "y", {"x": x})
+    env = run(joint, {"x": x})
+    g = env[grads["x"]]
+    assert g.layout.dim("t").chart == x.layout.dim("t").chart
+    np.testing.assert_allclose(g.to_numpy(), [1, 2, 3, 3, 2, 1])  # overlap counts

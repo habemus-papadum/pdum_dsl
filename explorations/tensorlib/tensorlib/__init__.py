@@ -12,12 +12,26 @@ from .compute import Marker, Reducer, iota, pointwise, pw, red, reduce, scan
 from .dtypes import CARRIERS, as_dtype, bfloat16, carrier_of
 from .guarded import Guard, GuardedLayout, pad_layout, stencil_layout
 from .layout import Dim, Injectivity, Layout, as_range
+from .mdsl import CompositeMarker, CompositeReducer, defmarker, defreducer, node_digest
+from .opcount import ProgramOps, ops_count
+from .signatures import SignatureError, VInfo, infer_signatures, marker_signature
 from .tensor import Misalignment, Tensor, aligned, alignment
 from .units import Quantity, Unit, UnitRegistry, q, u
 
 __all__ = [
     "Buffer",
     "CARRIERS",
+    "CompositeMarker",
+    "CompositeReducer",
+    "ProgramOps",
+    "SignatureError",
+    "VInfo",
+    "defmarker",
+    "defreducer",
+    "infer_signatures",
+    "marker_signature",
+    "node_digest",
+    "ops_count",
     "FunctionalBuffer",
     "Marker",
     "carrier_of",

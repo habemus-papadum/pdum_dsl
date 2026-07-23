@@ -67,7 +67,22 @@ flip∘scan∘flip) — plus `iota`: coordinates as data, built TIGHT as a
 under every view op — layout ops cannot destroy iota-ness). Tensors carry a
 `carrier` (bool/int/rat/real/complex): the algebraic object values
 approximate — semantics; the dtype is mere representation. `f`s are
-declared markers (`pw.*`, `red.*`), not callbacks.
+declared markers (`pw.*`, `red.*`), not callbacks — and the **marker DSL**
+(`mdsl.py`, zero imports from the main pdum package) extends them:
+`defmarker("sigmoid", 1, lambda x: 1/(1+exp(-x)))` traces a plain lambda
+into an owned expression-tree IR whose partial derivatives are DERIVED by
+tree rewriting (new activations differentiate automatically), and
+`defreducer` defines structured-state reducers — the SSM recurrence
+h_t = a_t·h_{t-1} + b_t runs as an associative pair-combine scan over
+multiple aligned inputs — and differentiates: the SSM backward pass is
+emitted as IR (the state cotangent is itself a reversed-time linear
+recurrence over derived Jacobian trees). Markers carry SIGNATURES
+(signatures.py): carrier/unit facts propagate through trees and programs,
+`exp` of micrometers refuses, and `grad` infers `target_unit` on its own.
+`ops_count` (opcount.py) tallies exact per-primitive operation Counters
+("mul"/"add"/"exp"/"copy"), with MAC fusion and cost models as separate,
+explicit steps. Frontends are pluggable producers of the Node schema; the
+main repo's syntax tooling can target it later without any rewrite.
 Deliberately inefficient numpy semantics: repeats and windows materialize —
 that is the correctness contract a real backend must match while treating
 those views as virtual. Matmul = repeat·mul·reduce; conv = window/stencil
@@ -101,9 +116,8 @@ s = t.stencil("x", k=(q("-0.25 um"), q("0.25 um")), fill=0)  # taps at ±step
 
 ## Walkthrough notebooks
 
-`notebooks/` contains an executed five-part tour of the internals — each
-operation shown as a before/after on the layout (dims, strides, offset,
-charts, guards):
+`notebooks/` contains an executed series — each operation shown as a
+before/after on the layout (dims, strides, offset, charts, guards):
 
 0. `00_units_and_quantities.ipynb` — the exact unit system: construction,
    arithmetic, t-strings, float rejection, `define`.
@@ -123,6 +137,10 @@ charts, guards):
    with a one-line inner-product derivation and finite-difference
    validation; the chain rule mechanically; seeds as VJPs; softmax's
    analytic gradient; training a linear model end to end in the IR.
+6. `06_adjoints_from_scratch.ipynb` — the conceptual prequel to 05,
+   library-free: sensitivities, path-sums, and THE one rule
+   (⟨ȳ, Op dx⟩ = ⟨Op†ȳ, dx⟩ — swap the double sum), with the whole adjoint
+   zoo derived by hand and verified by the pairing test alone.
 
 Re-run them with
 `uv run jupyter nbconvert --to notebook --execute --inplace notebooks/0*.ipynb`.

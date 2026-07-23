@@ -64,6 +64,16 @@ class Buffer:
         return f"Buffer({self.nbytes}B @ {self.device})"
 
 
+def host_view(carr) -> memoryview:
+    """Best-effort zero-copy byte view of a C-contiguous array; falls back
+    to a copy when the buffer protocol refuses the cast (e.g. some
+    structured dtypes). The single home of this fallback."""
+    try:
+        return memoryview(carr).cast("B")
+    except ValueError, TypeError:
+        return memoryview(bytearray(carr.tobytes()))
+
+
 @dataclass(frozen=True, eq=False)
 class FunctionalBuffer(Buffer):
     """No memory: read(loc) = const + coeff * (loc // scale), exactly.

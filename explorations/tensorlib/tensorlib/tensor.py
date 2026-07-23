@@ -31,7 +31,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from .buffer import Buffer
+from .buffer import Buffer, host_view
 from .dtypes import CARRIERS, carrier_of
 from .guarded import GuardedLayout, pad_layout, stencil_layout
 from .layout import Dim, Injectivity, Layout, RangeSpec, as_range
@@ -67,11 +67,7 @@ class Tensor:
         if arr.ndim != len(names):
             raise ValueError(f"{len(names)} names for {arr.ndim}-d array")
         carr = np.ascontiguousarray(arr)
-        try:
-            mv = memoryview(carr).cast("B")
-        except ValueError, TypeError:
-            mv = memoryview(bytearray(carr.tobytes()))
-        buf = Buffer(nbytes=carr.nbytes, data=mv)
+        buf = Buffer(nbytes=carr.nbytes, data=host_view(carr))
         dims = tuple(Dim(n, stride=s, start=0, stop=e) for n, s, e in zip(names, carr.strides, carr.shape))
         return cls(buf, carr.dtype, Layout(dims)).check()
 

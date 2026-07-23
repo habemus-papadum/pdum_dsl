@@ -14,10 +14,18 @@ Contracts and conventions:
   silent ones-seeding is a footgun we refuse.
 - The tape is the program: adjoints reference forward variables directly
   (e.g. d(exp) reuses the forward output).
-- Cotangents live on the LATTICE: the transform strips charts/labels from
-  every forward value it touches and from the seed. Whether gradients should
-  inherit charts is a real design question deferred (CONCERNS); stripping
-  makes alignment of accumulated contributions a pure lattice matter.
+- Gradients carry their primal's COORDINATE charts and labels: AD
+  differentiates value-with-respect-to-value, never with respect to
+  coordinates, so the gradient entry for the sample at x = 0.75 um is
+  labeled x = 0.75 um. This holds BY CONSTRUCTION: every contribution is
+  restamped with its primal's charts/labels at the moment it is recorded
+  (which also absorbs select's axis-compensation and promotion). Composite
+  rules (decimate, diagonal) work on the bare lattice internally and are
+  restamped on the way out.
+- VALUE units transform as unit(dL/dv) = unit(L)/unit(v). Pass
+  `target_unit` (the unit of the effective scalar) and gradients of inputs
+  with declared value_units are annotated accordingly; a runtime seed
+  should itself carry unit(L)/unit(target).
 - Differentiability is structural: markers declare their partials
   (comparisons and iota declare none — the carrier discipline, enforced by
   the rule table rather than a type system for now). Cotangents reaching a
@@ -28,15 +36,27 @@ Contracts and conventions:
   table: repeat†=reduce-sum, slice†=pad-0, pad†=slice (fill cotangent
   discarded), shift/flip/rename/split/merge are relabelings,
   select†=repeat-at-point+pad, window/stencil†=per-tap overlap-add,
-  decimate†=zero-stuffing (materialize+merge; aligned domains only),
+  decimate†=zero-stuffing (materialize+merge; factor-divisible source
+  domain only),
   diagonal†=masked embedding (binary only), scan(sum)†=reverse scan.
+- Composite reducers differentiate via BPTT-as-IR: the state cotangent of a
+  structured-state scan is itself a linear recurrence in reversed time, run
+  as a generated matrix-linrec scan over derived Jacobian trees
+  (composite_scan_adjoint); reduce† = embed-at-last, then scan†.
+- Tie caveat asymmetry: reduce(max/min) gives every tied element the full
+  cotangent (sums to c x #ties); pointwise maximum/minimum split ties
+  cleanly via the ge/gt asymmetry. Both are standard; only the reduce form
+  over-counts.
 """
 
 from __future__ import annotations
 
-from .ir import PW, Instr, Program, infer
+from .ir import PW, RED, Instr, Program, infer
+from .mdsl import COMPOSITE_MARKERS, COMPOSITE_REDUCERS, Const
+from .signatures import infer_signatures
+from .units import ONE
 
-_MISSING_SENTINEL = object()
+_GRADIENT_FREE = frozenset({"eq", "ne", "le", "lt", "ge", "gt"})
 
 
 class _Builder:
@@ -72,24 +92,50 @@ def grad(
     input_layouts: dict,
     seed: str | None = None,
     wrt: tuple[str, ...] | None = None,
+    target_unit=None,
 ) -> tuple[Program, dict[str, str | None]]:
+    if target not in prog.vars:
+        raise KeyError(f"target {target!r} is not defined by the program")
+    if seed is not None and seed in prog.vars:
+        raise ValueError(f"seed name {seed!r} collides with a program variable; pick a fresh name")
     idx = prog.vars.index(target)
     fwd = prog.instrs[: idx + 1]
     shadows = infer(Program(fwd), input_layouts)
+    # the signature pass makes target_unit INFERABLE (and checks declared
+    # units while it's at it — conflicting declarations refuse loudly here)
+    sigs = infer_signatures(Program(fwd), input_layouts)
+    if target_unit is None:
+        target_unit = sigs[target].unit
     b = _Builder(set(prog.vars))
-
-    stripped: dict[str, str] = {}
-
-    def strip(v: str) -> str:
-        if v not in stripped:
-            stripped[v] = b.emit("strip_charts", (v,), {}, hint="s")
-        return stripped[v]
 
     def extents_of(layout) -> tuple:
         return tuple((d.name, (d.start, d.stop)) for d in layout.dims)
 
+    def restamp(gv: str, layout) -> str:
+        """Stamp the primal's charts/labels onto a contribution — the
+        gradients-carry-their-primal's-labeling invariant, by construction.
+        Also normalizes away select's axis-compensation and any stray
+        labeling a composite rule left behind."""
+        charts, labels = {}, {}
+        for d in layout.dims:
+            if d.labels is not None:
+                labels[d.name] = d.labels
+            else:
+                charts[d.name] = d.chart  # a Chart, or None to clear
+        if charts:
+            gv = b.emit("with_charts", (gv,), {"charts": charts}, hint="st")
+        if labels:
+            gv = b.emit("with_labels", (gv,), {"labels": labels}, hint="st")
+        return gv
+
+    def const_like(layout, value, dtype=None) -> str:
+        params = {"value": value, "dims": extents_of(layout)}
+        if dtype is not None:
+            params["dtype"] = dtype
+        return restamp(b.emit("const", (), params, hint="z"), layout)
+
     def zeros_like(layout) -> str:
-        return b.emit("const", (), {"value": 0.0, "dims": extents_of(layout)}, hint="z")
+        return const_like(layout, 0.0)
 
     # ---- seed ----------------------------------------------------------
     tshape = shadows[target]
@@ -105,7 +151,7 @@ def grad(
     else:
         b.instrs.append(Instr(seed, "input", (), {}))
         b.taken.add(seed)
-        cot[target] = [strip(seed)]
+        cot[target] = [restamp(seed, tshape)]
 
     final: dict[str, str] = {}
 
@@ -122,7 +168,7 @@ def grad(
         return acc
 
     def contribute(v: str, gv: str) -> None:
-        cot.setdefault(v, []).append(gv)
+        cot.setdefault(v, []).append(restamp(gv, shadows[v]))
 
     # ---- per-instruction adjoint rules --------------------------------
     def pw_rule(ins: Instr, c: str) -> None:
@@ -137,34 +183,55 @@ def grad(
         elif f == "neg":
             contribute(A[0], b.emit("pointwise", (c,), {"f": "neg"}))
         elif f == "mul":
-            contribute(A[0], b.emit("pointwise", (c, strip(A[1])), {"f": "mul"}))
-            contribute(A[1], b.emit("pointwise", (c, strip(A[0])), {"f": "mul"}))
+            contribute(A[0], b.emit("pointwise", (c, A[1]), {"f": "mul"}))
+            contribute(A[1], b.emit("pointwise", (c, A[0]), {"f": "mul"}))
         elif f == "div":
-            contribute(A[0], b.emit("pointwise", (c, strip(A[1])), {"f": "div"}))
-            bb = b.emit("pointwise", (strip(A[1]), strip(A[1])), {"f": "mul"})
-            num = b.emit("pointwise", (c, strip(A[0])), {"f": "mul"})
+            contribute(A[0], b.emit("pointwise", (c, A[1]), {"f": "div"}))
+            bb = b.emit("pointwise", (A[1], A[1]), {"f": "mul"})
+            num = b.emit("pointwise", (c, A[0]), {"f": "mul"})
             frac = b.emit("pointwise", (num, bb), {"f": "div"})
             contribute(A[1], b.emit("pointwise", (frac,), {"f": "neg"}))
         elif f == "exp":
-            contribute(A[0], b.emit("pointwise", (c, strip(ins.var)), {"f": "mul"}))
+            contribute(A[0], b.emit("pointwise", (c, ins.var), {"f": "mul"}))
         elif f == "log":
-            contribute(A[0], b.emit("pointwise", (c, strip(A[0])), {"f": "div"}))
+            contribute(A[0], b.emit("pointwise", (c, A[0]), {"f": "div"}))
         elif f == "maximum":
-            m0 = b.emit("pointwise", (strip(A[0]), strip(A[1])), {"f": "ge"})
+            m0 = b.emit("pointwise", (A[0], A[1]), {"f": "ge"})
             contribute(A[0], b.emit("pointwise", (c, m0), {"f": "mul"}))
-            m1 = b.emit("pointwise", (strip(A[1]), strip(A[0])), {"f": "gt"})
+            m1 = b.emit("pointwise", (A[1], A[0]), {"f": "gt"})
             contribute(A[1], b.emit("pointwise", (c, m1), {"f": "mul"}))
         elif f == "minimum":
-            m0 = b.emit("pointwise", (strip(A[0]), strip(A[1])), {"f": "le"})
+            m0 = b.emit("pointwise", (A[0], A[1]), {"f": "le"})
             contribute(A[0], b.emit("pointwise", (c, m0), {"f": "mul"}))
-            m1 = b.emit("pointwise", (strip(A[1]), strip(A[0])), {"f": "lt"})
+            m1 = b.emit("pointwise", (A[1], A[0]), {"f": "lt"})
             contribute(A[1], b.emit("pointwise", (c, m1), {"f": "mul"}))
         elif f == "where":
             z = zeros_like(shadows[ins.var])
-            contribute(A[1], b.emit("pointwise", (strip(A[0]), c, z), {"f": "where"}))
-            contribute(A[2], b.emit("pointwise", (strip(A[0]), z, c), {"f": "where"}))
+            contribute(A[1], b.emit("pointwise", (A[0], c, z), {"f": "where"}))
+            contribute(A[2], b.emit("pointwise", (A[0], z, c), {"f": "where"}))
+        elif f == "tanh":
+            sq = b.emit("pointwise", (ins.var, ins.var), {"f": "mul"})
+            one = const_like(shadows[ins.var], 1.0)
+            om = b.emit("pointwise", (one, sq), {"f": "sub"})
+            contribute(A[0], b.emit("pointwise", (c, om), {"f": "mul"}))
+        elif f in _GRADIENT_FREE:
+            pass  # declared gradient-free (bool-carrier outputs); cotangent drops
+        elif f in COMPOSITE_MARKERS:
+            # the marker DSL pays off: partials are DERIVED by tree
+            # rewriting, so composite markers differentiate automatically
+            cm = COMPOSITE_MARKERS[f]
+            for i, operand in enumerate(A):
+                p = cm.partial(i)
+                if isinstance(p.body, Const) and p.body.value == 0:
+                    continue
+                pv = b.emit("pointwise", A, {"f": p.name})
+                contribute(operand, b.emit("pointwise", (c, pv), {"f": "mul"}))
         elif f in PW:
-            pass  # comparisons etc.: declared gradient-free; cotangent drops
+            raise NotImplementedError(
+                f"marker {f!r} has no gradient rule — add one to pw_rule or "
+                f"declare it in _GRADIENT_FREE (silent zero gradients are how "
+                f"models rot)"
+            )
         else:
             raise KeyError(f"unknown marker {f!r}")
 
@@ -172,13 +239,124 @@ def grad(
         cur = v
         for name in names:
             d = src_layout.dim(name)
-            cur = b.emit("repeat", (cur,), {"name": name, "extent": (d.start, d.stop)})
+            cur = b.emit(
+                "repeat",
+                (cur,),
+                {
+                    "name": name,
+                    "extent": (d.start, d.stop),
+                    "chart": d.chart,
+                    "labels": d.labels,
+                },
+            )
         return cur
+
+    def composite_scan_adjoint(fname: str, dim: str, elems: tuple, sc: str) -> None:
+        """BPTT for a structured-state scan, emitted as IR. With state
+        s_t = C(s_{t-1}, lift(e_t)), y_t = P(s_t), the state cotangent obeys
+        ŝ_t = Pᵀ(s_t)·ȳ_t + C_leftᵀ(s_t, l_{t+1})·ŝ_{t+1} — itself a LINEAR
+        recurrence in reversed time, run as a generated matrix-linrec
+        composite scan (adjoint_scanner). All Jacobian entries are derived
+        partials of the combine/lift/project trees, evaluated pointwise at
+        the forward trajectory (re-scanned per state component — reference
+        inefficiency, deliberate). Because `init` is the monoid identity,
+        C(init, r) = r makes ∂C/∂right the identity at t=start, so the
+        boundary needs no special case; the first reversed element's M slot
+        is garbage but provably never projected."""
+        f = COMPOSITE_REDUCERS[fname]
+        k = f.state
+        cs, ls, p_marker = f.component_markers()
+        ddim = shadows[elems[0]].dim(dim)
+        if ddim.size == 0:
+            for e in elems:
+                contribute(e, zeros_like(shadows[e]))
+            return
+        s0, s1 = ddim.start, ddim.stop
+
+        def lat(v: str) -> str:
+            return b.emit("strip_charts", (v,), {}, hint="lat")
+
+        def acc_sum(terms: list) -> str:
+            total = terms[0]
+            for t in terms[1:]:
+                total = b.emit("pointwise", (total, t), {"f": "add"})
+            return total
+
+        sc = lat(sc)
+        se = tuple(lat(e) for e in elems)
+        # forward trajectories: state components s_j and lifted elements l_j
+        sjs = tuple(b.emit("scan", se, {"f": f.state_scanner(j).name, "dim": dim}) for j in range(k))
+        ljs = tuple(b.emit("pointwise", se, {"f": ls[j].name}) for j in range(k))
+        sprev, lnext = [], []
+        for j in range(k):  # s_{t-1} (init-filled at start) and l_{t+1}
+            sh = b.emit("shift", (sjs[j],), {"deltas": {dim: 1}})
+            sl = b.emit("slice", (sh,), {"ranges": {dim: (s0 + 1, s1)}})
+            sprev.append(b.emit("pad", (sl,), {"fill": float(f.init[j]), "extents": {dim: (s0, s1)}}))
+            sh = b.emit("shift", (ljs[j],), {"deltas": {dim: -1}})
+            sl = b.emit("slice", (sh,), {"ranges": {dim: (s0, s1 - 1)}})
+            lnext.append(b.emit("pad", (sl,), {"fill": 0.0, "extents": {dim: (s0, s1)}}))
+        # reversed-time backward elements: M[i][x] = ∂C_x/∂left_i at
+        # (s_t, l_{t+1}), then the injection g_i = ∂P/∂s_i (s_t) · ȳ_t
+        felems = []
+        for i in range(k):
+            for x in range(k):
+                mv = b.emit("pointwise", sjs + tuple(lnext), {"f": cs[x].partial(i).name})
+                felems.append(b.emit("flip", (mv,), {"name": dim}))
+        gs = []
+        for i in range(k):
+            pv = b.emit("pointwise", sjs, {"f": p_marker.partial(i).name})
+            gs.append(b.emit("pointwise", (pv, sc), {"f": "mul"}))
+            felems.append(b.emit("flip", (gs[i],), {"name": dim}))
+        # k backward scans (one projection each), flipped back to t-order
+        shat = tuple(
+            b.emit(
+                "flip",
+                (b.emit("scan", tuple(felems), {"f": f.adjoint_scanner(i).name, "dim": dim}),),
+                {"name": dim},
+            )
+            for i in range(k)
+        )
+        # element cotangents: l̄_j = Σ_i ∂C_i/∂right_j (s_{t-1}, l_t) · ŝ_i,
+        # then ē = Jᵀ(lift) · l̄, contributed per operand slot
+        lbar: list[str | None] = []
+        for j in range(k):
+            terms = []
+            for i in range(k):
+                pd = cs[i].partial(k + j)
+                if isinstance(pd.body, Const) and pd.body.value == 0:
+                    continue
+                dv = b.emit("pointwise", tuple(sprev) + tuple(ljs), {"f": pd.name})
+                terms.append(b.emit("pointwise", (dv, shat[i]), {"f": "mul"}))
+            lbar.append(acc_sum(terms) if terms else None)
+        for i in range(f.element):
+            terms = []
+            for j in range(k):
+                pd = ls[j].partial(i)
+                if lbar[j] is None or (isinstance(pd.body, Const) and pd.body.value == 0):
+                    continue
+                dv = b.emit("pointwise", se, {"f": pd.name})
+                terms.append(b.emit("pointwise", (dv, lbar[j]), {"f": "mul"}))
+            if terms:
+                contribute(elems[i], acc_sum(terms))
 
     def reduce_rule(ins: Instr, c: str) -> None:
         f = ins.params["f"]
         dims = ins.params["dims"]
         names = (dims,) if isinstance(dims, str) else tuple(dims)
+        if f not in RED and f in COMPOSITE_REDUCERS:
+            # reduce = select the last slot of the scan, so its adjoint is
+            # embed-at-last (zeros elsewhere) then the scan adjoint
+            (dim,) = names
+            ddim = shadows[ins.operands[0]].dim(dim)
+            if ddim.size == 0:
+                for e in ins.operands:
+                    contribute(e, zeros_like(shadows[e]))
+                return
+            lc = b.emit("strip_charts", (c,), {}, hint="lat")
+            r = b.emit("repeat", (lc,), {"name": dim, "extent": (ddim.stop - 1, ddim.stop)})
+            yb = b.emit("pad", (r,), {"fill": 0.0, "extents": {dim: (ddim.start, ddim.stop)}})
+            composite_scan_adjoint(f, dim, ins.operands, yb)
+            return
         A = ins.operands[0]
         a_shape = shadows[A]
         if f == "sum":
@@ -188,17 +366,20 @@ def grad(
             n = 1
             for name in names:
                 n *= a_shape.dim(name).size
-            nb = b.emit("const", (), {"value": float(n), "dims": extents_of(a_shape)})
+            nb = const_like(a_shape, float(n))
             contribute(A, b.emit("pointwise", (r, nb), {"f": "div"}))
         elif f in ("max", "min"):
             rc = repeats_over(c, names, a_shape)
-            rm = repeats_over(strip(ins.var), names, a_shape)
-            m = b.emit("pointwise", (strip(A), rm), {"f": "eq"})
+            rm = repeats_over(ins.var, names, a_shape)
+            m = b.emit("pointwise", (A, rm), {"f": "eq"})
             contribute(A, b.emit("pointwise", (rc, m), {"f": "mul"}))
         else:
             raise NotImplementedError(f"reduce({f}) has no adjoint rule yet")
 
     def scan_rule(ins: Instr, c: str) -> None:
+        if ins.params["f"] in COMPOSITE_REDUCERS and ins.params["f"] not in RED:
+            composite_scan_adjoint(ins.params["f"], ins.params["dim"], ins.operands, c)
+            return
         if ins.params["f"] != "sum":
             raise NotImplementedError("only scan(sum) is differentiable so far")
         dim = ins.params["dim"]
@@ -220,9 +401,10 @@ def grad(
             anchor = shadows[ins.var].dim(name)
             lo = max(src.start, anchor.start + kappa * dilation)
             hi = min(src.stop, anchor.stop + kappa * dilation)
-            hi = max(lo, hi)
-            if hi < lo:
-                lo = hi = src.start  # fully out-of-range tap: empty contribution
+            if hi <= lo:
+                # empty overlap, including taps entirely outside the source:
+                # anchor the empty slice inside src so the pad-back is legal
+                lo = hi = src.start
             t3 = b.emit("slice", (t2,), {"ranges": {name: (lo, hi)}})
             t4 = b.emit("pad", (t3,), {"fill": 0.0, "extents": {name: (src.start, src.stop)}})
             contribute(A, t4)
@@ -231,6 +413,7 @@ def grad(
         p = ins.params
         name, f = p["name"], p["factor"]
         A = ins.operands[0]
+        c = b.emit("strip_charts", (c,), {}, hint="lat")  # lattice-mode internals
         src = shadows[A].dim(name)
         phase = src.delta_to_lattice(p.get("phase", 0)) % f
         s, e = src.start, src.stop
@@ -266,6 +449,11 @@ def grad(
         z = ins.params["name"]
         A = ins.operands[0]
         xdom, ydom = shadows[A].dim(x), shadows[A].dim(y)
+        if shadows[ins.var].dim(z).size == 0:
+            # disjoint parts: the diagonal read nothing, the gradient is zero
+            contribute(A, zeros_like(shadows[A]))
+            return
+        c = b.emit("strip_charts", (c,), {}, hint="lat")  # lattice-mode internals
         r1 = c if z == x else b.emit("rename", (c,), {"mapping": {z: x}})
         r2 = b.emit("repeat", (r1,), {"name": y, "extent": (ydom.start, ydom.stop)})
         ix = b.emit("iota", (r2,), {"name": x})
@@ -330,8 +518,15 @@ def grad(
             decimate_rule(ins, c)
         elif ins.op == "diagonal":
             diagonal_rule(ins, c)
-        elif ins.op in ("strip_charts", "simplify", "materialize"):
-            contribute(A, c)  # value-preserving (materialize: identity copy)
+        elif ins.op in (
+            "strip_charts",
+            "with_charts",
+            "with_labels",
+            "with_value_units",
+            "simplify",
+            "materialize",
+        ):
+            contribute(A, c)  # value-preserving metadata / identity copy
         else:
             raise NotImplementedError(f"no adjoint rule for {ins.op!r}")
 
@@ -354,7 +549,12 @@ def grad(
     grads: dict[str, str | None] = {}
     names = wrt if wrt is not None else tuple(i.var for i in fwd)
     for v in names:
-        grads[v] = final.get(v)
+        gv = final.get(v)
+        if gv is not None and target_unit is not None:
+            uv = sigs[v].unit  # inferred, so INTERMEDIATE grads annotate too
+            gu = target_unit if uv is None or uv == ONE else target_unit / uv
+            gv = b.emit("with_value_units", (gv,), {"value_units": gu}, hint="vu")
+        grads[v] = gv
     return Program(tuple(fwd) + tuple(b.instrs)), grads
 
 
@@ -375,13 +575,26 @@ def numeric_grad(prog: Program, target: str, wrt_var: str, inputs: dict, eps: fl
     base = inputs[wrt_var]
     arr = base.to_numpy().astype(np.float64)
     names = base.names
+    charts = {d.name: d.chart for d in base.layout.dims if d.chart is not None}
+    labels = {d.name: d.labels for d in base.layout.dims if d.labels is not None}
+
+    def rebuild(pert):
+        t = Tensor.from_numpy(pert, names)
+        if charts:
+            t = t.with_charts(**charts)
+        if labels:
+            t = t.with_labels(**labels)
+        if base.value_units is not None:
+            t = t.with_value_units(base.value_units)
+        return t
+
     g = np.zeros_like(arr)
     for idx in np.ndindex(*arr.shape):
         out = []
         for sign in (+1, -1):
             pert = arr.copy()
             pert[idx] += sign * eps
-            env = run(prog, {**inputs, wrt_var: Tensor.from_numpy(pert, names)})
+            env = run(prog, {**inputs, wrt_var: rebuild(pert)})
             out.append(float(env[target].item()))
         g[idx] = (out[0] - out[1]) / (2 * eps)
     return g

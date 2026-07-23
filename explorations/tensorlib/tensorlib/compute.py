@@ -34,8 +34,11 @@ point, not a bug. It is the denotational semantics later layers must match.
 
 Markers (`pw.*`, `red.*`) are DECLARATIONS, not callbacks: a name, a numpy
 function for this reference layer, and (for reducers) identity/associativity
-— the algebra a compiler and the AD layer read. Unit-signature rules for
-markers are future work; `pointwise` currently drops value_units.
+— the algebra a compiler and the AD layer read. `pointwise` enforces marker
+SIGNATURES (signatures.py): declared units must be consistent and
+transcendentals demand dimensionless arguments — exp of micrometers now
+refuses instead of silently evaluating. Results still carry no value_units
+(the pass diagnoses; it does not decorate).
 """
 
 from __future__ import annotations
@@ -45,8 +48,10 @@ from fractions import Fraction
 
 import numpy as np
 
-from .buffer import Buffer, FunctionalBuffer
+from .buffer import Buffer, FunctionalBuffer, host_view
 from .layout import Dim, Layout
+from .mdsl import Arg, CompositeMarker, CompositeReducer, Const, Prim
+from .signatures import VInfo, marker_signature
 from .tensor import Tensor, alignment
 from .units import Quantity, Unit, u
 
@@ -92,6 +97,7 @@ class pw:
     log = Marker("log", np.log)
     maximum = Marker("maximum", np.maximum)
     minimum = Marker("minimum", np.minimum)
+    tanh = Marker("tanh", np.tanh)
     where = Marker("where", np.where)  # ternary select
     eq = Marker("eq", np.equal)
     ne = Marker("ne", np.not_equal)
@@ -115,14 +121,32 @@ def _tensor_like(arr: np.ndarray, dims: tuple[Dim, ...], value_units=None) -> Te
     """Wrap a numpy array (in the dims' presentation order) as a fresh dense
     tensor carrying the template dims' domains, charts, and labels."""
     carr = np.ascontiguousarray(arr)
-    try:
-        mv = memoryview(carr).cast("B")
-    except ValueError, TypeError:
-        mv = memoryview(bytearray(carr.tobytes()))
-    buf = Buffer(nbytes=carr.nbytes, data=mv)
+    buf = Buffer(nbytes=carr.nbytes, data=host_view(carr))
     new_dims = tuple(replace(d, stride=s) for d, s in zip(dims, carr.strides))
     offset = -sum(d.stride * d.start for d in new_dims)
     return Tensor(buf, carr.dtype, Layout(new_dims, offset), value_units=value_units).check()
+
+
+_PW_FNS: dict | None = None
+
+
+def _pw_fns() -> dict:
+    global _PW_FNS
+    if _PW_FNS is None:
+        _PW_FNS = {m.name: m.fn for m in vars(pw).values() if isinstance(m, Marker)}
+    return _PW_FNS
+
+
+def _eval_tree(node, args):
+    """Reference evaluation of a marker-DSL tree over numpy arrays."""
+    if isinstance(node, Arg):
+        return args[node.index]
+    if isinstance(node, Const):
+        v = node.value
+        return float(v) if isinstance(v, Fraction) else v
+    if isinstance(node, Prim):
+        return _pw_fns()[node.op](*(_eval_tree(a, args) for a in node.args))
+    raise TypeError(f"not a marker-DSL node: {node!r}")
 
 
 def pointwise(f: Marker, *tensors: Tensor) -> Tensor:
@@ -131,23 +155,38 @@ def pointwise(f: Marker, *tensors: Tensor) -> Tensor:
     All operands must be aligned; the error quotes the `alignment()`
     diagnosis, whose fixes (flip/shift/slice/repeat/...) the caller applies
     consciously (D17). The result carries the shared dims verbatim."""
-    if not isinstance(f, Marker):
+    if not isinstance(f, (Marker, CompositeMarker)):
         raise TypeError(f"first argument must be a pointwise Marker, got {f!r}")
     if not tensors:
         raise ValueError("pointwise needs at least one operand")
+    if isinstance(f, CompositeMarker) and len(tensors) != f.arity:
+        raise ValueError(f"{f} takes {f.arity} operands, got {len(tensors)}")
     issues = alignment(*tensors)
     if issues:
         details = "\n".join(f"  {m!r}" for m in issues)
         raise ValueError(f"pointwise({f}) requires aligned operands:\n{details}")
+    infos = tuple(VInfo(t.carrier, t.value_units if isinstance(t.value_units, Unit) else None) for t in tensors)
+    marker_signature(f if isinstance(f, CompositeMarker) else f.name, infos)
     order = tensors[0].names
     arrays = [t.to_numpy(order=order) if len(order) else t.to_numpy() for t in tensors]
-    out = f.fn(*arrays)
+    if isinstance(f, CompositeMarker):
+        # a constant body (e.g. a derived partial that folded to 1) evaluates
+        # to a scalar; broadcast it back over the operand lattice
+        out = np.asarray(_eval_tree(f.body, arrays))
+        if out.shape != arrays[0].shape:
+            out = np.broadcast_to(out, arrays[0].shape)
+    else:
+        out = f.fn(*arrays)
     return _tensor_like(np.asarray(out), tensors[0].layout.dims)
 
 
 def reduce(f: Reducer, a: Tensor, dims, zero=None) -> Tensor:
     """Fold the named dims of `a` with the reducer's monoid; surviving dims
     keep their charts and labels. `zero` overrides the marker's identity."""
+    if isinstance(f, CompositeReducer):
+        if zero is not None:
+            raise ValueError("composite reducers carry their own init state")
+        return _reduce_composite(f, a, dims)
     if not isinstance(f, Reducer):
         raise TypeError(f"first argument must be a Reducer, got {f!r}")
     if isinstance(dims, str):
@@ -172,6 +211,64 @@ def reduce(f: Reducer, a: Tensor, dims, zero=None) -> Tensor:
         out = out / n
     survivors = tuple(d for d in a.layout.dims if d.name not in dims)
     return _tensor_like(np.asarray(out), survivors)
+
+
+def _composite_args(f: CompositeReducer, a):
+    tensors = a if isinstance(a, tuple) else (a,)
+    if len(tensors) != f.element:
+        raise ValueError(f"{f} consumes {f.element} element tensor(s), got {len(tensors)}")
+    issues = alignment(*tensors) if len(tensors) > 1 else ()
+    if issues:
+        details = "\n".join(f"  {m!r}" for m in issues)
+        raise ValueError(f"{f} requires aligned element tensors:\n{details}")
+    order = tensors[0].names
+    arrays = [t.to_numpy(order=order) if len(order) else t.to_numpy() for t in tensors]
+    return tensors, arrays, order
+
+
+def _composite_sweep(f: CompositeReducer, arrays, axis):
+    """Yield (t, state) along `axis`, folding lift/combine sequentially —
+    the reference semantics of a structured-state reduction."""
+    arrs = [np.moveaxis(np.asarray(x, dtype=np.float64), axis, 0) for x in arrays]
+    n = arrs[0].shape[0]
+    state = None
+    for t in range(n):
+        elem = [x[t] for x in arrs]
+        lifted = [_eval_tree(node, elem) for node in f.lift]
+        state = lifted if state is None else [_eval_tree(node, state + lifted) for node in f.combine]
+        yield t, state
+
+
+def _reduce_composite(f: CompositeReducer, a, dims) -> Tensor:
+    if isinstance(dims, str):
+        dims = (dims,)
+    if len(dims) != 1:
+        raise NotImplementedError("composite reducers fold one dim at a time")
+    (dim,) = dims
+    tensors, arrays, order = _composite_args(f, a)
+    tensors[0].layout.dim(dim)
+    axis = order.index(dim)
+    state = None
+    for _, state in _composite_sweep(f, arrays, axis):
+        pass
+    if state is None:  # empty dim: the declared identity state
+        shape = list(np.asarray(arrays[0]).shape)
+        del shape[axis]
+        state = [np.full(shape, float(v)) for v in f.init]
+    out = _eval_tree(f.project, state)
+    survivors = tuple(d for d in tensors[0].layout.dims if d.name != dim)
+    return _tensor_like(np.asarray(out), survivors)
+
+
+def _scan_composite(f: CompositeReducer, a, dim: str) -> Tensor:
+    tensors, arrays, order = _composite_args(f, a)
+    tensors[0].layout.dim(dim)
+    axis = order.index(dim)
+    base = np.moveaxis(np.asarray(arrays[0], dtype=np.float64), axis, 0)
+    out = np.empty_like(base)
+    for t, state in _composite_sweep(f, arrays, axis):
+        out[t] = _eval_tree(f.project, state)
+    return _tensor_like(np.moveaxis(out, 0, axis), tensors[0].layout.dims)
 
 
 def iota(t: Tensor | Layout, name: str, unit=None, dtype=None) -> Tensor:
@@ -225,9 +322,15 @@ def scan(f: Reducer, a: Tensor, dim: str, zero=None) -> Tensor:
     flip . scan . flip — layout ops, free. A normalizing reducer (red.mean)
     divides prefix t by its running count.
 
-    Reference limitation: the marker must be a numpy ufunc (accumulate);
-    scans over composite pair-state operators (SSM recurrences) await the
-    marker DSL."""
+    Composite reducers (structured pair-state operators — SSM recurrences)
+    scan via the sequential reference sweep; plain markers must be numpy
+    ufuncs (accumulate)."""
+    if isinstance(f, CompositeReducer):
+        if zero is not None:
+            raise ValueError("composite reducers carry their own init state")
+        if not isinstance(dim, str):
+            raise TypeError("scan folds exactly one dim (pass its name)")
+        return _scan_composite(f, a, dim)
     if not isinstance(f, Reducer):
         raise TypeError(f"first argument must be a Reducer, got {f!r}")
     if not isinstance(dim, str):

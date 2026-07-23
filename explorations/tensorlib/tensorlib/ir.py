@@ -32,19 +32,40 @@ consistent within any fabricated tensor.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from types import MappingProxyType
+from typing import Mapping
 
 import numpy as np
 
 from .compute import Marker, Reducer, iota, pointwise, pw, red, reduce, scan
 from .guarded import GuardedLayout, pad_layout, stencil_layout
 from .layout import Dim, Layout
+from .mdsl import COMPOSITE_MARKERS, COMPOSITE_REDUCERS
 from .tensor import Tensor
 
 PW = {m.name: m for m in vars(pw).values() if isinstance(m, Marker)}
 RED = {m.name: m for m in vars(red).values() if isinstance(m, Reducer)}
 
+
+def pw_marker(name: str):
+    # resolve a pointwise marker name: primitives, then registered composites
+    if name in PW:
+        return PW[name]
+    if name in COMPOSITE_MARKERS:
+        return COMPOSITE_MARKERS[name]
+    raise KeyError(f"unknown pointwise marker {name!r}")
+
+
+def reducer(name: str):
+    if name in RED:
+        return RED[name]
+    if name in COMPOSITE_REDUCERS:
+        return COMPOSITE_REDUCERS[name]
+    raise KeyError(f"unknown reducer {name!r}")
+
+
 _LEAF_OPS = ("input", "const", "iota")
-_COMPUTE_OPS = ("pointwise", "reduce", "scan", "materialize")
+_COMPUTE_OPS = ("pointwise", "reduce", "scan", "materialize", "with_value_units")
 
 
 @dataclass(frozen=True, eq=False)
@@ -52,7 +73,14 @@ class Instr:
     var: str
     op: str
     operands: tuple[str, ...] = ()
-    params: dict = field(default_factory=dict)
+    params: Mapping = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # snapshot: callers cannot mutate an Instr after Program validation
+        # (nested values, e.g. a ranges dict's tuples, are already immutable
+        # by convention; the top-level mapping is the aliasing hazard)
+        object.__setattr__(self, "operands", tuple(self.operands))
+        object.__setattr__(self, "params", MappingProxyType(dict(self.params)))
 
     def __repr__(self) -> str:
         args = ", ".join(self.operands)
@@ -110,6 +138,8 @@ _LAYOUT_OPS = {
     "pad": lambda t, p: t.pad(p["fill"], **p["extents"]),
     "stencil": lambda t, p: t.stencil(p["name"], p["k"], p.get("k_name"), p.get("fill", 0), p.get("dilation", 1)),
     "strip_charts": lambda t, p: t.strip_charts(),
+    "with_charts": lambda t, p: t.with_charts(**p["charts"]),
+    "with_labels": lambda t, p: t.with_labels(**p["labels"]),
     "simplify": lambda t, p: t.simplify(),
 }
 
@@ -148,23 +178,27 @@ def run(prog: Program, inputs: dict[str, Tensor]) -> dict[str, Tensor]:
         elif ins.op == "iota":
             env[ins.var] = iota(env[ins.operands[0]], ins.params["name"], ins.params.get("unit"))
         elif ins.op == "pointwise":
-            env[ins.var] = pointwise(PW[ins.params["f"]], *[env[o] for o in ins.operands])
+            env[ins.var] = pointwise(pw_marker(ins.params["f"]), *[env[o] for o in ins.operands])
         elif ins.op == "reduce":
+            vals = tuple(env[o] for o in ins.operands)
             env[ins.var] = reduce(
-                RED[ins.params["f"]],
-                env[ins.operands[0]],
+                reducer(ins.params["f"]),
+                vals[0] if len(vals) == 1 else vals,
                 ins.params["dims"],
                 ins.params.get("zero"),
             )
         elif ins.op == "scan":
+            vals = tuple(env[o] for o in ins.operands)
             env[ins.var] = scan(
-                RED[ins.params["f"]],
-                env[ins.operands[0]],
+                reducer(ins.params["f"]),
+                vals[0] if len(vals) == 1 else vals,
                 ins.params["dim"],
                 ins.params.get("zero"),
             )
         elif ins.op == "materialize":
             env[ins.var] = _materialize(env[ins.operands[0]], ins.params)
+        elif ins.op == "with_value_units":
+            env[ins.var] = env[ins.operands[0]].with_value_units(ins.params["value_units"])
         else:
             env[ins.var] = _LAYOUT_OPS[ins.op](env[ins.operands[0]], ins.params)
     return env
@@ -198,7 +232,8 @@ def infer(prog: Program, input_layouts: dict) -> dict[str, Layout | GuardedLayou
             shadows[ins.var] = src.layout if isinstance(src, Tensor) else src
         elif ins.op == "const":
             dims = tuple(Dim(name, 0, *_extent(extent)) for name, extent in ins.params.get("dims", ()))
-            shadows[ins.var] = _dense_like(dims)
+            # stride-0 broadcast, exactly like run's _const
+            shadows[ins.var] = Layout(dims)
         elif ins.op == "iota":
             base = shadows[ins.operands[0]]
             d = base.dim(ins.params["name"])
@@ -232,41 +267,14 @@ def infer(prog: Program, input_layouts: dict) -> dict[str, Layout | GuardedLayou
         elif ins.op == "simplify":
             s = shadows[ins.operands[0]]
             shadows[ins.var] = s.simplify() if isinstance(s, GuardedLayout) else s
+        elif ins.op == "with_value_units":
+            shadows[ins.var] = shadows[ins.operands[0]]
         else:
-            layout = shadows[ins.operands[0]]
-            method = {
-                "slice": lambda: layout.slice(**ins.params["ranges"]),
-                "select": lambda: layout.select(**ins.params["coords"]),
-                "shift": lambda: layout.shift(**ins.params["deltas"]),
-                "rename": lambda: layout.rename(**ins.params["mapping"]),
-                "repeat": lambda: layout.repeat(
-                    ins.params["name"],
-                    ins.params["extent"],
-                    ins.params.get("chart"),
-                    ins.params.get("labels"),
-                ),
-                "flip": lambda: layout.flip(ins.params["name"]),
-                "split": lambda: layout.split(ins.params["name"], **ins.params["parts"]),
-                "merge": lambda: layout.merge(
-                    tuple(ins.params["parts"]),
-                    ins.params["name"],
-                    ins.params.get("start", 0),
-                ),
-                "diagonal": lambda: layout.diagonal(
-                    tuple(ins.params["parts"]), ins.params["name"], ins.params.get("chart")
-                ),
-                "window": lambda: layout.window(
-                    ins.params["name"],
-                    ins.params["k_name"],
-                    ins.params["k"],
-                    ins.params.get("dilation", 1),
-                ),
-                "decimate": lambda: layout.decimate(
-                    ins.params["name"], ins.params["factor"], ins.params.get("phase", 0)
-                ),
-                "strip_charts": lambda: layout.strip_charts(),
-            }[ins.op]
-            shadows[ins.var] = method()
+            # Layout/GuardedLayout share these ops' names and signatures with
+            # Tensor, so run and infer dispatch through ONE table — a new
+            # layout op is added in exactly one place. (pad/stencil/simplify
+            # are the three genuine special cases, handled above.)
+            shadows[ins.var] = _LAYOUT_OPS[ins.op](shadows[ins.operands[0]], ins.params)
     return shadows
 
 

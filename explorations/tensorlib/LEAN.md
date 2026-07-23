@@ -279,6 +279,64 @@ argues for the untyped-IR + well-formedness-predicate route in Lean, with
 Checkpointing/scheduling (REPRESENTATIONS.md) will want programs-as-data
 too; same embedding serves.
 
+## 2026-07-23 — signatures, the SSM backward pass, and counting
+
+(1) *Denotation.* The signature pass is a TYPING JUDGMENT laid over the
+untyped IR — exactly the WF-predicate idiom chosen for programs, now for
+values: `VInfo = (carrier?, unit?)` is an abstract domain, `infer_signatures`
+is monotone forward abstract interpretation, and `None` is ⊤. Soundness is
+one statement: if the pass assigns (c, u) to a var, the reference denotation
+lands in carrier c with unit u. The composite-reducer case is a small
+fixed-point over the state tuple — finite lattice (five carriers), so
+termination is by height, a two-line Lean argument.
+
+(2) *Theorems touched.* The composite-scan adjoint turns on two facts worth
+proving abstractly, neither Python-specific: (a) the cotangent of a fold
+s_t = C(s_{t-1}, l_t) is the reversed-time LINEAR recurrence
+ŝ_t = (∂C/∂left)ᵀ ŝ_{t+1} + Pᵀ ȳ_t — BPTT-as-lemma, an induction over the
+fold; (b) the boundary needs no special case because init is the monoid
+IDENTITY: C(init, r) = r implies ∂C/∂right = I at t = 0, so the uniform
+formula is exact. (b) upgrades `init` from a convenience to a stated
+obligation alongside associativity — the reducer's typeclass instance now
+carries (assoc, identity, and later: combine differentiable). The generated
+matrix-linrec carrier is itself an instance of the same structure, which is
+pleasingly self-referential: the adjoint of a verified scan is another
+verified scan.
+
+(3) *Vision moved.* opcount.py is the first COST SEMANTICS: a second
+denotation of the same program into a commutative monoid (Counters under +),
+with cost models as monoid homomorphisms applied afterward. That is exactly
+the machine-model shape planned for the memory/execution hierarchy — peak
+memory will be another such semantics (max-plus rather than plus), so the
+Lean machine model should be designed once as "program → resource monoid"
+with ops-count as its simplest instance. MAC fusion previews the pattern:
+a cost-preserving-up-to-model rewrite, stated and proved per pattern.
+
+## 2026-07-22 (later still) — the marker DSL landed
+
+(1) *Denotation*: a composite marker body is a scalar expression tree
+(Arg/Const/Prim) denoting a function `α^arity → α` by structural recursion —
+in Lean, a tiny inductive with an `eval` fixpoint; the easiest denotation in
+the whole project. Composite reducers denote fold/scan over a product state
+type with a declared-associative combine.
+
+(2) *Theorems touched*: two lemma families become stateable and small:
+`eval (diff body i) = deriv (eval body) i` — symbolic-differentiation
+soundness, an induction over the tree using Mathlib's `deriv` rules per
+primitive (this DISCHARGES the per-marker leaf obligations from the AD plan
+for every composite at once; only true primitives remain axioms/lemmas) —
+and per-reducer associativity (e.g. the linrec pair combine), which is
+exactly the CommMonoid-style instance obligation predicted earlier; proving
+it unlocks the verified Blelloch equivalence for the machine model.
+
+(3) *Vision moved*: the marker IR is the scalar sublanguage the compiler's
+kernel bodies need, and it is frontend-agnostic by construction — the Lean
+model can define its own well-formed-tree predicate without caring whether
+Python traced the tree or pdum.dsl lowered it. The no-rewrite seam
+(producers vs consumers of a dumb schema) is the same shape as the
+untyped-IR + WF-predicate decision for programs; the two should share
+idioms.
+
 ### Update protocol
 
 When a Python feature lands, add a dated entry here answering three
