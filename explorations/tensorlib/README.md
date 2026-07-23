@@ -174,9 +174,26 @@ before/after on the layout (dims, strides, offset, charts, guards):
    pass generates), FDTD leapfrog with the space-time trajectory and
    gradients w.r.t. the initial fields, the empty fold, per-step op counts,
    and units surviving the carry fixed point.
+9. `09_the_model_zoo.ipynb` — `tensorlib.zoo`: L0 surface programs kept
+   honest by an independent numpy denotation. The `Build` name-manager (not a
+   frontend); GPT-2 as ordinary IR with heads born as dims (never splits);
+   the Llama block's RoPE-without-splits (pairs born in the weights, rotation
+   = selects + trig, scores = sum of two u-slot contractions) and GQA as
+   repeat-by-declaration; flash attention's online-softmax defreducer, equal
+   to naive in forward AND gradients (the backward DERIVED, no hand rule);
+   physics — heat2d's Dirichlet ghosts as pad guards, and staggered FDTD with
+   exact half-integer charts (the differencing-misalignment refusal, the
+   recharting, gradients back on the right grids); the recorded boundaries.
+10. `10_peak_memory.ipynb` — the L1 footprint simulator
+    (`memory.peak_memory`): the timeline and the peak; views are free but keep
+    their root alive; closed forms (iota/const/masks) cost nothing; THE
+    SCHEDULE IS AN ARGUMENT (two topological orders, 144 vs 200 bytes); folds
+    simulate their step recursively; GPT-2 forward vs forward+backward (the
+    grad joint peaks ~2.4x higher — the saved-activations problem that
+    motivates DCE/checkpointing); and the model's honest coarseness.
 
 Re-run them with
-`uv run jupyter nbconvert --to notebook --execute --inplace notebooks/0*.ipynb`.
+`uv run jupyter nbconvert --to notebook --execute --inplace notebooks/0*.ipynb notebooks/1*.ipynb`.
 
 ## Running the tests
 
