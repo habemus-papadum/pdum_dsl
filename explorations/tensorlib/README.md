@@ -230,6 +230,24 @@ before/after on the layout (dims, strides, offset, charts, guards):
     no-divisibility win on T=13 (prime); per-step elements (GLA) along for
     free; and the LEAN diary's point that a *wrong* schedule would still give
     *exact* gradients, because strategy and correctness factor.
+13. `13_placement.ipynb` — L3-lite (PLACEMENT.md): placement is cost-bearing
+    metadata, never meaning. The two artifacts (a `Machine` is data; the IR
+    binds dims to level *names*), binding as one `Dim.level` field (the `%gpu`
+    repr, riding views/compute untouched), and the chartless-address refusals.
+    The erasure invariant on the Megatron block — placed vs `level=None` agree
+    bit-for-bit (atol=0) and match numpy. Alignment as the distributed
+    type-checker (cross-placement refusal quoting its `bind(...)` collective
+    fix — D17 at L3). **Collectives with no ops**: the two forward all-reduces
+    (192 B each, ring `2(p-1)/p`, 384 total) read straight off reduce-over-`g`;
+    the erasure communicates nothing; the α-β time estimate. Free things
+    (distribute + shard-view = 0 B; merge of a bound part = the 24 B
+    all-gather) and per-device peak (2576 vs 4400 B). The **placed backward**:
+    gradients carry placement bit-exact (sharded weight → sharded grad,
+    replicated input → replicated grad), the joint program's 6 all-reduces with
+    the honest unfused-vs-Megatron-f/g story (6 where fused give 4), and the
+    finale — **data parallelism falls out**: the weight-grad all-reduce emerges
+    as repeat† = reduce over the bound batch dim. Closes on the loud refusals,
+    CONCERNS #28 scope, and L4 as the same split+bind move one tier down.
 
 Re-run them with
 `uv run jupyter nbconvert --to notebook --execute --inplace notebooks/0*.ipynb notebooks/1*.ipynb`.
