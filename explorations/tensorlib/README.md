@@ -191,6 +191,21 @@ before/after on the layout (dims, strides, offset, charts, guards):
     simulate their step recursively; GPT-2 forward vs forward+backward (the
     grad joint peaks ~2.4x higher — the saved-activations problem that
     motivates DCE/checkpointing); and the model's honest coarseness.
+11. `11_memory_transformations.ipynb` — the L1 optimizers, each a
+    measure→transform→re-measure loop. Requested-gradients DCE (only dL/dx on
+    GPT-2: 767→654 instrs, peak 16240→12016 B, values identical; freezing a
+    layer is just a smaller keep-set — reachability, no special case). Min-cut
+    activation checkpointing (the AOTAutograd partitioner sharpened by exact
+    bytes): the cheap chain recomputes pointwise/views and saves only the
+    banned reduce (72→8 B); GPT-2's boundary 8448→3936 B (47%), peak 76%, 64%
+    composed with DCE, the cut landing exactly on the contraction outputs
+    (q/k/v/sc/ctx/m1) as theory predicts; closed forms free, views uncuttable,
+    contractions recompute-banned; the `.rc` duplicates (name≠value). Segmented
+    fold adjoints (`grad(fold_segments=K)`): FDTD T=12 swept over K, the
+    memory/recompute curve (2680→1816 B) with its minimum at K≈√T — Chen's
+    heuristic from our own primitives — gradients identical across K, the
+    divisibility refusal, and what remains (binomial revolve, per-fold K) per
+    CONCERNS #27. Closes on why this loop is the template every level repeats.
 
 Re-run them with
 `uv run jupyter nbconvert --to notebook --execute --inplace notebooks/0*.ipynb notebooks/1*.ipynb`.
