@@ -380,3 +380,130 @@ def test_segmented_gla_gradients_match_store_all():
             e0[g0[v]].to_numpy(order=inputs[v].names),
             rtol=1e-9,
         )
+
+
+# ----------------------------------------------------------------------
+# binomial revolve (Griewank & Walther): the same pieces, a log-T schedule
+# ----------------------------------------------------------------------
+
+
+def test_revolve_split_is_the_optimal_offline_schedule():
+    # the DP split minimizes recompute; cross-check against a brute force,
+    # and against the binomial invariant beta(s, r) = C(s+r, s)
+    from functools import lru_cache
+    from math import comb
+
+    from tensorlib.autodiff import _revolve_cost, _revolve_split
+
+    @lru_cache(maxsize=None)
+    def brute(s, length):  # same recurrence, independently memoized
+        if length <= 1 or s >= length:
+            return 0.0
+        if s < 1:
+            return float("inf")
+        return min(m + brute(s - 1, length - m) + brute(s, m) for m in range(1, length))
+
+    for s in range(1, 6):
+        for length in range(2, 30):
+            if s >= length:
+                continue  # a leaf (fits in the slots): never split
+            m = _revolve_split(s, length)
+            assert 1 <= m < length
+            assert m + _revolve_cost(s - 1, length - m) + _revolve_cost(s, m) == brute(s, length)
+        # the binomial invariant: with s slots and r recomputes you reverse up
+        # to beta = C(s+r, s) steps, and such a full chain re-advances exactly
+        # r times per step at the extreme — the cost is finite and matches
+        for r in range(1, 5):
+            assert _revolve_cost(s, comb(s + r, s)) < float("inf")
+    assert _revolve_split(1, 8) == 7  # one slot: forced triangular (advance to hi-1)
+
+
+def test_revolve_fold_adjoint_matches_store_all_no_divisibility():
+    # FDTD with T=16 (divisible) and T=13 (NOT divisible by any of 2,3,4 —
+    # fold_segments would refuse; revolve does not care)
+    E0, H0 = _fdtd_ref()
+    inputs = {"E0": E0, "H0": H0}
+    for steps in (16, 13):
+        prog = _fdtd_prog(out=("final", "E1"), steps=steps)
+        jp0, g0 = grad(prog, "loss", inputs)
+        e0 = run(jp0, inputs)
+        for S in (2, 3, 4):
+            jp, g = grad(prog, "loss", inputs, fold_slots=S)
+            e = run(jp, inputs)
+            for v in ("E0", "H0"):
+                np.testing.assert_allclose(e[g[v]].to_numpy(), e0[g0[v]].to_numpy(), rtol=1e-9)
+    # 13 is prime: fold_segments has no interior divisor, revolve reversed it
+    with pytest.raises(ValueError, match="divide"):
+        grad(_fdtd_prog(out=("final", "E1"), steps=13), "loss", inputs, fold_segments=4)
+
+
+def test_revolve_gla_gradients_match_store_all():
+    inputs = _gla_inputs()
+    prog = _gla_prog()  # TN=4 elements present, emit-trajectory output
+    jp0, g0 = grad(prog, "loss", inputs)
+    e0 = run(jp0, inputs)
+    for S in (1, 2, 3):
+        jp, g = grad(prog, "loss", inputs, fold_slots=S)
+        e = run(jp, inputs)
+        for v in ("S0", "a", "k", "v", "q"):
+            np.testing.assert_allclose(
+                e[g[v]].to_numpy(order=inputs[v].names),
+                e0[g0[v]].to_numpy(order=inputs[v].names),
+                rtol=1e-9,
+            )
+
+
+def test_revolve_three_way_memory_table():
+    from tensorlib.memory import peak_memory
+    from tensorlib.opcount import ops_count
+
+    E0, H0 = _fdtd_ref()
+    inputs = {"E0": E0, "H0": H0}
+    # out=final: the trajectory is NOT the output, so holding it is a pure
+    # backward cost — exactly what checkpointing removes (the emit variant
+    # materializes the whole space-time output regardless, masking the win)
+    prog = _fdtd_prog(out=("final", "E1"), steps=24)
+
+    def peak_ops(**kw):
+        jp, _ = grad(prog, "loss", inputs, **kw)
+        return peak_memory(jp, inputs).peak_bytes, ops_count(jp, inputs).weighted()
+
+    store_peak, store_ops = peak_ops()
+    unif_peak = min(peak_ops(fold_segments=K)[0] for K in (4, 6, 8))  # K≈√24
+    for S in (1, 2, 3, 4):
+        rev_peak, rev_ops = peak_ops(fold_slots=S)
+        assert rev_peak < store_peak  # revolve buys peak vs store-all...
+        assert rev_ops > store_ops  # ...by paying recompute
+        assert rev_peak <= unif_peak  # and undercuts uniform's √T minimum
+    # the tradeoff is monotone: more slots -> more peak, less recompute
+    peaks = [peak_ops(fold_slots=S)[0] for S in (1, 2, 3, 4, 5)]
+    opses = [peak_ops(fold_slots=S)[1] for S in (1, 2, 3, 4, 5)]
+    assert peaks == sorted(peaks)
+    assert opses == sorted(opses, reverse=True)
+
+
+def test_revolve_knob_exclusivity_and_degenerate_slots():
+    E0, H0 = _fdtd_ref()
+    inputs = {"E0": E0, "H0": H0}
+    prog = _fdtd_prog(out=("final", "E1"), steps=8)
+    jp0, g0 = grad(prog, "loss", inputs)
+    e0 = run(jp0, inputs)
+    # both knobs at once is refused
+    with pytest.raises(ValueError, match="not both"):
+        grad(prog, "loss", inputs, fold_segments=2, fold_slots=2)
+    with pytest.raises(ValueError, match="must be >= 1"):
+        grad(prog, "loss", inputs, fold_slots=0)
+    # S=1 works (degenerate, recompute-heavy triangular schedule)
+    jp1, g1 = grad(prog, "loss", inputs, fold_slots=1)
+    e1 = run(jp1, inputs)
+    for v in ("E0", "H0"):
+        np.testing.assert_allclose(e1[g1[v]].to_numpy(), e0[g0[v]].to_numpy(), rtol=1e-9)
+    # S >= T: enough slots to hold everything -> collapses to store-all, and
+    # its peak equals the store-all peak exactly (a single full leaf)
+    from tensorlib.memory import peak_memory
+
+    jpb, gb = grad(prog, "loss", inputs, fold_slots=99)
+    eb = run(jpb, inputs)
+    for v in ("E0", "H0"):
+        np.testing.assert_allclose(eb[gb[v]].to_numpy(), e0[g0[v]].to_numpy(), rtol=1e-9)
+    assert peak_memory(jpb, inputs).peak_bytes == peak_memory(jp0, inputs).peak_bytes

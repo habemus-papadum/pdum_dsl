@@ -254,9 +254,17 @@ before the compute layer lands on top.
     recomputes. Recompute duplicates break name=value (v and v.rc denote
     one semantic value — fine for run/measure; a value-numbering pass
     would be needed to see through it). Fold interiors: grad's
-    `fold_segments=K` now applies Chen-style uniform checkpointing inside
-    fold adjoints (boundary states + per-segment just-in-time recompute;
-    FDTD T=12 peaks 2680→1816 B with the minimum at K≈√T, ops rising
-    monotonically — the curve, measured). Still open: BINOMIAL revolve
-    (optimal, O(log T)); K is global per grad call rather than per-fold;
-    K must divide T (pad first).
+    `fold_segments=K` applies Chen-style uniform checkpointing inside fold
+    adjoints (boundary states + per-segment just-in-time recompute; FDTD
+    T=12 peaks 2680→1816 B with the minimum at K≈√T, ops rising
+    monotonically — the curve, measured), and `fold_slots=S` now runs
+    BINOMIAL revolve (Griewank & Walther) over the SAME certified pieces: a
+    recursive schedule that stores a checkpoint at each split point, follows
+    the optimal C(S+r,S) offline frontier, keeps ~O(S·state) live
+    checkpoints, and needs NO divisibility on T (FDTD T=24, out=final:
+    revolve holds the peak to 856 B at S=1 — below uniform's 1384 B √T floor
+    — while paying recompute; gradients bit-identical across store-all,
+    uniform, and revolve; measured). The two knobs are mutually exclusive
+    (raise if both given). Still open: K/S is global per grad call rather
+    than per-fold; and only `fold_segments` carries the divide-T constraint
+    (revolve lifts it).
