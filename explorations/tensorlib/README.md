@@ -83,6 +83,13 @@ recurrence over derived Jacobian trees). Markers carry SIGNATURES
 ("mul"/"add"/"exp"/"copy"), with MAC fusion and cost models as separate,
 explicit steps. Frontends are pluggable producers of the Node schema; the
 main repo's syntax tooling can target it later without any rewrite.
+Beyond scalar-tuple state, `fold` is the TENSOR-state scan — the step is
+itself an IR Program (state = named tensors with a fixed-layout carry
+contract), covering SSM matrix states (Mamba-2/DeltaNet-style gated
+linear attention) and PDE time-stepping (FDTD leapfrog) with one
+combinator; its adjoint is derived by differentiating the step program
+and folding the VJP backward. LEVELS.md holds the machine-modeling
+roadmap (representation ladder × machine tree) these feed into.
 Deliberately inefficient numpy semantics: repeats and windows materialize —
 that is the correctness contract a real backend must match while treating
 those views as virtual. Matmul = repeat·mul·reduce; conv = window/stencil
@@ -148,6 +155,13 @@ before/after on the layout (dims, strides, offset, charts, guards):
    recurrence), associativity as a declared claim, BPTT emitted as IR (with
    the derived registry and the generated matrix-linrec backward scan),
    training through the scan, and op counts over composite trees.
+8. `08_fold_tensor_state.ipynb` — `fold`, the tensor-state scan: the step as
+   a first-class IR Program, the scalar case agreeing with 07's composite
+   reducer, gated linear attention's matrix state, the carry/`final`/chart
+   refusals, the adjoint derived by self-application (the folds the backward
+   pass generates), FDTD leapfrog with the space-time trajectory and
+   gradients w.r.t. the initial fields, the empty fold, per-step op counts,
+   and units surviving the carry fixed point.
 
 Re-run them with
 `uv run jupyter nbconvert --to notebook --execute --inplace notebooks/0*.ipynb`.

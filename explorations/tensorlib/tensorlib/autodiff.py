@@ -51,7 +51,7 @@ Contracts and conventions:
 
 from __future__ import annotations
 
-from .ir import PW, RED, Instr, Program, infer
+from .ir import PW, RED, Instr, Program, _fold_extent, _fold_parts, _fold_step_layouts, infer
 from .mdsl import COMPOSITE_MARKERS, COMPOSITE_REDUCERS, Const
 from .signatures import infer_signatures
 from .units import ONE
@@ -339,6 +339,144 @@ def grad(
             if terms:
                 contribute(elems[i], acc_sum(terms))
 
+    def fold_rule(ins: Instr, c: str) -> None:
+        """The adjoint of a fold is a REVERSE fold over the step's VJP
+        program — derived by self-application: wrap the step with cotangent
+        inputs and a scalarized target (sum of cot·out inner products), run
+        `grad` on the wrapper, and the resulting joint program IS the
+        backward step. It carries the state cotangent in reversed time and
+        consumes (s_{t-1}, e_t, ȳ_t) as elements — standard BPTT with
+        per-step recompute, generated rather than hand-written. The forward
+        state trajectory is re-emitted per component (reference
+        inefficiency; L1 checkpointing will make this interesting)."""
+        step, dim, state_names, elem_names, carry, (out_kind, out_var) = _fold_parts(ins.params)
+        k = len(state_names)
+        inits, elems = ins.operands[:k], ins.operands[k:]
+        start, stop = _fold_extent(ins, shadows)
+        if stop - start == 0:
+            for sn, iv in zip(state_names, inits):
+                if out_kind == "final" and carry[sn] == out_var:
+                    contribute(iv, c)
+                else:
+                    contribute(iv, zeros_like(shadows[iv]))
+            for ev in elems:
+                contribute(ev, zeros_like(shadows[ev]))
+            return
+
+        def lat(v: str) -> str:
+            return b.emit("strip_charts", (v,), {}, hint="lat")
+
+        def flp(v: str) -> str:
+            return b.emit("flip", (v,), {"name": dim})
+
+        # stripped layouts throughout: the whole adjoint works lattice-mode
+        # (contribute restamps at the end), so the inner grad must not
+        # restamp with the primal's charts either
+        slayouts = {n: v.strip_charts() for n, v in _fold_step_layouts(ins, shadows).items()}
+        ss = infer(step, slayouts)
+        # normalize the cotangent to emit-form along dim (final = emit-at-last)
+        if out_kind == "final":
+            r = b.emit("repeat", (lat(c),), {"name": dim, "extent": (stop - 1, stop)})
+            yb = b.emit("pad", (r,), {"fill": 0.0, "extents": {dim: (start, stop)}})
+        else:
+            yb = lat(c)
+        sinits = tuple(lat(iv) for iv in inits)
+        selems = tuple(lat(ev) for ev in elems)
+        sops = sinits + selems
+        # forward state trajectories (value AFTER each step), then s_{t-1}
+        # via shift + where(t == start, init, ...) — init is a TENSOR here,
+        # so the boundary is an iota mask, not a pad fill
+        sprev = {}
+        for sn, siv in zip(state_names, sinits):
+            traj = b.emit("fold", sops, {**dict(ins.params), "out": ("emit", carry[sn])})
+            sh = b.emit("shift", (traj,), {"deltas": {dim: 1}})
+            sl = b.emit("slice", (sh,), {"ranges": {dim: (start + 1, stop)}})
+            pd = b.emit("pad", (sl,), {"fill": 0.0, "extents": {dim: (start, stop)}})
+            ri = b.emit("repeat", (siv,), {"name": dim, "extent": (start, stop)})
+            it = b.emit("iota", (pd,), {"name": dim})
+            sdims = tuple((d.name, (d.start, d.stop)) for d in slayouts[sn].dims) + ((dim, (start, stop)),)
+            cs = b.emit("const", (), {"value": start, "dims": sdims, "dtype": "int64"})
+            mask = b.emit("pointwise", (it, cs), {"f": "eq"})
+            sprev[sn] = b.emit("pointwise", (mask, ri, pd), {"f": "where"})
+        # the VJP wrapper: step + cotangent inputs + scalarized target
+        wb = _Builder(set(step.vars))
+        winstrs = list(step.instrs)
+        wlayouts = dict(slayouts)
+        terms = []
+
+        def scalarize(v: str, layout) -> str:
+            cin = wb.fresh("ct")
+            winstrs.append(Instr(cin, "input", (), {}))
+            wlayouts[cin] = layout
+            pr = wb.fresh("pr")
+            winstrs.append(Instr(pr, "pointwise", (v, cin), {"f": "mul"}))
+            names = tuple(d.name for d in layout.dims)
+            if not names:
+                return cin, pr
+            rs = wb.fresh("rs")
+            winstrs.append(Instr(rs, "reduce", (pr,), {"f": "sum", "dims": names}))
+            return cin, rs
+
+        cot_state = {}
+        for sn in state_names:
+            cot_state[sn], t0 = scalarize(carry[sn], ss[carry[sn]])
+            terms.append(t0)
+        cot_out, t0 = scalarize(out_var, ss[out_var])
+        terms.append(t0)
+        target = terms[0]
+        for tv in terms[1:]:
+            nv = wb.fresh("L")
+            winstrs.append(Instr(nv, "pointwise", (target, tv), {"f": "add"}))
+            target = nv
+        jp, g = grad(Program(tuple(winstrs)), target, wlayouts)
+        # missing gradients become explicit zeros so the reverse fold always
+        # has a var to carry/emit
+        taken = set(jp.vars)
+        extra, zn = [], 0
+
+        def ensure(gv, layout):
+            nonlocal zn
+            if gv is not None:
+                return gv
+            while f"%fz{zn}" in taken:
+                zn += 1
+            name = f"%fz{zn}"
+            taken.add(name)
+            extra.append(
+                Instr(
+                    name, "const", (), {"value": 0.0, "dims": tuple((d.name, (d.start, d.stop)) for d in layout.dims)}
+                )
+            )
+            return name
+
+        carry_back = {sn: ensure(g[sn], slayouts[sn]) for sn in state_names}
+        ejp = Program(tuple(jp.instrs) + tuple(extra))
+        # the reverse fold: carries ŝ (zero-initialized), consumes flipped
+        # (s_{t-1}, e_t, ȳ_t); emit gives element cotangents, final gives
+        # the init cotangent
+        zinits = tuple(
+            b.emit("const", (), {"value": 0.0, "dims": tuple((d.name, (d.start, d.stop)) for d in slayouts[sn].dims)})
+            for sn in state_names
+        )
+        adj_ops = zinits + tuple(flp(sprev[sn]) for sn in state_names) + tuple(flp(se) for se in selems) + (flp(yb),)
+        adj_params = {
+            "step": ejp,
+            "dim": dim,
+            "state": tuple(cot_state[sn] for sn in state_names),
+            "element": tuple(state_names) + tuple(elem_names) + (cot_out,),
+            "carry": {cot_state[sn]: carry_back[sn] for sn in state_names},
+        }
+        for en, ev in zip(elem_names, elems):
+            if g[en] is None:
+                continue
+            fv = b.emit("fold", adj_ops, {**adj_params, "out": ("emit", g[en])})
+            contribute(ev, flp(fv))
+        for sn, iv in zip(state_names, inits):
+            if g[sn] is None:
+                continue
+            fv = b.emit("fold", adj_ops, {**adj_params, "out": ("final", carry_back[sn])})
+            contribute(iv, fv)
+
     def reduce_rule(ins: Instr, c: str) -> None:
         f = ins.params["f"]
         dims = ins.params["dims"]
@@ -543,6 +681,8 @@ def grad(
             reduce_rule(ins, c)
         elif ins.op == "scan":
             scan_rule(ins, c)
+        elif ins.op == "fold":
+            fold_rule(ins, c)
         else:
             layout_rule(ins, c)
 
