@@ -171,8 +171,10 @@ parallel to `associative` on scalar reducers.
    from recompute; lazy just-in-time recompute placement; zoo GPT-2:
    boundary 47%, peak 76%, with DCE 64% of the joint) → ~~segmented fold
    adjoints~~ (grad's fold_segments=K: Chen-style uniform checkpointing;
-   FDTD memory/recompute curve measured, minimum at K≈√T) → next:
-   binomial revolve proper; then L2/L3 per their own design
+   FDTD memory/recompute curve measured, minimum at K≈√T) → ~~binomial
+   revolve~~ (grad's fold_slots=S: the optimal C(S+r,S) schedule over the
+   same certified pieces; O(S) live states, no divide-T constraint, peaks
+   below uniform's √T floor — measured) → next: L2/L3 per their own design
    conversations.
 5. **L3-lite**: machine tree + mesh placement + collectives-by-diagnosis +
    traffic costs; Megatron-style sharded GPT-2 as flagship. (L2

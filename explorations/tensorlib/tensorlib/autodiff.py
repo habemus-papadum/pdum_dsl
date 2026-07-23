@@ -51,12 +51,42 @@ Contracts and conventions:
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 from .ir import PW, RED, Instr, Program, _fold_extent, _fold_parts, _fold_step_layouts, infer
 from .mdsl import COMPOSITE_MARKERS, COMPOSITE_REDUCERS, Const
 from .signatures import infer_signatures
 from .units import ONE
 
 _GRADIENT_FREE = frozenset({"eq", "ne", "le", "lt", "ge", "gt"})
+
+
+@lru_cache(maxsize=None)
+def _revolve_cost(s: int, length: int) -> float:
+    """Minimum recomputed forward-steps to reverse `length` steps with `s`
+    checkpoint slots, under the revolve recursion (split at c: advance the
+    head, reverse the tail with s-1 slots, reverse the head with s slots).
+    A range is a store-all leaf — zero re-advance — once it fits in the
+    available slots (length <= 1, or s >= length)."""
+    if length <= 1 or s >= length:
+        return 0.0
+    if s < 1:
+        return float("inf")  # cannot subdivide a multi-step range with no slot
+    return min(m + _revolve_cost(s - 1, length - m) + _revolve_cost(s, m) for m in range(1, length))
+
+
+@lru_cache(maxsize=None)
+def _revolve_split(s: int, length: int) -> int:
+    """Head length (steps to advance before the next checkpoint) for the
+    optimal revolve split of `length` steps with `s` slots. This is exactly
+    the Griewank & Walther binomial rule — with s slots and r recomputations
+    one reverses up to C(s+r, s) steps — computed here by a memoized DP over
+    the recompute-cost recurrence rather than the closed form, since fold
+    lengths are modest at trace time. Ties are broken toward the LONGER head
+    (advance as far as possible), matching revolve's convention. Only called
+    for a genuine split: 1 <= s and 2 <= length and s < length."""
+    best = _revolve_cost(s, length)
+    return max(m for m in range(1, length) if m + _revolve_cost(s - 1, length - m) + _revolve_cost(s, m) == best)
 
 
 class _Builder:
@@ -94,11 +124,19 @@ def grad(
     wrt: tuple[str, ...] | None = None,
     target_unit=None,
     fold_segments: int | None = None,
+    fold_slots: int | None = None,
 ) -> tuple[Program, dict[str, str | None]]:
     if target not in prog.vars:
         raise KeyError(f"target {target!r} is not defined by the program")
     if seed is not None and seed in prog.vars:
         raise ValueError(f"seed name {seed!r} collides with a program variable; pick a fresh name")
+    if fold_segments is not None and fold_slots is not None:
+        raise ValueError(
+            "pass fold_segments (uniform K-way checkpointing) OR fold_slots "
+            "(binomial revolve), not both — they name different schedules"
+        )
+    if fold_slots is not None and int(fold_slots) < 1:
+        raise ValueError("fold_slots must be >= 1 (the number of checkpoint slots)")
     idx = prog.vars.index(target)
     fwd = prog.instrs[: idx + 1]
     shadows = infer(Program(fwd), input_layouts)
@@ -364,8 +402,10 @@ def grad(
         segments; only segment-BOUNDARY states are computed up front, and
         each segment's trajectory is recomputed just-in-time during its own
         backward sweep (Chen-style uniform checkpointing: ~T/K + K states
-        live instead of T; K≈√T minimizes; binomial revolve is the future
-        refinement). K=1 (the default) is the store-everything adjoint."""
+        live instead of T; K≈√T minimizes). `fold_slots=S` instead runs the
+        binomial revolve schedule over the same pieces (below): ~O(S) live
+        states, recompute up the binomial curve, and no divisibility
+        constraint on T. K=1 (the default) is the store-everything adjoint."""
         step, dim, state_names, elem_names, carry, (out_kind, out_var) = _fold_parts(ins.params)
         k = len(state_names)
         inits, elems = ins.operands[:k], ins.operands[k:]
@@ -464,13 +504,15 @@ def grad(
         }
         base = dict(ins.params)
         T = stop - start
-        K = 1 if fold_segments is None else min(int(fold_segments), T)
-        if K < 1:
-            raise ValueError("fold_segments must be >= 1")
-        if T % K:
-            raise ValueError(f"fold_segments={K} must divide the fold extent {T} (pad the dim or pick a divisor)")
-        L = T // K
 
+        # ---- certified pieces, shared by every schedule -----------------
+        # Both the uniform (fold_segments) and binomial (fold_slots) paths
+        # are SCHEDULES over the same two operations: `advance` runs the
+        # forward step to move a boundary state across a range (out=final),
+        # and `leaf_backward` recomputes one range's trajectory just-in-time
+        # and reverse-folds it (contributing element cotangents and returning
+        # the range's start-state cotangent). Nothing about the certified
+        # backward step depends on how the ranges are chosen.
         def seg_ops(state_vars, lo, hi):
             """(operands, param overrides, element slices) for [lo, hi)."""
             if elems:
@@ -478,31 +520,29 @@ def grad(
                 return tuple(state_vars) + se, {}, se
             return tuple(state_vars), {"extent": (lo, hi)}, ()
 
-        # forward pass over segments: keep only segment-START states
-        seg_start = [dict(zip(state_names, inits))]
-        for j in range(K - 1):
-            lo, hi = start + j * L, start + (j + 1) * L
-            ops_, extra_p, _ = seg_ops(tuple(seg_start[-1][sn] for sn in state_names), lo, hi)
-            seg_start.append(
-                {sn: b.emit("fold", ops_, {**base, **extra_p, "out": ("final", carry[sn])}) for sn in state_names}
-            )
+        def zero_state():
+            return {
+                sn: restamp(
+                    b.emit(
+                        "const",
+                        (),
+                        {"value": 0.0, "dims": tuple((d.name, (d.start, d.stop)) for d in slayouts[sn].dims)},
+                    ),
+                    slayouts[sn],
+                )
+                for sn in state_names
+            }
 
-        # backward, segment by segment (reversed): recompute the segment's
-        # trajectory from its boundary state, then run the reverse fold —
-        # ŝ chains across the seam (segment j's final reverse carry is the
-        # cotangent of segment j-1's end state)
-        cur = {
-            sn: restamp(
-                b.emit(
-                    "const", (), {"value": 0.0, "dims": tuple((d.name, (d.start, d.stop)) for d in slayouts[sn].dims)}
-                ),
-                slayouts[sn],
-            )
-            for sn in state_names
-        }
-        for j in reversed(range(K)):
-            lo, hi = start + j * L, start + (j + 1) * L
-            s0 = seg_start[j]
+        def advance(s0, lo, hi):
+            """State at `hi` from state `s0` at `lo` (out=final boundary fold)."""
+            ops_, extra_p, _ = seg_ops(tuple(s0[sn] for sn in state_names), lo, hi)
+            return {sn: b.emit("fold", ops_, {**base, **extra_p, "out": ("final", carry[sn])}) for sn in state_names}
+
+        def leaf_backward(lo, hi, s0, cur, full):
+            """Reverse [lo, hi) from boundary state `s0` and incoming state
+            cotangent `cur` (the cotangent at `hi`); contribute this range's
+            element cotangents and return the cotangent at `lo`. `full` is
+            True only when the range is the whole fold (no slice/pad needed)."""
             ops_, extra_p, se = seg_ops(tuple(s0[sn] for sn in state_names), lo, hi)
             # trajectory (value AFTER each step), then s_{t-1} via shift +
             # where(t == lo, boundary, ...) — the boundary is an iota mask,
@@ -520,7 +560,7 @@ def grad(
                 cs = restamp(cs, slayouts[sn])  # partial stamp: scan dim stays bare
                 mask = b.emit("pointwise", (it, cs), {"f": "eq"})
                 sprev[sn] = b.emit("pointwise", (mask, ri, pd), {"f": "where"})
-            ybj = yb if K == 1 else b.emit("slice", (yb,), {"ranges": {dim: (lo, hi)}})
+            ybj = yb if full else b.emit("slice", (yb,), {"ranges": {dim: (lo, hi)}})
             adj_ops = (
                 tuple(cur[sn] for sn in state_names)
                 + tuple(flp(sprev[sn]) for sn in state_names)
@@ -531,10 +571,72 @@ def grad(
                 if g[en] is None:
                     continue
                 fv = flp(b.emit("fold", adj_ops, {**adj_params, "out": ("emit", g[en])}))
-                if K > 1:
+                if not full:
                     fv = b.emit("pad", (fv,), {"fill": 0.0, "extents": {dim: (start, stop)}})
-                contribute(ev, fv)  # segments accumulate via cotangent fan-in
-            cur = {sn: b.emit("fold", adj_ops, {**adj_params, "out": ("final", carry_back[sn])}) for sn in state_names}
+                contribute(ev, fv)  # ranges accumulate via cotangent fan-in
+            return {sn: b.emit("fold", adj_ops, {**adj_params, "out": ("final", carry_back[sn])}) for sn in state_names}
+
+        if fold_slots is not None:
+            # ---- binomial revolve (Griewank & Walther) ------------------
+            # A RECURSIVE schedule over the same pieces. With S checkpoint
+            # slots, reverse [lo, hi): store the state at a split point c,
+            # recurse on the tail [c, hi) with S-1 slots (the checkpoint holds
+            # one), then — that slot now free — recurse on the head [lo, c)
+            # with S slots. Leaves (a single step, or any range that already
+            # fits in the available slots) get the store-all `leaf_backward`.
+            # The split is chosen by _revolve_split: the optimal offline
+            # schedule (memoized DP over the recompute-cost recurrence — the
+            # same optimum revolve reaches in closed form; T is modest at
+            # trace time). No divisibility constraint: arbitrary T works.
+            # Memory ~O(S·state) live checkpoints + one leaf trajectory;
+            # compute grows by the binomial recompute factor. ŝ chains across
+            # every seam exactly as the uniform path does, because leaves are
+            # visited in strictly decreasing time order.
+            S = int(fold_slots)
+            cur = zero_state()  # cotangent at time `stop`
+
+            def revolve(lo, hi, s, boundary):
+                # `boundary` is the state at `lo`; on return, `cur` has been
+                # carried from the cotangent at `hi` to the cotangent at `lo`
+                nonlocal cur
+                span = hi - lo
+                if span <= 1 or s >= span:
+                    cur = leaf_backward(lo, hi, boundary, cur, full=(lo == start and hi == stop))
+                    return
+                c = lo + _revolve_split(s, span)
+                state_c = advance(boundary, lo, c)  # the checkpoint (one slot)
+                revolve(c, hi, s - 1, state_c)  # tail first (later times)
+                revolve(lo, c, s, boundary)  # then head, checkpoint freed
+
+            revolve(start, stop, S, dict(zip(state_names, inits)))
+            for sn, iv in zip(state_names, inits):
+                if g[sn] is None:
+                    continue
+                contribute(iv, cur[sn])
+            return
+
+        # ---- uniform (Chen-style) segmentation, or store-all when K=1 ---
+        K = 1 if fold_segments is None else min(int(fold_segments), T)
+        if K < 1:
+            raise ValueError("fold_segments must be >= 1")
+        if T % K:
+            raise ValueError(f"fold_segments={K} must divide the fold extent {T} (pad the dim or pick a divisor)")
+        L = T // K
+
+        # forward pass over segments: keep only segment-START states
+        seg_start = [dict(zip(state_names, inits))]
+        for j in range(K - 1):
+            lo, hi = start + j * L, start + (j + 1) * L
+            seg_start.append(advance(seg_start[-1], lo, hi))
+
+        # backward, segment by segment (reversed): recompute the segment's
+        # trajectory from its boundary state, then run the reverse fold —
+        # ŝ chains across the seam (segment j's final reverse carry is the
+        # cotangent of segment j-1's end state)
+        cur = zero_state()
+        for j in reversed(range(K)):
+            lo, hi = start + j * L, start + (j + 1) * L
+            cur = leaf_backward(lo, hi, seg_start[j], cur, full=(K == 1))
         for sn, iv in zip(state_names, inits):
             if g[sn] is None:
                 continue

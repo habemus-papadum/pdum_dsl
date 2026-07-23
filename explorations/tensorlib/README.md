@@ -213,6 +213,19 @@ before/after on the layout (dims, strides, offset, charts, guards):
     heuristic from our own primitives — gradients identical across K, the
     divisibility refusal, and what remains (binomial revolve, per-fold K) per
     CONCERNS #27. Closes on why this loop is the template every level repeats.
+12. `12_binomial_revolve.ipynb` — the refinement notebook 11 flagged:
+    `grad(fold_slots=S)`, Griewank & Walther's binomial **revolve** as a
+    recursive *schedule* over the very same certified pieces. The freed-slot
+    idea (uniform holds all K boundaries and never reclaims them; revolve
+    spends the tail's slot on the head), the T = C(S+r, S) rule with its
+    table, the memoized-DP split traced on a chain, and the three-way
+    comparison (FDTD T=24, out=final): store-all 4168 B → uniform's √T floor
+    1384 B → revolve **856 B at a single slot**, peak rising exactly one
+    (E, H) state per slot as recompute falls — the optimal frontier uniform
+    is stuck on one point of. Gradients bit-identical across all three; the
+    no-divisibility win on T=13 (prime); per-step elements (GLA) along for
+    free; and the LEAN diary's point that a *wrong* schedule would still give
+    *exact* gradients, because strategy and correctness factor.
 
 Re-run them with
 `uv run jupyter nbconvert --to notebook --execute --inplace notebooks/0*.ipynb notebooks/1*.ipynb`.
