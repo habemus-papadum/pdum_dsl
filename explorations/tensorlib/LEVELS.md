@@ -186,3 +186,32 @@ parallel to `associative` on scalar reducers.
    warp-collective lowering.
 8. **Lean package** starts when step 6's rewrites exist; hardware
    calibration is a parallel thread, not on the critical path.
+
+## L4 — queued design questions (pre-conversation)
+
+Recorded so the conversation starts concrete; nothing here is decided.
+
+- **K-A What is a kernel in the IR?** A grouping annotation over
+  instructions (erasure-preserving, like placement) vs a region op with a
+  body (like fold). Lean: annotation — kernels change cost, not meaning,
+  and the erasure discipline has paid off twice now.
+- **K-B Tiling = the same move, deeper.** Inside a kernel, tiles are
+  split + bind to sub-GPU levels (sm/warp/lane) of the machine tree the
+  schema already carries. Does anything NEW appear, or is L4 = L3's
+  mechanism + a capacity constraint per level?
+- **K-C Objective and legality.** Legality in a pure IR ≈ convex
+  instruction sets (no dependency in-and-out). Objective: minimize
+  parent-memory traffic subject to child capacity (red-blue pebbling);
+  occupancy enters as a constraint/modifier. Manual fusion directives
+  first (human-as-compiler), search later.
+- **K-D Flagships.** Flash attention (fused softmax·V beats materialized
+  softmax on modeled HBM traffic — notebook 09's pair becomes a measured
+  comparison), a fused stencil chain (heat/FDTD step), and tiled matmul
+  as the canonical capacity-constrained case.
+- **K-E Cost plumbing.** Per-kernel footprint = peak_memory over the
+  kernel's instructions with local=level sizes; per-kernel traffic = the
+  materialization boundary's bytes. How do these compose into the L5
+  timeline later?
+- **K-F Relationship to L2.** Kernel boundaries define what materializes;
+  bufferization consumes them. Which forces L2's ordering: after fusion
+  decisions, before/alongside the runtime plan.

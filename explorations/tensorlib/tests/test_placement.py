@@ -117,3 +117,101 @@ def test_alpha_beta_time_estimate():
     machine = mesh(2, link_bandwidth=1e9, link_latency=1e-6)
     expected = 2 * 1e-6 + 384 / 1e9
     assert rep.time(machine) == pytest.approx(expected)
+
+
+# ----------------------------------------------------------------------
+# placed backward: gradients carry placement; training-step traffic
+# ----------------------------------------------------------------------
+
+
+def _with_loss(m):
+    from tensorlib.ir import Program
+
+    return Program(
+        m.program.instrs
+        + (
+            I("zsq", "pointwise", (m.out, m.out), f="mul"),
+            I("zloss", "reduce", ("zsq",), f="sum", dims=("t", "d")),
+        )
+    )
+
+
+def test_placed_gradients_equal_erased_gradients_bit_exact():
+    from tensorlib.autodiff import grad
+
+    p, e = megatron_block(), megatron_block(level=None)
+    jp_p, g_p = grad(_with_loss(p), "zloss", p.inputs)
+    jp_e, g_e = grad(_with_loss(e), "zloss", e.inputs)
+    ep, ee = run(jp_p, p.inputs), run(jp_e, e.inputs)
+    for v in ("x", "wq", "w2", "b1"):
+        order = p.inputs[v].names
+        np.testing.assert_allclose(ep[g_p[v]].to_numpy(order=order), ee[g_e[v]].to_numpy(order=order), rtol=0, atol=0)
+
+
+def test_gradients_carry_their_primals_placement():
+    from tensorlib.autodiff import grad
+
+    p = megatron_block()
+    jp, g = grad(_with_loss(p), "zloss", p.inputs)
+    env = run(jp, p.inputs)
+    assert env[g["wq"]].layout.dim("g").level == "gpu"  # sharded weight, sharded grad
+    assert all(d.level is None for d in env[g["x"]].layout.dims)  # replicated stays replicated
+
+
+def test_training_step_traffic_counts_backward_collectives():
+    from tensorlib import mesh, traffic
+    from tensorlib.autodiff import grad
+
+    p = megatron_block()
+    prog = _with_loss(p)
+    fwd_rep = traffic(prog, p.inputs, mesh(2))
+    jp, _ = grad(prog, "zloss", p.inputs)
+    joint_rep = traffic(jp, p.inputs, mesh(2))
+    assert len(fwd_rep.collectives) == 2  # Megatron's forward pair
+    kinds = {c.kind for c in joint_rep.collectives}
+    assert kinds == {"all_reduce"}
+    # backward adds input-gradient all-reduces: one per broadcast chain
+    # (q, k, v, mlp-up) — the reference is UNFUSED, so 4 where Megatron's
+    # f/g operators fuse attention's three into one; collective fusion is
+    # a recorded later optimization
+    assert len(joint_rep.collectives) == 6
+
+
+def test_data_parallel_gradient_sync_falls_out():
+    from tensorlib import mesh, traffic
+    from tensorlib.autodiff import grad
+
+    prog = Program(
+        (
+            I("x", "input"),
+            I("w", "input"),
+            I("wr", "repeat", ["w"], name="n", extent=(0, 4)),
+            I("wb", "bind", ["wr"], levels={"n": "gpu"}),
+            I("p", "pointwise", ["x", "wb"], f="mul"),
+            I("zloss", "reduce", ["p"], f="sum", dims=("n", "i")),
+        )
+    )
+    inputs = {
+        "x": T(np.arange(12.0).reshape(4, 3), ("n", "i")).bind(n="gpu"),
+        "w": T(np.array([1.0, 2.0, 3.0]), ("i",)),
+    }
+    jp, g = grad(prog, "zloss", inputs)
+    rep = traffic(jp, inputs, mesh(4))
+    # forward: loss aggregation over the bound batch; backward: THE
+    # data-parallel gradient all-reduce for the replicated weight
+    assert len(rep.collectives) == 2
+    assert all(c.kind == "all_reduce" for c in rep.collectives)
+    env = run(jp, inputs)
+    np.testing.assert_allclose(env[g["w"]].to_numpy(), inputs["x"].to_numpy().sum(axis=0))
+    assert all(d.level is None for d in env[g["w"]].layout.dims)  # replicated grad
+
+
+def test_fd_rebuild_preserves_placement():
+    from tensorlib.autodiff import grad, numeric_grad
+
+    p = megatron_block()
+    prog = _with_loss(p)
+    jp, g = grad(prog, "zloss", p.inputs)
+    env = run(jp, p.inputs)
+    fd = numeric_grad(prog, "zloss", "x", p.inputs)  # would misalign without the rebind
+    np.testing.assert_allclose(env[g["x"]].to_numpy(order=("t", "d")), fd, rtol=3e-4, atol=1e-6)

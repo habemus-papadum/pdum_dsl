@@ -108,7 +108,11 @@ collective ops (`traffic` reads all-reduces and all-gathers off
 reduce/merge applied to bound dims), and the Megatron-style tensor-parallel
 block (`zoo.megatron_block`) validates the design: exactly two all-reduces
 per block, bit-exact against its erasure, per-device peak measured by
-`peak_memory(local=True)`.
+`peak_memory(local=True)` — and the placed BACKWARD: gradients carry
+their primal's placement, so training-step traffic works (the Megatron
+joint program's 6 all-reduces, data-parallel gradient sync from repeat† =
+reduce). PHILOSOPHY.md records why the library is the way it is;
+PROVENANCE.md records who we learned it from.
 Deliberately inefficient numpy semantics: repeats and windows materialize —
 that is the correctness contract a real backend must match while treating
 those views as virtual. Matmul = repeat·mul·reduce; conv = window/stencil

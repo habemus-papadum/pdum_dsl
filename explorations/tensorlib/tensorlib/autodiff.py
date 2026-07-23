@@ -165,6 +165,11 @@ def grad(
             gv = b.emit("with_charts", (gv,), {"charts": charts}, hint="st")
         if labels:
             gv = b.emit("with_labels", (gv,), {"labels": labels}, hint="st")
+        levels = {d.name: d.level for d in layout.dims}
+        if any(lv is not None for lv in levels.values()):
+            # gradients carry their primal's PLACEMENT too (PLACEMENT.md):
+            # dL/d(sharded) is sharded, dL/d(replicated) is replicated
+            gv = b.emit("bind", (gv,), {"levels": levels}, hint="st")
         return gv
 
     def const_like(layout, value, dtype=None) -> str:
@@ -287,6 +292,7 @@ def grad(
 
     def repeats_over(v: str, names, src_layout) -> str:
         cur = v
+        rebind = {}
         for name in names:
             d = src_layout.dim(name)
             cur = b.emit(
@@ -299,6 +305,12 @@ def grad(
                     "labels": d.labels,
                 },
             )
+            if d.level is not None:
+                rebind[name] = d.level
+        if rebind:
+            # re-created mesh dims must re-declare their placement, or the
+            # backward misaligns against still-bound forward operands
+            cur = b.emit("bind", (cur,), {"levels": rebind})
         return cur
 
     def composite_scan_adjoint(fname: str, dim: str, elems: tuple, sc: str) -> None:
@@ -883,6 +895,7 @@ def numeric_grad(prog: Program, target: str, wrt_var: str, inputs: dict, eps: fl
     names = base.names
     charts = {d.name: d.chart for d in base.layout.dims if d.chart is not None}
     labels = {d.name: d.labels for d in base.layout.dims if d.labels is not None}
+    levels = {d.name: d.level for d in base.layout.dims if d.level is not None}
 
     def rebuild(pert):
         t = Tensor.from_numpy(pert, names)
@@ -890,6 +903,8 @@ def numeric_grad(prog: Program, target: str, wrt_var: str, inputs: dict, eps: fl
             t = t.with_charts(**charts)
         if labels:
             t = t.with_labels(**labels)
+        if levels:
+            t = t.bind(**levels)
         if base.value_units is not None:
             t = t.with_value_units(base.value_units)
         return t

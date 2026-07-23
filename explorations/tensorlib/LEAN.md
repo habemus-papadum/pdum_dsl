@@ -279,6 +279,21 @@ argues for the untyped-IR + well-formedness-predicate route in Lean, with
 Checkpointing/scheduling (REPRESENTATIONS.md) will want programs-as-data
 too; same embedding serves.
 
+## 2026-07-24 (later) — the placed backward is the same theorem again
+
+Gradients carry placement by the restamp construction — the third
+instance of gradients-carry-their-primal's-labeling (charts, units-in-
+spirit, now levels), and the erasure argument covers it: placed and
+erased joint programs are numerically IDENTICAL (tested at atol=0), so AD
+correctness never mentions placement at all. The satisfying emergent:
+data parallelism's gradient all-reduce is repeat† = reduce over a bound
+dim — a line of the existing adjoint table acquiring a distributed
+meaning for free. The unfused backward collectives (6 vs Megatron's
+fused 4) are the first concrete instance of a COST-improving,
+denotation-preserving rewrite waiting for the certified-rewrite machinery:
+collective fusion will be a rewrite rule with a traffic theorem, not a
+semantics change.
+
 ## 2026-07-24 — placement is a forgetful functor
 
 L3-lite landed the way the formal story wanted it: `bind` adds structure

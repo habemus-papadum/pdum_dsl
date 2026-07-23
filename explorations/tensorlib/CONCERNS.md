@@ -274,8 +274,9 @@ before the compute layer lands on top.
     cost zero (weights assumed pre-placed — loading is unmodeled); no
     overlap or topology (alpha-beta over a single per-level link); lattice
     surgery on bound dims, and scan/fold ALONG a bound dim, refuse rather
-    than guess. Gradients do not yet carry bindings (bind's adjoint is
-    value-passthrough), so traffic analysis is FORWARD-ONLY — the placed
-    backward is the next design step, not an oversight. Alignment now
+    than guess. Gradients now CARRY bindings (restamp binds; backward
+    repeats rebind), so traffic covers training steps — but the backward's
+    collectives are UNFUSED (Megatron joint: 6 all-reduces where fused f/g
+    operators give 4) and no resharding/ZeRO exists. Alignment now
     refuses cross-placement operands (D17 at L3); the fix recipe it quotes
     is a collective, but applying it is still the caller's conscious act.

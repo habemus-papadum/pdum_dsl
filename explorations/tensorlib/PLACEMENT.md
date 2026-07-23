@@ -45,8 +45,24 @@ shift/select/decimate/window/stencil/flip), scan or fold along a bound
 dim, and bound levels absent from the machine (or mesh extents exceeding
 the level count) all raise in the traffic pass rather than guessing.
 
-**Out of scope for v1 (recorded, not forgotten):** backward-pass traffic
-(gradient tensors do not yet carry bindings — forward analysis only),
+**Placed backward (landed after v1):** gradients carry their primal's
+placement, by the same construction that carries charts — every cotangent
+contribution is restamped, and `bind` joined the restamp; backward
+`repeat`s that re-create reduced mesh dims re-declare their binding. The
+consequences are the point:
+
+- backward collectives are just adjoint reduces: the Megatron block's
+  joint program shows 6 all-reduces — the forward pair plus one per
+  broadcast chain (q, k, v, mlp-up). The reference is UNFUSED: Megatron's
+  f/g conjugate operators fuse attention's three input-gradient reductions
+  into one; collective fusion is a recorded later optimization, not a
+  modeling error.
+- data parallelism falls out: bind the batch dim and the weight-gradient
+  reduction over batch IS the gradient all-reduce (repeat† = reduce).
+- sharded weights get sharded gradients, replicated weights get
+  replicated gradients — no ZeRO-style resharding is modeled yet.
+
+**Out of scope (recorded, not forgotten):** collective fusion (above),
 overlap/latency hiding (L5), sub-GPU tiers (L4), uneven sharding
 (divisibility, as with `split`), optimizer-state/ZeRO (no optimizer),
 per-device program extraction.
