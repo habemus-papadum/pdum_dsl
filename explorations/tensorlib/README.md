@@ -141,6 +141,13 @@ before/after on the layout (dims, strides, offset, charts, guards):
    library-free: sensitivities, path-sums, and THE one rule
    (⟨ȳ, Op dx⟩ = ⟨Op†ȳ, dx⟩ — swap the double sum), with the whole adjoint
    zoo derived by hand and verified by the pairing test alone.
+7. `07_the_marker_dsl.ipynb` — the marker DSL in action: tracing lambdas
+   into the Node schema, partials derived by tree rewriting (activations
+   invented in-cell differentiate on first use), gradient-free positions and
+   unit signatures, structured-state reducers (cumsum, the SSM pair
+   recurrence), associativity as a declared claim, BPTT emitted as IR (with
+   the derived registry and the generated matrix-linrec backward scan),
+   training through the scan, and op counts over composite trees.
 
 Re-run them with
 `uv run jupyter nbconvert --to notebook --execute --inplace notebooks/0*.ipynb`.
