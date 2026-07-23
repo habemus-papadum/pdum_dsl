@@ -83,6 +83,13 @@ recurrence over derived Jacobian trees). Markers carry SIGNATURES
 ("mul"/"add"/"exp"/"copy"), with MAC fusion and cost models as separate,
 explicit steps. Frontends are pluggable producers of the Node schema; the
 main repo's syntax tooling can target it later without any rewrite.
+Beyond scalar-tuple state, `fold` is the TENSOR-state scan — the step is
+itself an IR Program (state = named tensors with a fixed-layout carry
+contract), covering SSM matrix states (Mamba-2/DeltaNet-style gated
+linear attention) and PDE time-stepping (FDTD leapfrog) with one
+combinator; its adjoint is derived by differentiating the step program
+and folding the VJP backward. LEVELS.md holds the machine-modeling
+roadmap (representation ladder × machine tree) these feed into.
 Deliberately inefficient numpy semantics: repeats and windows materialize —
 that is the correctness contract a real backend must match while treating
 those views as virtual. Matmul = repeat·mul·reduce; conv = window/stencil

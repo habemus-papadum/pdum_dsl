@@ -37,7 +37,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Mapping
 
-from .ir import Program, infer
+from .ir import Program, _fold_extent, _fold_step_layouts, infer
 from .mdsl import COMPOSITE_MARKERS, COMPOSITE_REDUCERS, Prim
 
 _RED_COMBINE = {"sum": "add", "prod": "mul", "max": "maximum", "min": "minimum", "mean": "add"}
@@ -112,6 +112,11 @@ def ops_count(prog: Program, input_layouts: dict, fuse_mac: bool = False) -> Pro
                 c += _scale(project, lines if ins.op == "reduce" else nin)
         elif ins.op == "materialize":
             c["copy"] = _numel(shadows[ins.var])
+        elif ins.op == "fold":
+            # per-step cost x step count, recursively (nested folds compose)
+            start, stop = _fold_extent(ins, shadows)
+            sub = ops_count(ins.params["step"], _fold_step_layouts(ins, shadows), fuse_mac=fuse_mac)
+            c = Counter({name: v * max(stop - start, 0) for name, v in sub.total.items()})
         per[ins.var] = c
 
     if fuse_mac:

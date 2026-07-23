@@ -41,7 +41,7 @@ from .compute import Marker, Reducer, iota, pointwise, pw, red, reduce, scan
 from .guarded import GuardedLayout, pad_layout, stencil_layout
 from .layout import Dim, Layout
 from .mdsl import COMPOSITE_MARKERS, COMPOSITE_REDUCERS
-from .tensor import Tensor
+from .tensor import Tensor, alignment
 
 PW = {m.name: m for m in vars(pw).values() if isinstance(m, Marker)}
 RED = {m.name: m for m in vars(red).values() if isinstance(m, Reducer)}
@@ -65,7 +65,7 @@ def reducer(name: str):
 
 
 _LEAF_OPS = ("input", "const", "iota")
-_COMPUTE_OPS = ("pointwise", "reduce", "scan", "materialize", "with_value_units")
+_COMPUTE_OPS = ("pointwise", "reduce", "scan", "materialize", "with_value_units", "fold")
 
 
 @dataclass(frozen=True, eq=False)
@@ -154,6 +154,127 @@ def _const(p) -> Tensor:
     return t
 
 
+# ----------------------------------------------------------------------
+# fold — the tensor-state scan: programs as first-class step functions
+# ----------------------------------------------------------------------
+#
+# fold(var, operands = k state inits ++ m element tensors, params:
+#   step:    an IR Program; its `input` vars are the state names + element
+#            names below
+#   dim:     the scan dim (must be chartless/unlabeled in the reference —
+#            glue time charts back onto the result with with_charts)
+#   state:   tuple of step-input names receiving the carried state (order
+#            matches the first k operands); k >= 1
+#   element: tuple of step-input names receiving per-step SLICES of the
+#            element operands (the scan dim is select-ed away)
+#   carry:   {state name -> step var producing the next state}; the carry
+#            must keep the state's exact layout (checked, D17-style)
+#   out:     ("emit", v) stacks step var v along the scan dim (inclusive
+#            scan), or ("final", v) returns a carry var's final value
+#   extent:  (start, stop), required only when there are no elements)
+#
+# Sequential by definition — the reference semantics of time-stepped state
+# (PDE leapfrog, linear-attention/SSM matrix states). An associative tensor
+# COMBINE is a future declaration the compiler may exploit for parallel
+# evaluation; it does not change this denotation.
+
+
+def _fold_parts(p):
+    return (
+        p["step"],
+        p["dim"],
+        tuple(p["state"]),
+        tuple(p["element"]),
+        dict(p["carry"]),
+        tuple(p["out"]),
+    )
+
+
+def _fold_extent(ins: Instr, opshadows) -> tuple[int, int]:
+    _, dim, state_names, elem_names, _, _ = _fold_parts(ins.params)
+    if not state_names:
+        raise ValueError("fold needs at least one state tensor")
+    if elem_names:
+        d = opshadows[ins.operands[len(state_names)]].dim(dim)
+        return d.start, d.stop
+    return tuple(ins.params["extent"])
+
+
+def _fold_step_layouts(ins: Instr, opshadows) -> dict:
+    """Input layouts for the step program: state layouts as carried, element
+    layouts with the scan dim dropped."""
+    _, dim, state_names, elem_names, _, _ = _fold_parts(ins.params)
+    k = len(state_names)
+    layouts = {}
+    for sn, ov in zip(state_names, ins.operands[:k]):
+        sh = opshadows[ov]
+        layouts[sn] = sh.layout if isinstance(sh, Tensor) else sh
+    for en, ov in zip(elem_names, ins.operands[k:]):
+        sh = opshadows[ov]
+        sh = sh.layout if isinstance(sh, Tensor) else sh
+        layouts[en] = _dense_like(tuple(d for d in sh.dims if d.name != dim))
+    return layouts
+
+
+def _fold_infer(ins: Instr, opshadows) -> Layout:
+    step, dim, state_names, elem_names, carry, (out_kind, out_var) = _fold_parts(ins.params)
+    layouts = _fold_step_layouts(ins, opshadows)
+    ss = infer(step, layouts)
+    for sn in state_names:
+        want = {(d.name, d.start, d.stop) for d in layouts[sn].dims}
+        got = {(d.name, d.start, d.stop) for d in ss[carry[sn]].dims}
+        if want != got:
+            raise ValueError(f"fold carry {sn!r} changes the state layout: {sorted(want)} -> {sorted(got)}")
+    if out_kind == "final":
+        if out_var not in carry.values():
+            raise ValueError("fold out=('final', v) requires v to be a carry output")
+        return _dense_like(ss[out_var].dims)
+    start, stop = _fold_extent(ins, opshadows)
+    return _dense_like((Dim(dim, 0, start, stop),) + tuple(ss[out_var].dims))
+
+
+def _run_fold(ins: Instr, env: dict) -> Tensor:
+    from .compute import _tensor_like
+
+    step, dim, state_names, elem_names, carry, (out_kind, out_var) = _fold_parts(ins.params)
+    k = len(state_names)
+    inits = [env[o] for o in ins.operands[:k]]
+    elems = [env[o] for o in ins.operands[k:]]
+    for e in elems:
+        d = e.layout.dim(dim)
+        if d.chart is not None or d.labels is not None:
+            raise ValueError(f"fold scan dim {dim!r} must be chartless/unlabeled (strip_charts first)")
+    shadow = _fold_infer(ins, {o: env[o].layout for o in ins.operands})  # validates carry/out too
+    start, stop = _fold_extent(ins, {o: env[o].layout for o in ins.operands})
+    carried = dict(zip(state_names, inits))
+    emitted = []
+    for t in range(start, stop):
+        bound = dict(carried)
+        for en, e in zip(elem_names, elems):
+            bound[en] = e.select(**{dim: t})
+        senv = run(step, bound)
+        new = {}
+        for sn in state_names:
+            nv = senv[carry[sn]]
+            issues = alignment(carried[sn], nv)
+            if issues:
+                details = "\n".join(f"  {msg!r}" for msg in issues)
+                raise ValueError(f"fold carry {sn!r} drifted from its state layout:\n{details}")
+            new[sn] = nv
+        carried = new
+        if out_kind == "emit":
+            emitted.append(senv[out_var])
+    if out_kind == "final":
+        for sn in state_names:
+            if carry[sn] == out_var:
+                return carried[sn]
+    if not emitted:
+        return _tensor_like(np.zeros(tuple(d.size for d in shadow.dims)), shadow.dims)
+    onames = emitted[0].names
+    arr = np.stack([e.to_numpy(order=onames) if onames else e.to_numpy() for e in emitted], axis=0)
+    return _tensor_like(arr, shadow.dims)
+
+
 def _materialize(t: Tensor, p) -> Tensor:
     from .compute import _tensor_like
 
@@ -197,6 +318,8 @@ def run(prog: Program, inputs: dict[str, Tensor]) -> dict[str, Tensor]:
             )
         elif ins.op == "materialize":
             env[ins.var] = _materialize(env[ins.operands[0]], ins.params)
+        elif ins.op == "fold":
+            env[ins.var] = _run_fold(ins, env)
         elif ins.op == "with_value_units":
             env[ins.var] = env[ins.operands[0]].with_value_units(ins.params["value_units"])
         else:
@@ -253,6 +376,8 @@ def infer(prog: Program, input_layouts: dict) -> dict[str, Layout | GuardedLayou
             src = shadows[ins.operands[0]]
             dims = tuple(replace(src.dim(n), chart=None, labels=None) for n in order)
             shadows[ins.var] = _dense_like(dims)
+        elif ins.op == "fold":
+            shadows[ins.var] = _fold_infer(ins, shadows)
         elif ins.op == "pad":
             shadows[ins.var] = pad_layout(shadows[ins.operands[0]], ins.params["extents"])
         elif ins.op == "stencil":
