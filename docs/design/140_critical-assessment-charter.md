@@ -55,6 +55,17 @@ Corollaries the assessment must hold itself to:
   baseline in the step-14 gate. The assessment must assign it an explicit
   status — first-class, debug-only, or removed — rather than leave it as an
   unexamined violation of the founding example.
+- **Breadth is identity.** The founding domain is graphics — shaders,
+  procedural content — and the roster runs wider still: audio and music
+  synthesis, discrete simulation engines, convex optimization, geometric
+  algebra on GPUs, alongside PDE physics and machine learning. ML is one
+  client, not the center of gravity. A concept that earns its keep only in
+  ML terms is suspect *at the framework level* — it may still be right for
+  an ML dialect (the extension surfaces exist for exactly this), but the
+  kernel and the shared syntax must not quietly become another machine
+  learning library. The tensorlib evidence and the transformer probe pull
+  the assessment toward ML+PDE; this corollary and Probe E are the
+  counterweight.
 
 ## 2. The working hypothesis: two axes, one synthesis
 
@@ -351,8 +362,11 @@ Each probe writes complete, aspirational programs. Rules:
 ### Probe A — vertex + fragment shaders inside someone else's render loop
 
 The founding thesis (see 010, 060, 090). Write the pair of shaders for a
-non-trivial draw and the host code that uses them **inside an existing
-render loop that we do not own** (the render target is WebGPU).
+non-trivial draw — and make the fragment shader genuinely **procedural**
+(patterns/noise, antialiased edges), so the probe tests the shading
+*language*, not only the interop plumbing — plus the host code that uses
+them **inside an existing render loop that we do not own** (the render
+target is WebGPU).
 
 Must cover, on the defining side:
 - a vertex shader's two input kinds — **vertex arrays** and **uniforms** —
@@ -378,6 +392,17 @@ Must cover, on the defining side:
   story should make uniform *copying* efficient.
 - fragment shader with **multiple outputs** (render to multiple targets):
   what does MRT look like in the syntax?
+- **structured value types in shading**: color as a record type, and richer
+  ones — e.g. a spectral type over wavelength — flowing through device
+  functions. This is where level 0's shared struct system earns its keep;
+  tensorlib's carrier/value-units machinery is comparative evidence for
+  typed value spaces.
+- **in-shader screen-space derivatives**: `fwidth`/`ddx`-style pixel
+  gradients *of a value*, used for antialiasing (edge width from the pixel
+  footprint). Note the lens (§7.5): this is value-centric *syntax* — a
+  mid-computation value is asked for its gradient — implemented by
+  forward-mode duals with no tape. Show it in real shading use; this is
+  where today's `D` operator lives.
 - instanced drawing, and other machinery we may be forgetting (depth state,
   blending — enumerate what the syntax must *at least* not preclude).
 
@@ -503,6 +528,35 @@ Must cover:
   ordinary Python + capture + pipeline over the library) must cite the probe
   programs as evidence.
 
+### Probe E — breadth sketches: the domains that keep us honest
+
+Lighter-weight than A–D: *sketches* (defining side + using side, tagged,
+but small) rather than full programs. The test is **non-preclusion**: does
+anything in the §2/§3 verdicts, or in the syntax probes A–D establish,
+*preclude* these domains — force them into tensor-shaped or ML-shaped
+clothes, or make their natural syntax unwritable?
+
+- **Audio / music synthesis**: an oscillator-and-filter voice producing
+  samples inside an audio callback loop we do not own — Probe A's
+  render-loop constraint generalized. (Render loops, audio callbacks,
+  physics ticks, training steps: we always contribute *into* someone
+  else's loop. That is one concept, not four; the assessment should name
+  it once.)
+- **Convex optimization**: a proximal/subgradient step written with the
+  forward-mode operators — §7.5's subgradient consumer made concrete.
+- **Geometric algebra**: a multivector as a struct type with the geometric
+  product as an operator extension — a direct test of the 090 extension
+  surfaces and level 0's shared struct system, with zero kernel changes
+  permitted.
+- **Discrete simulation**: one tick of a discrete engine (collision/contact
+  resolution or a cellular update) — not a PDE; exercises the
+  integer- and branch-heavy kernels the tensor primitives don't cover.
+
+Each sketch reports: which existing concepts it used unchanged, which it
+had to bend, and which refused. A domain that cannot be sketched without
+bending the framework is a finding against the framework, not against the
+domain.
+
 ## 7. Cross-cutting questions
 
 Answered once, informed by all four probes:
@@ -572,8 +626,18 @@ Answered once, informed by all four probes:
    or in a *function-centric* way — take a function, in **any of the
    languages of the hierarchy**, and ask for its **VJP** or **JVP** with
    respect to some of its arguments or parameters, getting back a new
-   function to specify and then to call (the functional lens). Both lenses
-   may be wanted at every level, in forward or backward mode. The prompt is
+   function to specify and then to call (the functional lens). The
+   value-centric lens is **not only the training-tape lens**: screen-space
+   derivatives in fragment shaders (`fwidth` of a mid-kernel value, Probe
+   A) are value-centric syntax too — and they need no tape, because the
+   differentiation target is a *distinguished ambient parameter* (the
+   pixel coordinate) and forward duals suffice. The rule to establish:
+   value-centric syntax with respect to distinguished ambient parameters
+   is cheap (forward mode); value-centric with respect to *arbitrary
+   upstream inputs* is what demands recorded provenance (a tape). The
+   lens is a syntax choice; the mechanism is a per-level consequence.
+   Both lenses may be wanted at every level, in forward or backward mode.
+   The prompt is
    deliberately imprecise here and the assessment owes the precision: for
    each level, which lens(es) exist, what the syntax is for *specifying*
    the differential computation, and what the syntax is for *using* the
@@ -689,7 +753,12 @@ One report (numbered doc, next free slot at run time) containing:
    fix or explicitly states "boundary — exclude, refuse with message X."
    Collisions with decided positions (either stream) flagged for human
    arbitration per §8.
-7. **Direction memo**: what the probes imply for the ordering and content of
+7. **Breadth check**: every hierarchy and architecture verdict re-examined
+   against the domain roster (graphics/procedural, audio/music, discrete
+   simulation, convex optimization, geometric algebra, PDE physics, ML) —
+   Probe E's sketches as evidence. Any concept that only makes sense for
+   ML+PDE is flagged for demotion to a dialect.
+8. **Direction memo**: what the probes imply for the ordering and content of
    the next installments — the L4 design brief (K-A…K-F answered), the
    tensorlib promotion question (when/whether it leaves `explorations/`),
    the frontend→Node-schema integration plan, and anything that should be
@@ -698,8 +767,9 @@ One report (numbered doc, next free slot at run time) containing:
 ## 11. Suggested run shape
 
 Inventory pass (parallel readers over kernel/stdlib/backends/canon AND
-tensorlib) → four probe agents in parallel, each producing tagged programs +
-candidate findings → cross-cutting synthesizer (§7) + hierarchy judge (§2) +
+tensorlib) → five probe agents in parallel (E lighter-weight), each
+producing tagged programs + candidate findings → cross-cutting synthesizer
+(§7) + hierarchy judge (§2) +
 architecture red team (§3) → adversarial verification of every flaw claim
 against source → report assembly. Findings that fail verification are
 dropped, not softened.
@@ -735,3 +805,15 @@ Second-round decisions (after tensorlib landed and CuTe was studied):
   registered as a first-class open question.
 - **Level-2 framing updated** (§2.1): the existence question is answered by
   construction; the open question is the surface.
+
+Third-round decision (final pre-launch review):
+
+- **Breadth restored as a first-class principle** (§1 "Breadth is
+  identity"), with Probe A deepened into the shading *language*
+  (procedural fragments, structured color/spectral value types, in-shader
+  screen-space derivatives), the value-centric lens sharpened
+  (ambient-parameter derivatives need no tape — §7.5), Probe E added
+  (audio/music, convex optimization, geometric algebra, discrete
+  simulation — non-preclusion sketches), and a breadth check added to the
+  deliverables — the guard against collapsing into another machine
+  learning library.
