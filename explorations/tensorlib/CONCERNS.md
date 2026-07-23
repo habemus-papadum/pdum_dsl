@@ -260,3 +260,14 @@ before the compute layer lands on top.
     monotonically — the curve, measured). Still open: BINOMIAL revolve
     (optimal, O(log T)); K is global per grad call rather than per-fold;
     K must divide T (pad first).
+
+28. **The traffic model (placement.py) is v1-coarse, loudly.** Ring
+    all-reduce and all-gather formulas only; distribution and shard-views
+    cost zero (weights assumed pre-placed — loading is unmodeled); no
+    overlap or topology (alpha-beta over a single per-level link); lattice
+    surgery on bound dims, and scan/fold ALONG a bound dim, refuse rather
+    than guess. Gradients do not yet carry bindings (bind's adjoint is
+    value-passthrough), so traffic analysis is FORWARD-ONLY — the placed
+    backward is the next design step, not an oversight. Alignment now
+    refuses cross-placement operands (D17 at L3); the fix recipe it quotes
+    is a collective, but applying it is still the caller's conscious act.

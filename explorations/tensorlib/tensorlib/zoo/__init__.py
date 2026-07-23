@@ -23,13 +23,16 @@ gather), KV-cache decode (mutation), dynamic shapes.
 from .attention import flash_attention, gated_attention, qknorm_attention, sliding_attention
 from .gpt2 import GPT2Config, gpt2
 from .llama import LlamaConfig, llama_block
+from .megatron import MegatronConfig, megatron_block
 from .physics import fdtd1d_staggered, heat2d
 from .zoo_common import ZooModel
 
 __all__ = [
     "GPT2Config",
     "LlamaConfig",
+    "MegatronConfig",
     "ZooModel",
+    "megatron_block",
     "fdtd1d_staggered",
     "flash_attention",
     "gated_attention",

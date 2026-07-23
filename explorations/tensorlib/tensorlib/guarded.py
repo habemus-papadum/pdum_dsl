@@ -253,6 +253,9 @@ class GuardedLayout:
     def strip_charts(self) -> "GuardedLayout":
         return replace(self, base=self.base.strip_charts())
 
+    def bind(self, **levels) -> "GuardedLayout":
+        return replace(self, base=self.base.bind(**levels))
+
     def recenter(self, **deltas) -> "GuardedLayout":
         return replace(self, base=self.base.recenter(**deltas))
 

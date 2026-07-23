@@ -140,6 +140,7 @@ _LAYOUT_OPS = {
     "strip_charts": lambda t, p: t.strip_charts(),
     "with_charts": lambda t, p: t.with_charts(**p["charts"]),
     "with_labels": lambda t, p: t.with_labels(**p["labels"]),
+    "bind": lambda t, p: t.bind(**p["levels"]),
     "simplify": lambda t, p: t.simplify(),
 }
 

@@ -724,6 +724,7 @@ def grad(
             "with_charts",
             "with_labels",
             "with_value_units",
+            "bind",
             "simplify",
             "materialize",
         ):

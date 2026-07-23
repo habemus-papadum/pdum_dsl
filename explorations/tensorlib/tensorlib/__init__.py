@@ -16,6 +16,7 @@ from .layout import Dim, Injectivity, Layout, as_range
 from .mdsl import CompositeMarker, CompositeReducer, defmarker, defreducer, node_digest
 from .memory import MemoryReport, peak_memory
 from .opcount import ProgramOps, ops_count
+from .placement import Collective, Level, Machine, TrafficReport, mesh, traffic
 from .signatures import SignatureError, VInfo, infer_signatures, marker_signature
 from .tensor import Misalignment, Tensor, aligned, alignment
 from .transforms import CheckpointReport, checkpoint, dce
@@ -30,8 +31,14 @@ __all__ = [
     "dce",
     "CompositeMarker",
     "CompositeReducer",
+    "Collective",
+    "Level",
+    "Machine",
     "MemoryReport",
+    "TrafficReport",
+    "mesh",
     "peak_memory",
+    "traffic",
     "ProgramOps",
     "SignatureError",
     "VInfo",

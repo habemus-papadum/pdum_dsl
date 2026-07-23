@@ -102,6 +102,13 @@ backward work that doesn't reach a wanted gradient) and min-cut
 `checkpoint` (exact-byte activation rematerialization: closed forms free,
 views never saved, contractions never recomputed; GPT-2's saved boundary
 drops to 47%, its simulated peak to 76% — 64% composed with DCE).
+L3-lite placement landed per PLACEMENT.md: dims BIND to machine levels
+(`Dim.level`, pure metadata — the denotation is the erasure), there are no
+collective ops (`traffic` reads all-reduces and all-gathers off
+reduce/merge applied to bound dims), and the Megatron-style tensor-parallel
+block (`zoo.megatron_block`) validates the design: exactly two all-reduces
+per block, bit-exact against its erasure, per-device peak measured by
+`peak_memory(local=True)`.
 Deliberately inefficient numpy semantics: repeats and windows materialize —
 that is the correctness contract a real backend must match while treating
 those views as virtual. Matmul = repeat·mul·reduce; conv = window/stencil

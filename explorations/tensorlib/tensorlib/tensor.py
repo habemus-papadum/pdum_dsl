@@ -250,6 +250,11 @@ class Tensor:
         """Compiler mode: pure lattice — no charts, no labels."""
         return self._via(self.layout.strip_charts())
 
+    def bind(self, **levels) -> "Tensor":
+        """Bind dims to machine levels (L3 placement); None unbinds. Pure
+        metadata — values are the erasure's, costs are the point."""
+        return self._via(self.layout.bind(**levels))
+
     def recenter(self, **deltas) -> "Tensor":
         """Move the physical frame (origin += delta); lattice and data
         untouched. Compare shift, which relabels the lattice and keeps the
@@ -418,6 +423,13 @@ def alignment(*tensors: Tensor) -> tuple[Misalignment, ...]:
 def _frame_issue(rd: Dim, d: Dim) -> tuple[str, str] | None:
     """(problem, fix) when d's labeling frame differs from the reference
     dim rd's, else None. Domains are phase 2's business."""
+    if rd.level != d.level:
+        # the L3 face of alignment: a placement mismatch's fix recipe is a
+        # (cost-bearing) collective — PLACEMENT.md
+        return (
+            f"machine placement differs ({d.level or 'unbound'} vs {rd.level or 'unbound'})",
+            f"bind({d.name}={rd.level!r})",
+        )
     if (rd.labels is None) != (d.labels is None):
         return ("one operand is categorical, the other is not", "")
     if rd.labels is not None:

@@ -92,6 +92,7 @@ class Dim:
     stop: int  # exclusive
     chart: Chart | None = None  # optional exact physical labeling of the lattice
     labels: tuple[str, ...] | None = None  # optional categorical labeling (D18)
+    level: str | None = None  # optional machine binding (L3, PLACEMENT.md)
 
     def __post_init__(self) -> None:
         if self.stop < self.start:
@@ -103,6 +104,8 @@ class Dim:
                 raise ValueError(f"dim {self.name}: {len(self.labels)} labels for {self.size} lattice points")
             if len(set(self.labels)) != len(self.labels):
                 raise ValueError(f"dim {self.name}: labels must be unique")
+        if self.level is not None and (self.chart is not None or self.labels is not None):
+            raise ValueError(f"dim {self.name}: machine-bound dims are addresses — chartless and unlabeled")
 
     @property
     def size(self) -> int:
@@ -162,6 +165,8 @@ class Dim:
 
     def __repr__(self) -> str:
         base = f"{self.name}[{self.start}:{self.stop})*{self.stride}"
+        if self.level is not None:
+            return f"{base} %{self.level}"
         if self.chart is not None:
             return f"{base} @{self.chart}"
         if self.labels is not None:
@@ -434,6 +439,23 @@ class Layout:
         """Compiler mode: drop all physical labeling (charts AND labels),
         keep the pure lattice."""
         return replace(self, dims=tuple(replace(d, chart=None, labels=None) for d in self.dims))
+
+    def bind(self, **levels) -> "Layout":
+        """Bind dims to machine levels (L3, PLACEMENT.md): pure placement
+        metadata over the unchanged lattice — the denotation is the erasure.
+        None unbinds. Machine-bound dims are addresses: chartless and
+        unlabeled (strip first if needed)."""
+        new = []
+        for d in self.dims:
+            if d.name in levels:
+                lv = levels.pop(d.name)
+                if lv is not None and (d.chart is not None or d.labels is not None):
+                    raise ValueError(f"dim {d.name}: machine-bound dims are chartless/unlabeled (strip_charts first)")
+                d = replace(d, level=lv)
+            new.append(d)
+        if levels:
+            raise KeyError(f"unknown dims in bind: {sorted(levels)}")
+        return replace(self, dims=tuple(new))
 
     def recenter(self, **deltas) -> "Layout":
         """Move the physical frame: origin += delta. The lattice, the

@@ -279,6 +279,22 @@ argues for the untyped-IR + well-formedness-predicate route in Lean, with
 Checkpointing/scheduling (REPRESENTATIONS.md) will want programs-as-data
 too; same embedding serves.
 
+## 2026-07-24 — placement is a forgetful functor
+
+L3-lite landed the way the formal story wanted it: `bind` adds structure
+that ERASURE forgets, and the whole correctness contract is one statement —
+the placed program's denotation IS its erasure's (tested bit-exact on the
+Megatron block). No collective ops exist to axiomatize: an all-reduce is
+`reduce` over a machine-bound dim, so its meaning was fixed back when
+reduce was, and only the COST semantics (traffic — the fourth resource
+semantics, a per-level byte Counter with an alpha-beta time collapse) knows
+communication happened. The Lean shape: placement is extra data on dims, a
+WF-predicate (bound ⇒ chartless, level exists, extent ≤ count), and every
+placed theorem factors through erasure — nothing about values needs
+re-proving. Alignment's new placement clause is the interesting typing
+judgment: cross-placement combination is ill-formed until an explicit
+(cost-bearing) fix, which is D17 promoted to a distributed-typing rule.
+
 ## 2026-07-23 (late night) — the curve exists
 
 Segmented fold adjoints (`fold_segments=K`) produced the first MEASURED

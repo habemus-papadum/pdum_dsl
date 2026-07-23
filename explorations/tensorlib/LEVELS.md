@@ -46,7 +46,12 @@ Named by the question each level answers:
   dims (split + bind), buffer placement in a level's memory, explicit
   `copy` as the only byte-mover, collectives derived from alignment
   diagnosis, traffic-per-link cost semantics. Device meshes AND SMEM
-  staging both live here — same mechanism, different depth.
+  staging both live here — same mechanism, different depth. L3-LITE
+  LANDED (PLACEMENT.md records the decided design): `Dim.level` binding,
+  no new ops (reduce/repeat/merge on bound dims ARE the collectives),
+  `traffic` pass + per-device `peak_memory(local=True)`, Megatron block
+  flagship (exactly two all-reduces read off the algebra; placement never
+  changes meaning — the erasure test is bit-exact).
 - **L4 — Kernels ("who").** Partition the DAG into kernels; a kernel
   boundary forces materialization to the parent memory. Inside: tiled
   loops over machine-bound dims. Costs: parent↔child traffic, per-kernel
