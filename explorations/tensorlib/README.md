@@ -155,6 +155,20 @@ before/after on the layout (dims, strides, offset, charts, guards):
    library-free: sensitivities, path-sums, and THE one rule
    (⟨ȳ, Op dx⟩ = ⟨Op†ȳ, dx⟩ — swap the double sum), with the whole adjoint
    zoo derived by hand and verified by the pairing test alone.
+7. `07_the_marker_dsl.ipynb` — the marker DSL in action: tracing lambdas
+   into the Node schema, partials derived by tree rewriting (activations
+   invented in-cell differentiate on first use), gradient-free positions and
+   unit signatures, structured-state reducers (cumsum, the SSM pair
+   recurrence), associativity as a declared claim, BPTT emitted as IR (with
+   the derived registry and the generated matrix-linrec backward scan),
+   training through the scan, and op counts over composite trees.
+8. `08_fold_tensor_state.ipynb` — `fold`, the tensor-state scan: the step as
+   a first-class IR Program, the scalar case agreeing with 07's composite
+   reducer, gated linear attention's matrix state, the carry/`final`/chart
+   refusals, the adjoint derived by self-application (the folds the backward
+   pass generates), FDTD leapfrog with the space-time trajectory and
+   gradients w.r.t. the initial fields, the empty fold, per-step op counts,
+   and units surviving the carry fixed point.
 
 Re-run them with
 `uv run jupyter nbconvert --to notebook --execute --inplace notebooks/0*.ipynb`.
