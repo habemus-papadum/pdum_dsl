@@ -105,9 +105,14 @@ def _prim_sig(op: str, a: tuple) -> VInfo:
     if op == "div":
         unit = None if a[0].unit is None or a[1].unit is None else a[0].unit / a[1].unit
         return VInfo(_join(a[0].carrier, a[1].carrier, "rat"), unit)
-    if op in ("exp", "log", "tanh"):
+    if op in ("exp", "log", "tanh", "sin", "cos"):
         _dimensionless(op, a[0].unit)
         return VInfo(_join(a[0].carrier, "real"), ONE)
+    if op == "sqrt":
+        # sqrt of a dimensioned quantity would need fractional exponents;
+        # sqrt of an UNKNOWN stays unknown (it may be dimensioned)
+        _dimensionless(op, a[0].unit)
+        return VInfo(_join(a[0].carrier, "real"), ONE if a[0].unit is not None else None)
     if op == "where":
         if a[0].carrier is not None and a[0].carrier != "bool":
             raise SignatureError(f"where: condition carrier must be bool, got {a[0].carrier!r}")

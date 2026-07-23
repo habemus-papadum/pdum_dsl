@@ -141,6 +141,9 @@ def _fn(op, arity):
 exp = _fn("exp", 1)
 log = _fn("log", 1)
 tanh = _fn("tanh", 1)
+sqrt = _fn("sqrt", 1)
+sin = _fn("sin", 1)
+cos = _fn("cos", 1)
 maximum = _fn("maximum", 2)
 minimum = _fn("minimum", 2)
 where = _fn("where", 3)
@@ -180,6 +183,9 @@ _D = {
     ),
     "exp": (lambda a: Prim("exp", (a,)),),
     "log": (lambda a: Prim("div", (Const(1), a)),),
+    "sqrt": (lambda a: Prim("div", (Const(1), Prim("mul", (Const(2), Prim("sqrt", (a,)))))),),
+    "sin": (lambda a: Prim("cos", (a,)),),
+    "cos": (lambda a: Prim("neg", (Prim("sin", (a,)),)),),
     "tanh": (lambda a: Prim("sub", (Const(1), Prim("mul", (Prim("tanh", (a,)), Prim("tanh", (a,)))))),),
     "maximum": (lambda a, b: Prim("ge", (a, b)), lambda a, b: Prim("gt", (b, a))),
     "minimum": (lambda a, b: Prim("le", (a, b)), lambda a, b: Prim("lt", (b, a))),

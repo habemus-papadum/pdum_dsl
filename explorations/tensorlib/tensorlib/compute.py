@@ -98,6 +98,9 @@ class pw:
     maximum = Marker("maximum", np.maximum)
     minimum = Marker("minimum", np.minimum)
     tanh = Marker("tanh", np.tanh)
+    sqrt = Marker("sqrt", np.sqrt)
+    sin = Marker("sin", np.sin)
+    cos = Marker("cos", np.cos)
     where = Marker("where", np.where)  # ternary select
     eq = Marker("eq", np.equal)
     ne = Marker("ne", np.not_equal)

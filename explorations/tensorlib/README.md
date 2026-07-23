@@ -89,7 +89,14 @@ contract), covering SSM matrix states (Mamba-2/DeltaNet-style gated
 linear attention) and PDE time-stepping (FDTD leapfrog) with one
 combinator; its adjoint is derived by differentiating the step program
 and folding the VJP backward. LEVELS.md holds the machine-modeling
-roadmap (representation ladder × machine tree) these feed into.
+roadmap (representation ladder × machine tree) these feed into; its first
+two rungs are real: the MODEL ZOO (`tensorlib.zoo`: GPT-2, a Llama block
+with RoPE/GQA/SwiGLU, sliding-window/gated/QK-norm attention, the
+online-softmax flash reducer with a DERIVED backward, 2D heat, and 1D FDTD
+on an exactly-charted staggered grid — every entry checked against a pure
+numpy denotation) and the L1 PEAK-MEMORY SIMULATOR (`peak_memory`: layout
+ops are zero-byte aliases, iota/const/masks are free, the schedule is an
+optimizable argument, folds simulate their step recursively).
 Deliberately inefficient numpy semantics: repeats and windows materialize —
 that is the correctness contract a real backend must match while treating
 those views as virtual. Matmul = repeat·mul·reduce; conv = window/stencil

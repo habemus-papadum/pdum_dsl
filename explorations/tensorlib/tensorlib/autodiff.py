@@ -214,6 +214,17 @@ def grad(
             one = const_like(shadows[ins.var], 1.0)
             om = b.emit("pointwise", (one, sq), {"f": "sub"})
             contribute(A[0], b.emit("pointwise", (c, om), {"f": "mul"}))
+        elif f == "sqrt":
+            two = const_like(shadows[ins.var], 2.0)
+            den = b.emit("pointwise", (two, ins.var), {"f": "mul"})
+            contribute(A[0], b.emit("pointwise", (c, den), {"f": "div"}))
+        elif f == "sin":
+            cv = b.emit("pointwise", (A[0],), {"f": "cos"})
+            contribute(A[0], b.emit("pointwise", (c, cv), {"f": "mul"}))
+        elif f == "cos":
+            sv = b.emit("pointwise", (A[0],), {"f": "sin"})
+            neg = b.emit("pointwise", (sv,), {"f": "neg"})
+            contribute(A[0], b.emit("pointwise", (c, neg), {"f": "mul"}))
         elif f in _GRADIENT_FREE:
             pass  # declared gradient-free (bool-carrier outputs); cotangent drops
         elif f in COMPOSITE_MARKERS:
@@ -363,32 +374,27 @@ def grad(
                 contribute(ev, zeros_like(shadows[ev]))
             return
 
-        def lat(v: str) -> str:
-            return b.emit("strip_charts", (v,), {}, hint="lat")
-
         def flp(v: str) -> str:
             return b.emit("flip", (v,), {"name": dim})
 
-        # stripped layouts throughout: the whole adjoint works lattice-mode
-        # (contribute restamps at the end), so the inner grad must not
-        # restamp with the primal's charts either
-        slayouts = {n: v.strip_charts() for n, v in _fold_step_layouts(ins, shadows).items()}
+        # the step program may be chart-aware (staggered grids re-stamp
+        # charts internally), so the adjoint keeps the primal's charts
+        # throughout: cotangents already arrive restamped to the fold's
+        # output shadow, and only generated consts need stamping
+        slayouts = _fold_step_layouts(ins, shadows)
         ss = infer(step, slayouts)
         # normalize the cotangent to emit-form along dim (final = emit-at-last)
         if out_kind == "final":
-            r = b.emit("repeat", (lat(c),), {"name": dim, "extent": (stop - 1, stop)})
+            r = b.emit("repeat", (c,), {"name": dim, "extent": (stop - 1, stop)})
             yb = b.emit("pad", (r,), {"fill": 0.0, "extents": {dim: (start, stop)}})
         else:
-            yb = lat(c)
-        sinits = tuple(lat(iv) for iv in inits)
-        selems = tuple(lat(ev) for ev in elems)
-        sops = sinits + selems
+            yb = c
         # forward state trajectories (value AFTER each step), then s_{t-1}
         # via shift + where(t == start, init, ...) — init is a TENSOR here,
         # so the boundary is an iota mask, not a pad fill
         sprev = {}
-        for sn, siv in zip(state_names, sinits):
-            traj = b.emit("fold", sops, {**dict(ins.params), "out": ("emit", carry[sn])})
+        for sn, siv in zip(state_names, inits):
+            traj = b.emit("fold", ins.operands, {**dict(ins.params), "out": ("emit", carry[sn])})
             sh = b.emit("shift", (traj,), {"deltas": {dim: 1}})
             sl = b.emit("slice", (sh,), {"ranges": {dim: (start + 1, stop)}})
             pd = b.emit("pad", (sl,), {"fill": 0.0, "extents": {dim: (start, stop)}})
@@ -396,6 +402,7 @@ def grad(
             it = b.emit("iota", (pd,), {"name": dim})
             sdims = tuple((d.name, (d.start, d.stop)) for d in slayouts[sn].dims) + ((dim, (start, stop)),)
             cs = b.emit("const", (), {"value": start, "dims": sdims, "dtype": "int64"})
+            cs = restamp(cs, slayouts[sn])  # partial stamp: scan dim stays bare
             mask = b.emit("pointwise", (it, cs), {"f": "eq"})
             sprev[sn] = b.emit("pointwise", (mask, ri, pd), {"f": "where"})
         # the VJP wrapper: step + cotangent inputs + scalarized target
@@ -447,6 +454,13 @@ def grad(
                     name, "const", (), {"value": 0.0, "dims": tuple((d.name, (d.start, d.stop)) for d in layout.dims)}
                 )
             )
+            charts = {d.name: d.chart for d in layout.dims if d.chart is not None}
+            labels = {d.name: d.labels for d in layout.dims if d.labels is not None}
+            for op, key, data in (("with_charts", "charts", charts), ("with_labels", "labels", labels)):
+                if data:
+                    prev, name = name, f"{name}s"
+                    taken.add(name)
+                    extra.append(Instr(name, op, (prev,), {key: data}))
             return name
 
         carry_back = {sn: ensure(g[sn], slayouts[sn]) for sn in state_names}
@@ -455,10 +469,15 @@ def grad(
         # (s_{t-1}, e_t, ȳ_t); emit gives element cotangents, final gives
         # the init cotangent
         zinits = tuple(
-            b.emit("const", (), {"value": 0.0, "dims": tuple((d.name, (d.start, d.stop)) for d in slayouts[sn].dims)})
+            restamp(
+                b.emit(
+                    "const", (), {"value": 0.0, "dims": tuple((d.name, (d.start, d.stop)) for d in slayouts[sn].dims)}
+                ),
+                slayouts[sn],
+            )
             for sn in state_names
         )
-        adj_ops = zinits + tuple(flp(sprev[sn]) for sn in state_names) + tuple(flp(se) for se in selems) + (flp(yb),)
+        adj_ops = zinits + tuple(flp(sprev[sn]) for sn in state_names) + tuple(flp(ev) for ev in elems) + (flp(yb),)
         adj_params = {
             "step": ejp,
             "dim": dim,

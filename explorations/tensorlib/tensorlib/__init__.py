@@ -7,12 +7,14 @@ Step 3 — labeling:   exact units (`Quantity`, `u`, `q`) and per-dim
 """
 
 from .buffer import Buffer, FunctionalBuffer
+from .build import Build
 from .chart import Chart, characteristic, chart
 from .compute import Marker, Reducer, iota, pointwise, pw, red, reduce, scan
 from .dtypes import CARRIERS, as_dtype, bfloat16, carrier_of
 from .guarded import Guard, GuardedLayout, pad_layout, stencil_layout
 from .layout import Dim, Injectivity, Layout, as_range
 from .mdsl import CompositeMarker, CompositeReducer, defmarker, defreducer, node_digest
+from .memory import MemoryReport, peak_memory
 from .opcount import ProgramOps, ops_count
 from .signatures import SignatureError, VInfo, infer_signatures, marker_signature
 from .tensor import Misalignment, Tensor, aligned, alignment
@@ -21,8 +23,11 @@ from .units import Quantity, Unit, UnitRegistry, q, u
 __all__ = [
     "Buffer",
     "CARRIERS",
+    "Build",
     "CompositeMarker",
     "CompositeReducer",
+    "MemoryReport",
+    "peak_memory",
     "ProgramOps",
     "SignatureError",
     "VInfo",

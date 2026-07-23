@@ -155,14 +155,16 @@ parallel to `associative` on scalar reducers.
 ## Order of attack
 
 1. ~~This document.~~
-2. **Tensor-state `fold`** (user call: first) — op + run/infer + AD +
-   signatures + opcount, validated on a gated-linear-attention mini and a
-   1D FDTD leapfrog.
-3. **Model zoo** — the list above; entries double as regression tests and
-   benchmarks for every later level.
-4. **L1**: peak-memory simulator → DCE → min-cut checkpointing → revolve;
-   validated on zoo GPT-2 (memory/recompute curve) and FDTD (adjoint
-   time-stepping is THE checkpointing use case).
+2. ~~**Tensor-state `fold`**~~ — landed (op + run/infer + derived BPTT
+   adjoint + signatures + opcount; GLA and FDTD validated).
+3. ~~**Model zoo**~~ — landed (`tensorlib.zoo`): gpt2, llama_block (RoPE/
+   GQA/SwiGLU), sliding/gated/qknorm attention, flash reducer (backward
+   DERIVED, matches naive analytically), heat2d, charted staggered FDTD.
+4. **L1**: ~~peak-memory simulator~~ (memory.py: alias-exact, closed-forms
+   free, schedule as argument, recursive fold transients) → next: DCE →
+   min-cut checkpointing → revolve; validated on zoo GPT-2 (memory/
+   recompute curve) and FDTD (adjoint time-stepping is THE checkpointing
+   use case).
 5. **L3-lite**: machine tree + mesh placement + collectives-by-diagnosis +
    traffic costs; Megatron-style sharded GPT-2 as flagship. (L2
    bufferization lags deliberately; needed for exact reuse, not for

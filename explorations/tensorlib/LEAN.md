@@ -279,6 +279,32 @@ argues for the untyped-IR + well-formedness-predicate route in Lean, with
 Checkpointing/scheduling (REPRESENTATIONS.md) will want programs-as-data
 too; same embedding serves.
 
+## 2026-07-23 (evening) — the zoo, and memory as max-plus
+
+(1) *Denotation.* The zoo is the denotation CORPUS: nine programs whose
+specs are independent numpy functions. For Lean this is the extensional
+test bed every certified rewrite gets exercised against before proof —
+and the flash-vs-naive pair is the first pre-stated equivalence THEOREM:
+online-softmax reduce = softmax-then-contract, an induction over the
+associative rescaling combine (its identity relies on exp underflow at
+-1e30 in floats but is EXACT in the real-number denotation with -inf).
+
+(2) *Theorems touched.* peak_memory realizes the predicted second resource
+semantics: where ops_count maps programs into (Counter, +), peak memory
+maps schedules into (bytes, max) over a liveness walk — max-plus, not
+plus, so it is a semantics of SCHEDULES rather than programs; the program
+only bounds it below. The correctness statement pairs with the alias
+theorem: a layout op's denotation factors through its operand's buffer
+(views allocate nothing), which our layout algebra makes decidable.
+
+(3) *Vision moved.* Staggered-grid FDTD forced the chart discipline
+through the fold adjoint: the reverse pass must PRESERVE the primal's
+charts (a chart-aware step misaligns on stripped inputs), which is the
+gradients-carry-their-primal's-labeling invariant showing up as an
+implementation constraint, not just a stance. The half-integer Yee charts
+(Fraction(1,2) origins) with explicit with_charts recharting are exactly
+the "discretization honesty made syntax" the physics thesis wanted.
+
 ## 2026-07-23 (later) — LEVELS.md and the fold combinator
 
 (1) *Denotation.* `fold` is the first STRUCTURED combinator in the IR:

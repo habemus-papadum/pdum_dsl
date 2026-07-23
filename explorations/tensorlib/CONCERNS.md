@@ -224,3 +224,22 @@ before the compute layer lands on top.
     license) is a declaration the compiler may exploit later; it does not
     change the sequential denotation. Second-order through fold is
     untested.
+
+25. **The peak-memory model (memory.py) is deliberately coarse.** Uniform
+    8-byte itemsize (the shadow convention); numpy's internal temporaries
+    ignored; fold transient = new-carry + one recursive step simulation
+    (step inputs alias outer storage but are counted — an upper bound);
+    guarded shadows count their box; dead values free immediately; inputs
+    resident unless free_inputs. What it gets EXACTLY right is the part
+    heuristic planners guess at: every layout op is a zero-byte alias
+    (root-tracking through view chains), and iota/const/masks-as-guards
+    occupy nothing. Dtype-exact sizes, buffer reuse (L2), and
+    rematerialization live in later passes.
+
+26. **The zoo's numeric hygiene is toy-scale.** -1e9 masking (not -inf),
+    tiny widths, float64 everywhere, no dropout/training-time noise, and
+    the flash reducer's -1e30 init relies on exp underflow for its
+    identity. Adequate for denotation tests and cost-model corpora; not a
+    numerics benchmark. Also: reduce(max) tie-splitting (the #-caveat) is
+    reachable through the flash combine's maximum partials if two scores
+    tie exactly — tests use continuous random scores.
