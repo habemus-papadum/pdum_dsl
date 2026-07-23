@@ -253,6 +253,10 @@ before the compute layer lands on top.
     not a cost model: a tiny reduce is banned while a huge pointwise
     recomputes. Recompute duplicates break name=value (v and v.rc denote
     one semantic value — fine for run/measure; a value-numbering pass
-    would be needed to see through it). Fold interiors are opaque here:
-    the trajectory-storing adjoint recomputes wholesale or not at all —
-    revolve-style segment checkpointing INSIDE folds is the next rung.
+    would be needed to see through it). Fold interiors: grad's
+    `fold_segments=K` now applies Chen-style uniform checkpointing inside
+    fold adjoints (boundary states + per-segment just-in-time recompute;
+    FDTD T=12 peaks 2680→1816 B with the minimum at K≈√T, ops rising
+    monotonically — the curve, measured). Still open: BINOMIAL revolve
+    (optimal, O(log T)); K is global per grad call rather than per-fold;
+    K must divide T (pad first).

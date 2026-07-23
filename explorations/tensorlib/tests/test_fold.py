@@ -338,3 +338,45 @@ def test_fold_ops_count_scales_with_steps():
     per_add = DK * DV + (DK - 1) * DV
     assert ops.per_var["ys"]["mul"] == per_mul * TN
     assert ops.per_var["ys"]["add"] == per_add * TN
+
+
+# ----------------------------------------------------------------------
+# segmented (checkpointed) fold adjoints: the memory/recompute curve
+# ----------------------------------------------------------------------
+
+
+def test_segmented_fold_adjoint_matches_and_trades_memory_for_ops():
+    from tensorlib.memory import peak_memory
+    from tensorlib.opcount import ops_count
+
+    E0, H0 = _fdtd_ref()
+    inputs = {"E0": E0, "H0": H0}
+    prog = _fdtd_prog(out=("emit", "E1"), steps=12)
+    results, peaks, costs = {}, {}, {}
+    for K in (None, 2, 3, 6):
+        jp, grads = grad(prog, "loss", inputs, fold_segments=K)
+        env = run(jp, inputs)
+        results[K] = {v: env[grads[v]].to_numpy() for v in ("E0", "H0")}
+        peaks[K] = peak_memory(jp, inputs).peak_bytes
+        costs[K] = ops_count(jp, inputs).weighted()
+    for K in (2, 3, 6):
+        for v in ("E0", "H0"):
+            np.testing.assert_allclose(results[K][v], results[None][v], rtol=1e-9)
+        assert costs[K] > costs[None]  # segments pay recompute...
+    assert peaks[3] < peaks[None]  # ...to buy peak memory
+    with pytest.raises(ValueError, match="divide"):
+        grad(prog, "loss", inputs, fold_segments=5)  # 12 % 5 != 0
+
+
+def test_segmented_gla_gradients_match_store_all():
+    inputs = _gla_inputs()
+    prog = _gla_prog()
+    jp0, g0 = grad(prog, "loss", inputs)
+    jp2, g2 = grad(prog, "loss", inputs, fold_segments=2)
+    e0, e2 = run(jp0, inputs), run(jp2, inputs)
+    for v in ("S0", "a", "k", "v", "q"):
+        np.testing.assert_allclose(
+            e2[g2[v]].to_numpy(order=inputs[v].names),
+            e0[g0[v]].to_numpy(order=inputs[v].names),
+            rtol=1e-9,
+        )

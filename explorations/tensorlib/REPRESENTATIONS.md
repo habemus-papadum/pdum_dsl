@@ -102,8 +102,9 @@ search, DTensor named sharding.
 3. ~~Min-cut saved-set selection~~ (transforms.checkpoint — sizes exact;
    iota/const free, views uncuttable, reduce/scan/fold banned from
    recompute by default; recompute placed just-in-time in the backward).
-4. Schedule search / revolve for chain-shaped segments (the "functions as
-   linear sequences" organizational layer gives the segments).
+4. Revolve for chain-shaped segments — PARTLY: uniform (Chen-style)
+   segmenting landed as grad(fold_segments=K) for fold adjoints, curve
+   measured on FDTD; binomial revolve and general schedule search remain.
 5. Liveness coloring + offset assignment (Level 2).
 6. Mesh-labeled dims + collective insertion via alignment diagnosis
    (Level 3) — likely its own design conversation.

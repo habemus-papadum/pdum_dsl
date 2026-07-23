@@ -93,6 +93,7 @@ def grad(
     seed: str | None = None,
     wrt: tuple[str, ...] | None = None,
     target_unit=None,
+    fold_segments: int | None = None,
 ) -> tuple[Program, dict[str, str | None]]:
     if target not in prog.vars:
         raise KeyError(f"target {target!r} is not defined by the program")
@@ -357,9 +358,14 @@ def grad(
         `grad` on the wrapper, and the resulting joint program IS the
         backward step. It carries the state cotangent in reversed time and
         consumes (s_{t-1}, e_t, ȳ_t) as elements — standard BPTT with
-        per-step recompute, generated rather than hand-written. The forward
-        state trajectory is re-emitted per component (reference
-        inefficiency; L1 checkpointing will make this interesting)."""
+        per-step recompute, generated rather than hand-written.
+
+        Memory: with `fold_segments=K` the time axis is cut into K equal
+        segments; only segment-BOUNDARY states are computed up front, and
+        each segment's trajectory is recomputed just-in-time during its own
+        backward sweep (Chen-style uniform checkpointing: ~T/K + K states
+        live instead of T; K≈√T minimizes; binomial revolve is the future
+        refinement). K=1 (the default) is the store-everything adjoint."""
         step, dim, state_names, elem_names, carry, (out_kind, out_var) = _fold_parts(ins.params)
         k = len(state_names)
         inits, elems = ins.operands[:k], ins.operands[k:]
@@ -389,22 +395,6 @@ def grad(
             yb = b.emit("pad", (r,), {"fill": 0.0, "extents": {dim: (start, stop)}})
         else:
             yb = c
-        # forward state trajectories (value AFTER each step), then s_{t-1}
-        # via shift + where(t == start, init, ...) — init is a TENSOR here,
-        # so the boundary is an iota mask, not a pad fill
-        sprev = {}
-        for sn, siv in zip(state_names, inits):
-            traj = b.emit("fold", ins.operands, {**dict(ins.params), "out": ("emit", carry[sn])})
-            sh = b.emit("shift", (traj,), {"deltas": {dim: 1}})
-            sl = b.emit("slice", (sh,), {"ranges": {dim: (start + 1, stop)}})
-            pd = b.emit("pad", (sl,), {"fill": 0.0, "extents": {dim: (start, stop)}})
-            ri = b.emit("repeat", (siv,), {"name": dim, "extent": (start, stop)})
-            it = b.emit("iota", (pd,), {"name": dim})
-            sdims = tuple((d.name, (d.start, d.stop)) for d in slayouts[sn].dims) + ((dim, (start, stop)),)
-            cs = b.emit("const", (), {"value": start, "dims": sdims, "dtype": "int64"})
-            cs = restamp(cs, slayouts[sn])  # partial stamp: scan dim stays bare
-            mask = b.emit("pointwise", (it, cs), {"f": "eq"})
-            sprev[sn] = b.emit("pointwise", (mask, ri, pd), {"f": "where"})
         # the VJP wrapper: step + cotangent inputs + scalarized target
         wb = _Builder(set(step.vars))
         winstrs = list(step.instrs)
@@ -465,19 +455,6 @@ def grad(
 
         carry_back = {sn: ensure(g[sn], slayouts[sn]) for sn in state_names}
         ejp = Program(tuple(jp.instrs) + tuple(extra))
-        # the reverse fold: carries ŝ (zero-initialized), consumes flipped
-        # (s_{t-1}, e_t, ȳ_t); emit gives element cotangents, final gives
-        # the init cotangent
-        zinits = tuple(
-            restamp(
-                b.emit(
-                    "const", (), {"value": 0.0, "dims": tuple((d.name, (d.start, d.stop)) for d in slayouts[sn].dims)}
-                ),
-                slayouts[sn],
-            )
-            for sn in state_names
-        )
-        adj_ops = zinits + tuple(flp(sprev[sn]) for sn in state_names) + tuple(flp(ev) for ev in elems) + (flp(yb),)
         adj_params = {
             "step": ejp,
             "dim": dim,
@@ -485,16 +462,83 @@ def grad(
             "element": tuple(state_names) + tuple(elem_names) + (cot_out,),
             "carry": {cot_state[sn]: carry_back[sn] for sn in state_names},
         }
-        for en, ev in zip(elem_names, elems):
-            if g[en] is None:
-                continue
-            fv = b.emit("fold", adj_ops, {**adj_params, "out": ("emit", g[en])})
-            contribute(ev, flp(fv))
+        base = dict(ins.params)
+        T = stop - start
+        K = 1 if fold_segments is None else min(int(fold_segments), T)
+        if K < 1:
+            raise ValueError("fold_segments must be >= 1")
+        if T % K:
+            raise ValueError(f"fold_segments={K} must divide the fold extent {T} (pad the dim or pick a divisor)")
+        L = T // K
+
+        def seg_ops(state_vars, lo, hi):
+            """(operands, param overrides, element slices) for [lo, hi)."""
+            if elems:
+                se = tuple(b.emit("slice", (ev,), {"ranges": {dim: (lo, hi)}}) for ev in elems)
+                return tuple(state_vars) + se, {}, se
+            return tuple(state_vars), {"extent": (lo, hi)}, ()
+
+        # forward pass over segments: keep only segment-START states
+        seg_start = [dict(zip(state_names, inits))]
+        for j in range(K - 1):
+            lo, hi = start + j * L, start + (j + 1) * L
+            ops_, extra_p, _ = seg_ops(tuple(seg_start[-1][sn] for sn in state_names), lo, hi)
+            seg_start.append(
+                {sn: b.emit("fold", ops_, {**base, **extra_p, "out": ("final", carry[sn])}) for sn in state_names}
+            )
+
+        # backward, segment by segment (reversed): recompute the segment's
+        # trajectory from its boundary state, then run the reverse fold —
+        # ŝ chains across the seam (segment j's final reverse carry is the
+        # cotangent of segment j-1's end state)
+        cur = {
+            sn: restamp(
+                b.emit(
+                    "const", (), {"value": 0.0, "dims": tuple((d.name, (d.start, d.stop)) for d in slayouts[sn].dims)}
+                ),
+                slayouts[sn],
+            )
+            for sn in state_names
+        }
+        for j in reversed(range(K)):
+            lo, hi = start + j * L, start + (j + 1) * L
+            s0 = seg_start[j]
+            ops_, extra_p, se = seg_ops(tuple(s0[sn] for sn in state_names), lo, hi)
+            # trajectory (value AFTER each step), then s_{t-1} via shift +
+            # where(t == lo, boundary, ...) — the boundary is an iota mask,
+            # because the "fill" here is a TENSOR, not a scalar
+            sprev = {}
+            for sn in state_names:
+                traj = b.emit("fold", ops_, {**base, **extra_p, "out": ("emit", carry[sn])})
+                sh = b.emit("shift", (traj,), {"deltas": {dim: 1}})
+                sl = b.emit("slice", (sh,), {"ranges": {dim: (lo + 1, hi)}})
+                pd = b.emit("pad", (sl,), {"fill": 0.0, "extents": {dim: (lo, hi)}})
+                ri = b.emit("repeat", (s0[sn],), {"name": dim, "extent": (lo, hi)})
+                it = b.emit("iota", (pd,), {"name": dim})
+                sdims = tuple((d.name, (d.start, d.stop)) for d in slayouts[sn].dims) + ((dim, (lo, hi)),)
+                cs = b.emit("const", (), {"value": lo, "dims": sdims, "dtype": "int64"})
+                cs = restamp(cs, slayouts[sn])  # partial stamp: scan dim stays bare
+                mask = b.emit("pointwise", (it, cs), {"f": "eq"})
+                sprev[sn] = b.emit("pointwise", (mask, ri, pd), {"f": "where"})
+            ybj = yb if K == 1 else b.emit("slice", (yb,), {"ranges": {dim: (lo, hi)}})
+            adj_ops = (
+                tuple(cur[sn] for sn in state_names)
+                + tuple(flp(sprev[sn]) for sn in state_names)
+                + tuple(flp(x) for x in se)
+                + (flp(ybj),)
+            )
+            for en, ev in zip(elem_names, elems):
+                if g[en] is None:
+                    continue
+                fv = flp(b.emit("fold", adj_ops, {**adj_params, "out": ("emit", g[en])}))
+                if K > 1:
+                    fv = b.emit("pad", (fv,), {"fill": 0.0, "extents": {dim: (start, stop)}})
+                contribute(ev, fv)  # segments accumulate via cotangent fan-in
+            cur = {sn: b.emit("fold", adj_ops, {**adj_params, "out": ("final", carry_back[sn])}) for sn in state_names}
         for sn, iv in zip(state_names, inits):
             if g[sn] is None:
                 continue
-            fv = b.emit("fold", adj_ops, {**adj_params, "out": ("final", carry_back[sn])})
-            contribute(iv, fv)
+            contribute(iv, cur[sn])
 
     def reduce_rule(ins: Instr, c: str) -> None:
         f = ins.params["f"]

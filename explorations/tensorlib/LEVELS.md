@@ -164,9 +164,11 @@ parallel to `associative` on scalar reducers.
    DCE~~ and ~~min-cut checkpointing~~ (transforms.py: exact-byte node
    capacities; closed forms free, views never saved, contractions banned
    from recompute; lazy just-in-time recompute placement; zoo GPT-2:
-   boundary 47%, peak 76%, with DCE 64% of the joint) → next: revolve on
-   chain segments; FDTD adjoint time-stepping as the fold-checkpointing
-   use case.
+   boundary 47%, peak 76%, with DCE 64% of the joint) → ~~segmented fold
+   adjoints~~ (grad's fold_segments=K: Chen-style uniform checkpointing;
+   FDTD memory/recompute curve measured, minimum at K≈√T) → next:
+   binomial revolve proper; then L2/L3 per their own design
+   conversations.
 5. **L3-lite**: machine tree + mesh placement + collectives-by-diagnosis +
    traffic costs; Megatron-style sharded GPT-2 as flagship. (L2
    bufferization lags deliberately; needed for exact reuse, not for

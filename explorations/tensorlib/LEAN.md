@@ -279,6 +279,18 @@ argues for the untyped-IR + well-formedness-predicate route in Lean, with
 Checkpointing/scheduling (REPRESENTATIONS.md) will want programs-as-data
 too; same embedding serves.
 
+## 2026-07-23 (late night) — the curve exists
+
+Segmented fold adjoints (`fold_segments=K`) produced the first MEASURED
+memory/recompute tradeoff: FDTD T=12 peaks 2680→1816 bytes with the
+minimum at K≈√T and ops rising monotonically — Chen's √T heuristic
+reproduced from our own primitives. Lean-wise nothing new is needed: the
+segmented adjoint is the same reverse-fold lemma applied per segment plus
+one seam identity (segment j's final reverse carry = the cotangent of
+segment j-1's end state), an associativity-of-composition fact about
+folds. Binomial revolve will be a SCHEDULE over the same certified pieces
+— strategy and correctness stay factored, which is the point.
+
 ## 2026-07-23 (night) — DCE and the min cut
 
 (1) *Denotation.* Both transformations have one-line soundness statements
