@@ -279,6 +279,33 @@ argues for the untyped-IR + well-formedness-predicate route in Lean, with
 Checkpointing/scheduling (REPRESENTATIONS.md) will want programs-as-data
 too; same embedding serves.
 
+## 2026-07-23 (night) — DCE and the min cut
+
+(1) *Denotation.* Both transformations have one-line soundness statements
+against the L0 denotation: dce — restricting a program to the backward
+closure of kept vars preserves their denotation (induction on the pruned
+suffix); checkpoint — duplicating pure instructions under fresh names and
+re-pointing operands preserves every ORIGINAL var's denotation (purity =
+substitution lemma). The interesting obligation is the flow argument: the
+min cut guarantees every backward-read value is derivable from saved ∪
+inputs through recompute-allowed ops — a reachability invariant, provable
+against the network construction once, independent of Ford–Fulkerson.
+
+(2) *Theorems touched.* The recompute-duplication lemma is the first place
+name≠value becomes formal: the natural statement is an equivalence relation
+on SSA vars ("denote the same value") that transformations may coarsen —
+value numbering as a QUOTIENT, which is pleasingly the same
+canonical-quotient shape as layouts-up-to-relabeling.
+
+(3) *Vision moved.* The L1 arc is now measure → transform → re-measure with
+falsifiable numbers (GPT-2: boundary 47%, peak 76%, 64% with DCE), which
+is exactly the loop every later level should replicate: L3 will measure
+traffic and transform placement; L4 will measure per-kernel footprint and
+transform fusion. The pebbling connection is now concrete: peak_memory is
+the pebble count of a schedule; checkpoint trades pebbles for recompute
+moves; revolve is the optimal chain strategy — all three shapes of one
+game the Lean machine model should state once.
+
 ## 2026-07-23 (evening) — the zoo, and memory as max-plus
 
 (1) *Denotation.* The zoo is the denotation CORPUS: nine programs whose

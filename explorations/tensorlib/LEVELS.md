@@ -160,11 +160,13 @@ parallel to `associative` on scalar reducers.
 3. ~~**Model zoo**~~ — landed (`tensorlib.zoo`): gpt2, llama_block (RoPE/
    GQA/SwiGLU), sliding/gated/qknorm attention, flash reducer (backward
    DERIVED, matches naive analytically), heat2d, charted staggered FDTD.
-4. **L1**: ~~peak-memory simulator~~ (memory.py: alias-exact, closed-forms
-   free, schedule as argument, recursive fold transients) → next: DCE →
-   min-cut checkpointing → revolve; validated on zoo GPT-2 (memory/
-   recompute curve) and FDTD (adjoint time-stepping is THE checkpointing
-   use case).
+4. **L1**: ~~peak-memory simulator~~ (memory.py) → ~~requested-gradients
+   DCE~~ and ~~min-cut checkpointing~~ (transforms.py: exact-byte node
+   capacities; closed forms free, views never saved, contractions banned
+   from recompute; lazy just-in-time recompute placement; zoo GPT-2:
+   boundary 47%, peak 76%, with DCE 64% of the joint) → next: revolve on
+   chain segments; FDTD adjoint time-stepping as the fold-checkpointing
+   use case.
 5. **L3-lite**: machine tree + mesh placement + collectives-by-diagnosis +
    traffic costs; Megatron-style sharded GPT-2 as flagship. (L2
    bufferization lags deliberately; needed for exact reuse, not for

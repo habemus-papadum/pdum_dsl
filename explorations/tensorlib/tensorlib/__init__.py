@@ -18,12 +18,16 @@ from .memory import MemoryReport, peak_memory
 from .opcount import ProgramOps, ops_count
 from .signatures import SignatureError, VInfo, infer_signatures, marker_signature
 from .tensor import Misalignment, Tensor, aligned, alignment
+from .transforms import CheckpointReport, checkpoint, dce
 from .units import Quantity, Unit, UnitRegistry, q, u
 
 __all__ = [
     "Buffer",
     "CARRIERS",
     "Build",
+    "CheckpointReport",
+    "checkpoint",
+    "dce",
     "CompositeMarker",
     "CompositeReducer",
     "MemoryReport",

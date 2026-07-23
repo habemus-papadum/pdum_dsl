@@ -97,9 +97,11 @@ search, DTensor named sharding.
 
 ## Order of attack (when we get there)
 
-1. Level-1 annotations + the peak-memory simulator (measure first).
-2. DCE for requested-gradients pruning.
-3. Min-cut saved-set selection (sizes exact; zero-cost tensors excluded).
+1. ~~Level-1 annotations + the peak-memory simulator~~ (memory.py).
+2. ~~DCE for requested-gradients pruning~~ (transforms.dce).
+3. ~~Min-cut saved-set selection~~ (transforms.checkpoint — sizes exact;
+   iota/const free, views uncuttable, reduce/scan/fold banned from
+   recompute by default; recompute placed just-in-time in the backward).
 4. Schedule search / revolve for chain-shaped segments (the "functions as
    linear sequences" organizational layer gives the segments).
 5. Liveness coloring + offset assignment (Level 2).

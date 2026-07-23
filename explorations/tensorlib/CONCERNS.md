@@ -243,3 +243,16 @@ before the compute layer lands on top.
     numerics benchmark. Also: reduce(max) tie-splitting (the #-caveat) is
     reachable through the flash combine's maximum partials if two scores
     tie exactly — tests use continuous random scores.
+
+27. **Checkpointing (transforms.py) optimizes the BOUNDARY, not the peak
+    directly.** The min cut minimizes saved bytes across the fwd/bwd
+    boundary; the peak usually follows (GPT-2: 76% of joint) because
+    recompute is placed just-in-time, but no theorem connects the two —
+    schedule search / pebbling is the direct-peak attack (later). The ban
+    set is a POLICY (default reduce/scan/fold ≈ don't redo contractions),
+    not a cost model: a tiny reduce is banned while a huge pointwise
+    recomputes. Recompute duplicates break name=value (v and v.rc denote
+    one semantic value — fine for run/measure; a value-numbering pass
+    would be needed to see through it). Fold interiors are opaque here:
+    the trajectory-storing adjoint recomputes wholesale or not at all —
+    revolve-style segment checkpointing INSIDE folds is the next rung.

@@ -96,7 +96,12 @@ online-softmax flash reducer with a DERIVED backward, 2D heat, and 1D FDTD
 on an exactly-charted staggered grid — every entry checked against a pure
 numpy denotation) and the L1 PEAK-MEMORY SIMULATOR (`peak_memory`: layout
 ops are zero-byte aliases, iota/const/masks are free, the schedule is an
-optimizable argument, folds simulate their step recursively).
+optimizable argument, folds simulate their step recursively) with its
+first two optimizers (`transforms.py`): requested-gradients `dce` (prune
+backward work that doesn't reach a wanted gradient) and min-cut
+`checkpoint` (exact-byte activation rematerialization: closed forms free,
+views never saved, contractions never recomputed; GPT-2's saved boundary
+drops to 47%, its simulated peak to 76% — 64% composed with DCE).
 Deliberately inefficient numpy semantics: repeats and windows materialize —
 that is the correctness contract a real backend must match while treating
 those views as virtual. Matmul = repeat·mul·reduce; conv = window/stencil
