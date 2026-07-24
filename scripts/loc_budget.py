@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""The line-budget gate (architecture §6: "budgets are architecture").
+"""The line-budget gate ("budgets are architecture"; tripwire policy: crossing
+any cap means a conscious, recorded decision — never silent growth).
 
 Counts *tokenized* lines — lines carrying at least one token that is not a
-comment or a docstring — so documentation is free and code is not (including
-code that shares a physical line with a docstring). Every kernel file,
-recursively, must have an explicit cap here: a new kernel file without a cap
+comment or a docstring — so documentation is free and code is not. Every file
+in pdum.dsl, recursively, must have an explicit cap: a new file without a cap
 is an error by design (budgeting is a conscious act, not an audit).
 
+Redrawn at migration P1 (design 200 §7): one package, one bucket. The old
+kernel/satellite split died with the purge — pdum.dsl now carries the engine,
+the value language, the pipe, the recorder, and the reference oracle under a
+single total. pdum.tl joins the budget when it converts onto the core (P3).
+
 Usage:  python scripts/loc_budget.py [--json]
-Exit 1 on any breach. Run in CI via tests/test_budgets.py.
+Exit 1 on any breach. Run in CI via packages/dsl/tests/test_budgets.py.
 """
 
 from __future__ import annotations
@@ -21,50 +26,37 @@ import tokenize
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-KERNEL = ROOT / "src" / "pdum" / "dsl" / "kernel"
-# Migration P0+ (design 200 §7): packages/dsl/src/pdum/dsl is the kernel's destination; it is
-# budgeted from birth against the same caps and the same total, so the tripwire never lapses
-# during the move. The legacy KERNEL dir is deleted at P1. packages/tensorlib joins the budget
-# when it is converted onto the core (P3) — it was never under the old budget.
-NEW_KERNEL = ROOT / "packages" / "dsl" / "src" / "pdum" / "dsl"
+KERNEL = ROOT / "packages" / "dsl" / "src" / "pdum" / "dsl"
 
-KERNEL_TOTAL_CAP = 1500  # tripwire, not a wall (010 §6 policy, 2026-07-13): crossing any cap
-# means a LEDGER ENTRY stating what was bought — never silent growth. Raised 1150→1500 when
-# three lines of headroom started producing monkeypatches instead of seams (design 120).
+KERNEL_TOTAL_CAP = 2600  # P1 redraw: measured 2253 at the move + headroom for the
+# P4-P7 installments (random fields, scope, stores); each future raise is a
+# conscious act with the reason recorded here.
 
-# Per-file caps (paths relative to kernel/). types.py runs ~25% over its §5
-# estimate (65) after the LiteralType identity fix — noted, consciously.
+# Per-file caps. Engine files carry their pre-move caps (same code, same
+# discipline); the P1 arrivals were capped at their measured size + slack.
 FILE_CAPS = {
-    "__init__.py": 10,
+    "__init__.py": 40,  # batteries-included install + the version anchor
     "types.py": 100,
     "valuekind.py": 95,
     "capture.py": 85,
     "api.py": 50,
-    "cache.py": 175,  # §5 estimate 105 + retirement/explain + probe() + the 120 event hooks, consciously
+    "cache.py": 175,
     "ir.py": 150,
     "ops.py": 110,
     "printer.py": 80,
     "rewrite.py": 150,
-    "derived.py": 45,  # 130 §7: the ONE wrapper protocol (DerivedValue + its ValueKind)
-    "lower.py": 170,  # the fused driver; rule PACKS live in the satellite bucket (V1 calibration)
-    # §5 estimated 80 for the input half alone. The real file also carries the
-    # OUTPUT half (ResultPlan/unflatten — 040 §3b made marshaling bidirectional
-    # from the start), the compiled per-slot extractor (§4.3.10), and the two
-    # ABI stages. Raised consciously at the step-7 review, not by drift.
+    "derived.py": 45,
+    "lower.py": 170,
     "pack.py": 175,
-    "registry.py": 140,  # surface E v1 + the traced twin and miss-path spans; 120 §9 guessed 125,
-    # the real twin (batched phase emission + the anti-drift docstring) measured 132 — ledgered
-    "events.py": 55,  # the 120 seam: emit/span/forbid; measured 41, headroom for sink-protocol growth
-}
-
-SATELLITE_CAPS = {  # separately-counted buckets (the honesty clause): src/pdum/dsl/<name>
-    "combinators.py": 250,
-    "stdlib": 1500,
-    "viz.py": 450,
-    "bench.py": 300,  # 120 step 6: instrument() rides the seam now — the cap DROPS so the monkeypatch cannot return
-    "events.py": 300,  # the 120 recorder: traces, interning, sampling, buckets, report
-    "backends": 500,  # _emit infra + the C target (step 11 pulled the first citizen forward); step 14 raises again
-    "demo": 600,  # the fused ch09/ch10 simple-shader pair (080: special-cased OUT of backends/)
+    "registry.py": 180,  # P1: + the kind vocabulary, the spelled-oracle door (F33)
+    "events.py": 60,  # the seam (emit/span/forbid)
+    "recorder.py": 170,  # the observability satellite, now in-package
+    "value.py": 330,  # the value language: statements, joins, loops, refusals
+    "surfaces.py": 80,  # the five registration surfaces' helpers
+    "intrinsics.py": 60,  # scalar intrinsics + DSL batteries
+    "pipe.py": 175,  # the fuse pipe: stages, vocabulary checks, build rule
+    "reference.py": 140,  # the oracle: renderer + the spelled door
+    "render.py": 90,  # the shared dominator-walking emitter
 }
 
 _SKIP = {tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER}
@@ -98,47 +90,23 @@ def report(kernel_dir: Path = KERNEL, caps: dict[str, int] | None = None) -> tup
     caps = FILE_CAPS if caps is None else caps
     errors: list[str] = []
     files: dict[str, dict] = {}
-    scan: list[tuple[Path, str]] = [(kernel_dir, "")]
-    if kernel_dir == KERNEL and NEW_KERNEL.exists():  # the migration target counts too (same caps, same total)
-        scan.append((NEW_KERNEL, "packages/"))
-    for dir_, prefix in scan:
-        for path in sorted(dir_.rglob("*.py")):
-            name = path.relative_to(dir_).as_posix()
-            try:
-                n = counted_lines(path)
-            except SyntaxError as exc:
-                errors.append(f"{prefix}{name}: does not parse ({exc}) — cannot be budgeted")
-                continue
-            cap = caps.get(name)
-            files[prefix + name] = {"lines": n, "cap": cap}
-            if cap is None:
-                errors.append(f"{prefix}{name}: no cap declared — add it to FILE_CAPS consciously")
-            elif n > cap:
-                errors.append(f"{prefix}{name}: {n} counted lines exceeds its cap of {cap}")
+    for path in sorted(kernel_dir.rglob("*.py")):
+        name = path.relative_to(kernel_dir).as_posix()
+        try:
+            n = counted_lines(path)
+        except SyntaxError as exc:
+            errors.append(f"{name}: does not parse ({exc}) — cannot be budgeted")
+            continue
+        cap = caps.get(name)
+        files[name] = {"lines": n, "cap": cap}
+        if cap is None:
+            errors.append(f"{name}: no cap declared — add it to FILE_CAPS consciously")
+        elif n > cap:
+            errors.append(f"{name}: {n} counted lines exceeds its cap of {cap}")
     total = sum(f["lines"] for f in files.values())
     if total > KERNEL_TOTAL_CAP:
-        errors.append(f"kernel total {total} exceeds the hard cap of {KERNEL_TOTAL_CAP}")
-    sats = {}
-    base = KERNEL.parent  # satellites live beside the real kernel, not beside a test's tmp dir
-    for name, cap in SATELLITE_CAPS.items():
-        path = base / name
-        if not path.exists():  # a renamed/typo'd satellite must not report a silent 0/cap pass
-            errors.append(f"satellite {name}: declared in SATELLITE_CAPS but not found at {path}")
-            continue
-        targets = [path] if path.is_file() else sorted(path.rglob("*.py"))
-        try:
-            n = sum(counted_lines(f) for f in targets)
-        except SyntaxError as exc:  # same fate as an unparseable kernel file: a breach, not a crash
-            errors.append(f"satellite {name}: does not parse ({exc}) — cannot be budgeted")
-            continue
-        sats[name] = {"lines": n, "cap": cap}
-        if n > cap:
-            errors.append(f"satellite {name}: {n} counted lines exceeds its cap of {cap}")
-    uncapped = sorted(  # a new satellite module must be budgeted consciously, like a kernel file
-        p.name for p in base.glob("*.py") if p.name not in SATELLITE_CAPS and p.name != "__init__.py"
-    )
-    errors += [f"satellite {n}: no cap declared — add it to SATELLITE_CAPS consciously" for n in uncapped]
-    return {"kernel_total": total, "kernel_cap": KERNEL_TOTAL_CAP, "files": files, "satellites": sats}, errors
+        errors.append(f"pdum.dsl total {total} exceeds the hard cap of {KERNEL_TOTAL_CAP}")
+    return {"kernel_total": total, "kernel_cap": KERNEL_TOTAL_CAP, "files": files}, errors
 
 
 def main() -> int:
@@ -148,10 +116,8 @@ def main() -> int:
     else:
         for name, f in data["files"].items():
             cap = f["cap"] if f["cap"] is not None else "MISSING"
-            print(f"  {name:<24} {f['lines']:>5} / {cap}")
-        print(f"  {'KERNEL TOTAL':<24} {data['kernel_total']:>5} / {data['kernel_cap']}")
-        for name, f in data.get("satellites", {}).items():
-            print(f"  sat:{name:<20} {f['lines']:>5} / {f['cap']}")
+            print(f"  {name:<20} {f['lines']:>5} / {cap}")
+        print(f"  {'PDUM.DSL TOTAL':<20} {data['kernel_total']:>5} / {data['kernel_cap']}")
     for e in errors:
         print(f"BUDGET BREACH: {e}", file=sys.stderr)
     return 1 if errors else 0

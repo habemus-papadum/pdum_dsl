@@ -2,7 +2,6 @@
 and ``closure(6)`` share one ``FnType`` and trigger exactly one compile."""
 
 import pytest
-
 from pdum.dsl_reference import (
     BoolType,
     FloatType,

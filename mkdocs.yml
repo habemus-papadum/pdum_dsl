@@ -1,5 +1,5 @@
-site_name: habemus-papadum-dsl
-site_description: A Python DSL compiler framework (numba-like workflow, Julia-like type-keyed caching)
+site_name: pdum workspace
+site_description: "pdum.dsl + pdum.tl: type-keyed DSL compiler infrastructure and the assemblage tensor language"
 site_author: Nehal Patel
 repo_url: https://github.com/habemus-papadum/pdum_dsl
 repo_name: pdum_dsl
@@ -17,62 +17,13 @@ theme:
 
 nav:
   - Home: index.md
-  - Desiderata: desiderata.md
-  - Design:
-      - Overview: design/README.md
-      - "010 — Proposed architecture": design/010_proposed-architecture.md
-      - "020 — Implementation plan": design/020_implementation-plan.md
-      - "022 — Closure specialization (evidence)": design/022_closure_specialization.md
-      - "024 — DSL caching layer (evidence)": design/024_dsl_caching_layer.md
-      - "030 — Deep-learning notes": design/030_deep-learning-notes.md
-      - "040 — Combinators notes": design/040_combinators-notes.md
-      - "050 — Provenance tracking": design/050_provenance_tracking.md
-      - "060 — Rendering notes": design/060_rendering-notes.md
-      - "070 — Backends notes": design/070_backends-notes.md
-      - "080 — Backend organization": design/080_backend-organization.md
-      - "090 — Core & extensions (punning charter)": design/090_core-and-extensions.md
-      - "100 — Arrays & axes": design/100_arrays-and-axes.md
-      - "110 — Transforms & derivatives": design/110_transforms-and-derivatives.md
-      - "120 — Events & instrumentation (proposal)": design/120_events-and-instrumentation.md
-      - "130 — Tensors, tiles, and over (proposal)": design/130_tensors-tiles-and-over.md
-  - The Book:
-      - "Chapter 0 — The thesis": book/ch00-thesis.ipynb
-      - "Chapter 1 — Types are values": book/ch01-types-are-values.ipynb
-      - "Chapter 2 — What a closure is": book/ch02-what-a-closure-is.ipynb
-      - "Chapter 3 — One compile per signature": book/ch03-one-compile-per-signature.ipynb
-      - "Chapter 4 — Pipelines are values": book/ch04-pipelines-are-values.ipynb
-      - "Chapter 5 — Programs are values": book/ch05-programs-are-values.ipynb
-      - "Chapter 6 — Everything is a rule": book/ch06-everything-is-a-rule.ipynb
-      - "Chapter 7 — Source to IR": book/ch07-source-to-ir.ipynb
-      - "7a — The lay of the land": book/ch07a-lay-of-the-land.ipynb
-      - "Chapter 8 — One value, N parameters": book/ch08-one-value-n-parameters.ipynb
-      - "Chapter 9 — End to end, on CPU": book/ch09-end-to-end-on-cpu.ipynb
-      - "Chapter 10 — The GPU and the seam": book/ch10-the-gpu-and-the-seam.ipynb
-      - "Chapter 11 — The five surfaces": book/ch11-the-five-surfaces.ipynb
-      - "11a — Lay of the land": book/ch11a-lay-of-the-land.ipynb
-      - "11b — Measuring the machine": book/ch11b-measuring-the-machine.ipynb
-      - "Chapter 12 — Data and loops": book/ch12-data-and-loops.ipynb
-      - "12a — Lay of the land": book/ch12a-lay-of-the-land.ipynb
-      - "Chapter 13 — Transforms are rules": book/ch13-transforms-are-rules.ipynb
-      - "Chapter 14 — Arguments and the grid": book/ch14-arguments-and-the-grid.ipynb
-      - Glossary: book/GLOSSARY.md
-  - M0 reference asset (frozen):
-      - Overview: m0/index.md
-      - User Guides:
-          - WebGPU Shaders: m0/guide/webgpu-shaders.md
-          - Designing a DSL: m0/guide/designing-a-dsl.md
-      - Theory & Internals:
-          - Overview & Timing: m0/theory/overview.md
-          - Caching & Generations: m0/theory/caching.md
-          - Type System: m0/theory/type-system.md
-          - WGSL Backend & Runtime: m0/theory/wgsl-backend.md
-      - API Reference:
-          - Core: m0/reference/core.md
-          - Frontend & Passes: m0/reference/frontend.md
-          - WGSL Backend: m0/reference/wgsl.md
-          - WebGPU Runtime: m0/reference/runtime.md
+  - "The spec (200)": design/200_the-spec.md
+  - "Backend notes (210)": design/210_backend-notes.md
+  - Design: design/README.md
 
 docs_dir: docs
+exclude_docs: |
+  design/history/
 
 markdown_extensions:
   - admonition
@@ -89,19 +40,3 @@ markdown_extensions:
 
 plugins:
   - search
-  - mkdocs-jupyter:
-      execute: false  # execution is the notebook harness's job (scripts/test_notebooks.sh)
-  - mkdocstrings:
-      default_handler: python
-      handlers:
-        python:
-          paths: [src]
-          options:
-            docstring_style: numpy
-            show_submodules: true
-            show_source: true
-            show_root_heading: true
-            heading_level: 2
-            members_order: source
-            separate_signature: true
-            show_signature_annotations: true
