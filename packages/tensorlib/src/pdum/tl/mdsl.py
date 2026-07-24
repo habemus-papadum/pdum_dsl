@@ -1,29 +1,23 @@
-"""The marker DSL: composite markers as an owned expression-tree IR.
+"""The marker DSL: composite markers and reducers as declared data.
 
 The Node schema (Arg / Const / Prim) lives in nodes.py — the declared
-stability boundary. This module is one PRODUCER of Nodes (the ~40-line
-operator-overloading tracer; the shared-syntax AST producer replaces it at
-P4) plus the symbolic differentiation machinery and the composite
-marker/reducer declarations, registered into the cache-backed registries
-(registry.py — idempotent, derivation-under-cache, conflict-refusing).
+stability boundary. Bodies lower through the AST PRODUCER (producer.py):
+one named, inspectable tree over primitives per marker — by inspection,
+never execution (the Sym tracer died at P4). Declarations register into
+the cache-backed registries (registry.py — idempotent,
+derivation-under-cache, conflict-refusing); partial derivatives are
+DERIVED by tree rewriting over the one derivative table (derivative.py),
+so new activation functions differentiate automatically.
 
-Composite POINTWISE markers (`defmarker`) are scalar expression trees over
-the primitive marker names ("add", "mul", "exp", ...). Their partial
-derivatives are DERIVED by tree rewriting (`CompositeMarker.partial(i)`
-returns another registered composite), so new activation functions
-differentiate automatically — the hand-maintained gradient table stops
-growing, and the silent-zero-gradient class of bug dies structurally.
-
-Composite REDUCERS (`defreducer`) carry structured (tuple) state: an
-element-to-state `lift`, an associative `combine` over (left ++ right)
-state, an `init` state, and a `project` back to a scalar. This is the shape
-SSM / linear-recurrence scans need (h_t = a_t·h_{t-1} + b_t via the pair
-combine (A1,B1)⊕(A2,B2) = (A1·A2, A2·B1 + B2)). Associativity is DECLARED,
-not verified — property-test it now; it becomes a typeclass instance
+Composite REDUCERS (`defreducer`) carry structured state — a count of
+scalar slots, or a RECORD class (state=State: fields by attribute, laid
+out in field order). This is the shape SSM / linear-recurrence scans and
+the online-softmax accumulator need. Associativity is DECLARED, not
+verified — property-test it now; it becomes a typeclass instance
 obligation in the Lean model.
 
 No control flow in marker bodies: `where` is the branch (matching the
-program IR's no-branching rule), and tracing a Python `if` on a Sym raises.
+program IR's no-branching rule) — straight-line is detected at lowering.
 Constants are VALUE-space, so floats are honest here (0.5, sqrt(2)/2);
 Fraction stays available for exact rationals — the coordinates-exact /
 values-inexact doctrine, applied.
@@ -33,7 +27,6 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from fractions import Fraction
 
 from . import producer
 from .derivative import TABLE, diff  # noqa: F401 — diff re-exported for consumers
@@ -41,94 +34,39 @@ from .nodes import Arg, Const, Node, Prim  # noqa: F401 — re-exported for cons
 from .registry import MARKERS, REDUCERS
 
 # ----------------------------------------------------------------------
-# the tracer — one producer of Nodes (frontends are pluggable)
+# the primitive sentinels — resolved by NAME/attribute in lowered bodies
 # ----------------------------------------------------------------------
 
 
-class Sym:
-    """A symbolic scalar; executing a plain lambda over Syms yields the tree."""
+@dataclass(frozen=True)
+class Primitive:
+    """A marker-body primitive: it lowers by inspection, it is never called."""
 
-    __slots__ = ("node",)
+    op: str
+    arity: int
 
-    def __init__(self, node):
-        self.node = node
-
-    def __bool__(self):
+    def __call__(self, *args):
         raise TypeError(
-            "Python control flow cannot be traced into a marker body; "
-            "use where(cond, a, b) — the branch is data flow here"
+            f"{self.op} is a marker-body primitive — bodies lower by AST "
+            f"inspection (defmarker/defreducer/lift_step); there is nothing to call"
         )
 
-    def __add__(self, o):
-        return Sym(Prim("add", (self.node, _lift(o))))
 
-    __radd__ = __add__
-
-    def __mul__(self, o):
-        return Sym(Prim("mul", (self.node, _lift(o))))
-
-    __rmul__ = __mul__
-
-    def __sub__(self, o):
-        return Sym(Prim("sub", (self.node, _lift(o))))
-
-    def __rsub__(self, o):
-        return Sym(Prim("sub", (_lift(o), self.node)))
-
-    def __truediv__(self, o):
-        return Sym(Prim("div", (self.node, _lift(o))))
-
-    def __rtruediv__(self, o):
-        return Sym(Prim("div", (_lift(o), self.node)))
-
-    def __neg__(self):
-        return Sym(Prim("neg", (self.node,)))
-
-
-def _lift(x) -> Node:
-    if isinstance(x, Sym):
-        return x.node
-    if isinstance(x, bool) or not isinstance(x, (int, float, Fraction)):
-        raise TypeError(f"cannot lift {x!r} into a marker body")
-    return Const(x)
-
-
-def _fn(op, arity):
-    def apply(*args):
-        if len(args) != arity:
-            raise TypeError(f"{op} takes {arity} arguments")
-        return Sym(Prim(op, tuple(_lift(a) for a in args)))
-
-    apply.op, apply.arity = op, arity  # the AST producer resolves captured calls by these
-    return apply
-
-
-exp = _fn("exp", 1)
-log = _fn("log", 1)
-tanh = _fn("tanh", 1)
-sqrt = _fn("sqrt", 1)
-sin = _fn("sin", 1)
-cos = _fn("cos", 1)
-maximum = _fn("maximum", 2)
-minimum = _fn("minimum", 2)
-where = _fn("where", 3)
-eq = _fn("eq", 2)
-ne = _fn("ne", 2)
-le = _fn("le", 2)
-lt = _fn("lt", 2)
-ge = _fn("ge", 2)
-gt = _fn("gt", 2)
-
-
-def trace(fn, arity: int) -> Node:
-    return _lift(fn(*(Sym(Arg(i)) for i in range(arity))))
-
-
-def _trace_tuple(fn, arity: int) -> tuple:
-    out = fn(*(Sym(Arg(i)) for i in range(arity)))
-    if not isinstance(out, tuple):
-        out = (out,)
-    return tuple(_lift(o) for o in out)
+exp = Primitive("exp", 1)
+log = Primitive("log", 1)
+tanh = Primitive("tanh", 1)
+sqrt = Primitive("sqrt", 1)
+sin = Primitive("sin", 1)
+cos = Primitive("cos", 1)
+maximum = Primitive("maximum", 2)
+minimum = Primitive("minimum", 2)
+where = Primitive("where", 3)
+eq = Primitive("eq", 2)
+ne = Primitive("ne", 2)
+le = Primitive("le", 2)
+lt = Primitive("lt", 2)
+ge = Primitive("ge", 2)
+gt = Primitive("gt", 2)
 
 
 # ----------------------------------------------------------------------

@@ -22,6 +22,7 @@ from .cache import no_compile  # noqa: E402
 from .pipe import op  # noqa: E402
 from .reference import reference  # noqa: E402
 from .registry import DEFAULT, Registry  # noqa: E402
+from .types import Literal  # noqa: E402 — the §1.5 annotation door
 
 __version__ = "0.0.0+dev"
 
@@ -57,4 +58,4 @@ def install(registry: Registry) -> Registry:
 
 install(DEFAULT)
 
-__all__ = ["DEFAULT", "Registry", "__version__", "install", "jit", "no_compile", "op", "reference"]
+__all__ = ["DEFAULT", "Registry", "__version__", "install", "Literal", "jit", "no_compile", "op", "reference"]

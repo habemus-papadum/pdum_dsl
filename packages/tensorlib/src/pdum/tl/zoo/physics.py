@@ -1,8 +1,10 @@
 """Physics entries: time-stepped fields via fold, boundaries via guards,
-staggering via exact charts.
+staggering via exact charts — step bodies in the SHARED SYNTAX (S.2): plain
+functions over tensor-typed parameters, lifted to step Programs.
 
 `heat2d` — explicit Euler with Dirichlet-0 ghosts: every neighbor access
-is shift+slice+pad(0), so the boundary condition IS the guard fill.
+is shift+slice+pad(0) (the ghost helper INLINES at lifting), so the
+boundary condition IS the guard fill.
 
 `fdtd1d_staggered` — 1D leapfrog on a Yee grid with the staggering carried
 by CHARTS: E lives at integer x, H at half-integer x (exact Fraction(1,2)
@@ -16,11 +18,28 @@ from __future__ import annotations
 from fractions import Fraction
 
 import numpy as np
+from pdum.dsl.types import Literal
 
 from ..build import Build
 from ..chart import chart
-from ..tensor import Tensor
+from ..lifting import lift_step
 from .zoo_common import ZooModel, t_in
+
+
+def _ghost(u, dim, extent, delta):
+    # u[i - delta] with a zero ghost outside: shift, slice, pad(0)
+    lo, hi = extent
+    sh = u.shift(**{dim: delta})
+    sl = sh.slice(**{dim: (lo + max(delta, 0), hi + min(delta, 0))})
+    return sl.pad(fill=0.0, **{dim: extent})
+
+
+def _heat_step(u, n: Literal[int], m: Literal[int], alpha: Literal[float]):
+    nsum = _ghost(u, "x", (0, n), 1) + _ghost(u, "x", (0, n), -1) + _ghost(u, "y", (0, m), 1) + _ghost(
+        u, "y", (0, m), -1
+    )
+    lap = nsum - 4.0 * u
+    return u + alpha * lap
 
 
 def heat2d(N=5, M=5, T=3, alpha=0.1, seed=13) -> ZooModel:
@@ -28,38 +47,17 @@ def heat2d(N=5, M=5, T=3, alpha=0.1, seed=13) -> ZooModel:
     b = Build()
     inputs: dict = {}
     b.input(t_in(inputs, "u0", rng.standard_normal((N, M)), ("x", "y")))
-    shape = [("x", (0, N)), ("y", (0, M))]
-
-    sb = Build()
-    u = sb.input("u")
-
-    def ghost(dim, extent, delta):
-        # u[i - delta] with a zero ghost outside: shift, slice, pad(0)
-        sh = sb.emit("shift", (u,), hint="sh", deltas={dim: delta})
-        lo, hi = extent
-        rng_ = (lo + max(delta, 0), hi + min(delta, 0))
-        sl = sb.emit("slice", (sh,), hint="sl", ranges={dim: rng_})
-        return sb.emit("pad", (sl,), hint="gh", fill=0.0, extents={dim: extent})
-
-    nsum = sb.pw(
-        "add",
-        sb.pw("add", ghost("x", (0, N), 1), ghost("x", (0, N), -1)),
-        sb.pw("add", ghost("y", (0, M), 1), ghost("y", (0, M), -1)),
-        hint="nsum",
-    )
-    lap = sb.pw("sub", nsum, sb.pw("mul", sb.const(4.0, shape, hint="four"), u), hint="lap")
-    u1 = sb.pw("add", u, sb.pw("mul", sb.const(alpha, shape, hint="alpha"), lap), hint="u1")
-
+    ls = lift_step(_heat_step, u=inputs["u0"].layout, n=N, m=M, alpha=alpha)
     uf = b.emit(
         "fold",
         ("u0",),
         hint="uf",
-        step=sb.program(),
+        step=ls.program,
         dim="tm",
         state=("u",),
         element=(),
-        carry={"u": u1},
-        out=("final", u1),
+        carry={"u": ls.outputs[0]},
+        out=("final", ls.outputs[0]),
         extent=(0, T),
     )
 
@@ -84,45 +82,36 @@ def fdtd1d_staggered(N=6, T=3, c=0.4, seed=17) -> ZooModel:
     E0 += 0.1 * rng.standard_normal(N)
     H0 = 0.1 * rng.standard_normal(N - 1)
     inputs = {
-        "E0": Tensor.from_numpy(E0, ("x",)).with_charts(x=e_chart),
-        "H0": Tensor.from_numpy(H0, ("x",)).with_charts(x=h_chart),
+        "E0": Tensor_from(E0, e_chart),
+        "H0": Tensor_from(H0, h_chart),
     }
     b = Build()
     b.input("E0")
     b.input("H0")
 
-    sb = Build()
-    E = sb.input("E")
-    H = sb.input("H")
+    def step(E, H, n: Literal[int]):
+        # dE_i = E_{i+1} - E_i lives at i + 1/2 — each operand SAYS so,
+        # exactly, before combining; c lifts inheriting dims AND charts
+        Ea = E.shift(x=-1).slice(x=(0, n - 1)).with_charts(x=h_chart)
+        Eb = E.slice(x=(0, n - 1)).with_charts(x=h_chart)
+        H1 = H + c * (Ea - Eb)
+        # dH_i = H1_{i+1/2} - H1_{i-1/2} lives back at integer i
+        Ha = H1.slice(x=(1, n - 1)).with_charts(x=e_chart)
+        Hb = H1.shift(x=1).slice(x=(1, n - 1)).with_charts(x=e_chart)
+        E1 = E + c * (Ha - Hb).pad(x=(0, n), fill=0.0)
+        return E1, H1
 
-    def rechart(v, ch):
-        return sb.emit("with_charts", (v,), hint="rc", charts={"x": ch})
-
-    def cst(value, extent, ch):
-        return rechart(sb.const(value, [("x", extent)], hint="cc"), ch)
-
-    # dE_i = E_{i+1} - E_i lives at i + 1/2 — say so, exactly
-    Ea = sb.emit("slice", (sb.emit("shift", (E,), hint="Es", deltas={"x": -1}),), hint="Ea", ranges={"x": (0, N - 1)})
-    Eb = sb.emit("slice", (E,), hint="Eb", ranges={"x": (0, N - 1)})
-    dE = sb.pw("sub", rechart(Ea, h_chart), rechart(Eb, h_chart), hint="dE")
-    H1 = sb.pw("add", H, sb.pw("mul", cst(c, (0, N - 1), h_chart), dE), hint="H1")
-    # dH_i = H1_{i+1/2} - H1_{i-1/2} lives back at integer i
-    Ha = sb.emit("slice", (H1,), hint="Ha", ranges={"x": (1, N - 1)})
-    Hb = sb.emit("slice", (sb.emit("shift", (H1,), hint="Hs", deltas={"x": 1}),), hint="Hb", ranges={"x": (1, N - 1)})
-    dH = sb.pw("sub", rechart(Ha, e_chart), rechart(Hb, e_chart), hint="dH")
-    pdH = sb.emit("pad", (dH,), hint="pdH", fill=0.0, extents={"x": (0, N)})
-    E1 = sb.pw("add", E, sb.pw("mul", cst(c, (0, N), e_chart), pdH), hint="E1")
-
+    ls = lift_step(step, E=inputs["E0"].layout, H=inputs["H0"].layout, n=N)
     ef = b.emit(
         "fold",
         ("E0", "H0"),
         hint="Ef",
-        step=sb.program(),
+        step=ls.program,
         dim="tm",
         state=("E", "H"),
         element=(),
-        carry={"E": E1, "H": H1},
-        out=("final", E1),
+        carry={"E": ls.outputs[0], "H": ls.outputs[1]},
+        out=("final", ls.outputs[0]),
         extent=(0, T),
     )
 
@@ -136,3 +125,9 @@ def fdtd1d_staggered(N=6, T=3, c=0.4, seed=17) -> ZooModel:
         return E
 
     return ZooModel(b.program(), inputs, ef, ref, ("x",))
+
+
+def Tensor_from(arr, ch):
+    from ..tensor import Tensor
+
+    return Tensor.from_numpy(np.asarray(arr, dtype=np.float64), ("x",)).with_charts(x=ch)

@@ -7,10 +7,11 @@ module imports NOTHING — not from pdum.dsl, not from the rest of pdum.tl.
 - consumers (compute.py / autodiff.py / signatures.py / opcount.py): numpy
   evaluation, symbolic partial derivatives, carrier/unit signature
   propagation — all walk Nodes and never care where they came from;
-- producers: today the operator-overloading tracer in mdsl.py; at P4 the
-  shared-syntax AST producer maps lowered AST onto these same Nodes.
-  Swapping producers can never force a rewrite of consumers — that is the
-  no-rewrite guarantee, held by the schema rather than by promise.
+- producers: the shared-syntax AST producer (producer.py) — since P4 the
+  ONE producer of scalar bodies (the operator-overloading tracer preceded
+  it and is gone). Swapping producers can never force a rewrite of
+  consumers — that is the no-rewrite guarantee, held by the schema rather
+  than by promise.
 """
 
 from __future__ import annotations

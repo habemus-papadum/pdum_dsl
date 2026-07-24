@@ -1,12 +1,13 @@
-"""The marker DSL: traced composites, derived partials, structured reducers."""
+"""The marker DSL: lowered composites, derived partials, structured reducers."""
 
 import numpy as np
 import pytest
 from pdum.tl import Tensor, defmarker, defreducer, pointwise, reduce, scan
 from pdum.tl.autodiff import grad, numeric_grad
 from pdum.tl.ir import Instr, Program, run
-from pdum.tl.mdsl import diff, exp, gt, log, tanh, trace, where
+from pdum.tl.mdsl import diff, exp, gt, log, tanh, where
 from pdum.tl.nodes import Arg, Const, Prim
+from pdum.tl.producer import lower, scalars
 from pdum.tl.registry import MARKERS
 
 
@@ -32,9 +33,9 @@ relu = defmarker("relu_t", 1, lambda x: where(gt(x, 0), x, 0 * x))
 # ----------------------------------------------------------------------
 
 
-def test_trace_builds_trees():
-    body = trace(lambda x: 2 * x + 1, 1)
-    assert body == Prim("add", (Prim("mul", (Arg(0), Const(2))), Const(1)))
+def test_the_producer_builds_trees():
+    (body,) = lower(lambda x: 2 * x + 1, scalars(1))
+    assert body == Prim("add", (Prim("mul", (Const(2), Arg(0))), Const(1)))
 
 
 def test_python_control_flow_is_refused():

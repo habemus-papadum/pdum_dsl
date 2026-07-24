@@ -8,27 +8,50 @@ L0 states the algorithm; L4 will show the fusion is what makes it fast."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 
 from ..build import Build
 from ..mdsl import defreducer, exp, maximum
 from .zoo_common import ZooModel, causal_softmax, contract, np_sigmoid, np_softmax, rmsnorm, softmax, t_in
 
-# state (m, l, o): running max, denominator, weighted sum; the combine
-# rescales both sides to the joint max. Associative (the online-softmax
-# lemma); init is the monoid identity (exp(-1e30 - m) underflows to 0).
+
+@dataclass(frozen=True)
+class SoftmaxState:
+    """The online-softmax accumulator: running max, denominator, weighted sum."""
+
+    m: object
+    den: object
+    o: object
+
+
+def _flash_lift(s, v):
+    return SoftmaxState(s, 1.0, v)
+
+
+def _flash_combine(L, R):
+    # rescale both sides to the joint max — associative (the online-softmax
+    # lemma); the AD machinery differentiates this BY INSPECTION, which is
+    # why flash's backward is derived, not hand-written (S.2)
+    m = maximum(L.m, R.m)
+    sl, sr = exp(L.m - m), exp(R.m - m)
+    return SoftmaxState(m, L.den * sl + R.den * sr, L.o * sl + R.o * sr)
+
+
+def _flash_project(s):
+    return s.o / s.den
+
+
+# init is the monoid identity (exp(-1e30 - m) underflows to 0)
 flashsm = defreducer(
     "zoo.flashsm",
-    state=3,
+    state=SoftmaxState,
     element=2,
-    lift=lambda s, v: (s, 1.0, v),
-    combine=lambda L, R: (
-        maximum(L[0], R[0]),
-        L[1] * exp(L[0] - maximum(L[0], R[0])) + R[1] * exp(R[0] - maximum(L[0], R[0])),
-        L[2] * exp(L[0] - maximum(L[0], R[0])) + R[2] * exp(R[0] - maximum(L[0], R[0])),
-    ),
-    init=(-1e30, 0.0, 0.0),
-    project=lambda m, den, o: o / den,
+    lift=_flash_lift,
+    combine=_flash_combine,
+    init=SoftmaxState(-1e30, 0.0, 0.0),
+    project=_flash_project,
 )
 
 
