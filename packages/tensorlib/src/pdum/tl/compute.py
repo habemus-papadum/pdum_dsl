@@ -50,7 +50,8 @@ import numpy as np
 
 from .buffer import Buffer, FunctionalBuffer, host_view
 from .layout import Dim, Layout
-from .mdsl import Arg, CompositeMarker, CompositeReducer, Const, Prim
+from .mdsl import CompositeMarker, CompositeReducer
+from .nodes import Arg, Const, Prim
 from .signatures import VInfo, marker_signature
 from .tensor import Tensor, alignment
 from .units import Quantity, Unit, u

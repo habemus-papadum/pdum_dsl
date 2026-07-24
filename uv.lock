@@ -630,11 +630,15 @@ name = "habemus-papadum-tl"
 version = "0.0.0+dev"
 source = { editable = "packages/tensorlib" }
 dependencies = [
+    { name = "habemus-papadum-dsl" },
     { name = "numpy" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "numpy", specifier = ">=2.5.0" }]
+requires-dist = [
+    { name = "habemus-papadum-dsl", editable = "packages/dsl" },
+    { name = "numpy", specifier = ">=2.5.0" },
+]
 
 [[package]]
 name = "hatch"

@@ -4,8 +4,11 @@ The exact layout algebra (affine map + box domain, guards + fill, units and
 per-dim charts over the unchanged lattice), the compute primitives, the
 Program/Instr IR, reverse-mode AD, the transforms (DCE, checkpointing), the
 cost semantics, placement, signatures, and the model zoo. Promoted from
-explorations/tensorlib at migration P2; converts onto pdum.dsl's caching,
-naming, and capture at P3.
+explorations/tensorlib at migration P2; onto the core since P3 — the
+marker/reducer registries are cache-backed (pdum.dsl.cache, idempotent,
+derivation-under-cache), name assignment is the core's (pdum.dsl.naming),
+and Program build / adjoint derivation announce themselves on the events
+seam (pdum.dsl.events), so forbid() can pin "this loop builds nothing".
 
 Version of record: this distribution is version-locked with
 ``habemus-papadum-dsl`` (scripts/_versioning.py); the anchor lives in

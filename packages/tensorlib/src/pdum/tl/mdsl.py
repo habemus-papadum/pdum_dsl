@@ -1,18 +1,11 @@
 """The marker DSL: composite markers as an owned expression-tree IR.
 
-The stability boundary of this module is the Node schema — three tiny frozen
-dataclasses (Arg / Const / Prim) — and it deliberately imports NOTHING from
-the main pdum.dsl package (whose syntax tooling is still in flux) and nothing
-from the rest of tensorlib. Everything else is layered around that schema:
-
-- consumers (in compute.py / autodiff.py): numpy evaluation, symbolic
-  partial derivatives, later carrier/unit signature propagation — all walk
-  Nodes and never care where they came from;
-- producers: the ~40-line TRACER here (operator-overloaded `Sym`s executing
-  a plain lambda), and, once the main repo's frontend stabilizes, an adapter
-  mapping its lowered AST onto the same Nodes. Swapping producers can never
-  force a rewrite of consumers — that is the no-rewrite guarantee, held by
-  the schema rather than by promise.
+The Node schema (Arg / Const / Prim) lives in nodes.py — the declared
+stability boundary. This module is one PRODUCER of Nodes (the ~40-line
+operator-overloading tracer; the shared-syntax AST producer replaces it at
+P4) plus the symbolic differentiation machinery and the composite
+marker/reducer declarations, registered into the cache-backed registries
+(registry.py — idempotent, derivation-under-cache, conflict-refusing).
 
 Composite POINTWISE markers (`defmarker`) are scalar expression trees over
 the primitive marker names ("add", "mul", "exp", ...). Their partial
@@ -42,39 +35,9 @@ import hashlib
 from dataclasses import dataclass
 from fractions import Fraction
 
-# ----------------------------------------------------------------------
-# the IR — the stability boundary
-# ----------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class Arg:
-    """A formal parameter of the marker (by position)."""
-
-    index: int
-
-
-@dataclass(frozen=True)
-class Const:
-    """A literal: int/Fraction (exact) or float (value-space)."""
-
-    value: object
-
-
-@dataclass(frozen=True)
-class Prim:
-    """Application of a PRIMITIVE marker, referenced by name."""
-
-    op: str
-    args: tuple
-
-
-Node = Arg | Const | Prim
-
-
-def _is_const(n, v) -> bool:
-    return isinstance(n, Const) and n.value == v
-
+from .nodes import Arg, Const, Node, Prim  # noqa: F401 — re-exported for consumers
+from .nodes import is_const as _is_const
+from .registry import MARKERS, REDUCERS
 
 # ----------------------------------------------------------------------
 # the tracer — one producer of Nodes (frontends are pluggable)
@@ -234,11 +197,8 @@ def diff(node: Node, i: int) -> Node:
 
 
 # ----------------------------------------------------------------------
-# composite markers and reducers (+ registries: programs stay data)
+# composite markers and reducers (registered: programs stay data)
 # ----------------------------------------------------------------------
-
-COMPOSITE_MARKERS: dict[str, "CompositeMarker"] = {}
-COMPOSITE_REDUCERS: dict[str, "CompositeReducer"] = {}
 
 _PRIMITIVE_NAMES = frozenset(_D)
 
@@ -252,13 +212,12 @@ def node_digest(node: Node) -> str:
     return hashlib.sha1(repr(node).encode()).hexdigest()[:10]
 
 
+def _marker_content(m: "CompositeMarker") -> tuple:
+    return (m.arity, m.body)
+
+
 def _register_marker(name: str, arity: int, body: Node) -> "CompositeMarker":
-    existing = COMPOSITE_MARKERS.get(name)
-    if existing is not None and existing.body == body and existing.arity == arity:
-        return existing  # content-equal re-registration is a no-op
-    m = CompositeMarker(name, arity, body)
-    COMPOSITE_MARKERS[name] = m
-    return m
+    return MARKERS.register(name, CompositeMarker(name, arity, body), _marker_content)
 
 
 @dataclass(frozen=True, eq=False)
@@ -268,11 +227,12 @@ class CompositeMarker:
     body: Node
 
     def partial(self, i: int) -> "CompositeMarker":
-        """The i-th partial derivative, as another registered composite —
-        derived once by tree rewriting, then reused by name."""
+        """The i-th partial derivative — a cache entry computed on demand
+        from a cache entry: the tree rewrite runs once per name, ever."""
         if not 0 <= i < self.arity:
             raise IndexError(f"{self.name} has arity {self.arity}")
-        return _register_marker(f"{self.name}.d{i}", self.arity, diff(self.body, i))
+        name = f"{self.name}.d{i}"
+        return MARKERS.derive(name, lambda: CompositeMarker(name, self.arity, diff(self.body, i)))
 
     def __repr__(self) -> str:
         return self.name
@@ -311,13 +271,12 @@ class CompositeReducer:
         """The same fold projecting state component j — how the reverse pass
         materializes the forward state trajectory as ordinary tensors."""
         name = f"{self.name}.s{j}"
-        if name in COMPOSITE_REDUCERS:
-            return COMPOSITE_REDUCERS[name]
-        r = CompositeReducer(
-            name, self.state, self.element, self.lift, self.combine, self.init, Arg(j), self.associative
+        return REDUCERS.derive(
+            name,
+            lambda: CompositeReducer(
+                name, self.state, self.element, self.lift, self.combine, self.init, Arg(j), self.associative
+            ),
         )
-        COMPOSITE_REDUCERS[name] = r
-        return r
 
     def adjoint_scanner(self, i: int) -> "CompositeReducer":
         """The reversed-time backward recurrence r_u = M_u·r_{u-1} + g_u as a
@@ -326,21 +285,20 @@ class CompositeReducer:
         first element's M slot (which has no recurrence edge to carry) may
         hold boundary garbage harmlessly."""
         name = f"{self.name}.adj{i}"
-        if name in COMPOSITE_REDUCERS:
-            return COMPOSITE_REDUCERS[name]
         k = self.state
         s = k * k + k
-        r = CompositeReducer(
-            name=name,
-            state=s,
-            element=s,
-            lift=tuple(Arg(j) for j in range(s)),
-            combine=_matrix_pair_nodes(k),
-            init=tuple(1.0 if (j < k * k and j // k == j % k) else 0.0 for j in range(s)),
-            project=Arg(k * k + i),
+        return REDUCERS.derive(
+            name,
+            lambda: CompositeReducer(
+                name=name,
+                state=s,
+                element=s,
+                lift=tuple(Arg(j) for j in range(s)),
+                combine=_matrix_pair_nodes(k),
+                init=tuple(1.0 if (j < k * k and j // k == j % k) else 0.0 for j in range(s)),
+                project=Arg(k * k + i),
+            ),
         )
-        COMPOSITE_REDUCERS[name] = r
-        return r
 
 
 def _sum_nodes(terms):
@@ -421,5 +379,6 @@ def defreducer(
         raise ValueError(f"init must have {state} components")
     project_node = trace(project, state) if project is not None else Arg(0)
     r = CompositeReducer(name, state, element, lift_nodes, combine_nodes, tuple(init), project_node, associative)
-    COMPOSITE_REDUCERS[name] = r
-    return r
+    return REDUCERS.register(
+        name, r, lambda v: (v.state, v.element, v.lift, v.combine, v.init, v.project, v.associative)
+    )

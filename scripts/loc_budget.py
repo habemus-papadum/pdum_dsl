@@ -49,6 +49,7 @@ FILE_CAPS = {
     "lower.py": 170,
     "pack.py": 175,
     "registry.py": 180,  # P1: + the kind vocabulary, the spelled-oracle door (F33)
+    "naming.py": 55,  # P3: claim/derive — the naming law's core mechanism seed
     "events.py": 60,  # the seam (emit/span/forbid)
     "recorder.py": 170,  # the observability satellite, now in-package
     "value.py": 330,  # the value language: statements, joins, loops, refusals

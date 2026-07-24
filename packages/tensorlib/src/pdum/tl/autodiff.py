@@ -53,8 +53,11 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pdum.dsl import events
+
 from .ir import PW, RED, Instr, Program, _fold_extent, _fold_parts, _fold_step_layouts, infer
-from .mdsl import COMPOSITE_MARKERS, COMPOSITE_REDUCERS, Const
+from .nodes import Const
+from .registry import MARKERS, REDUCERS
 from .signatures import infer_signatures
 from .units import ONE
 
@@ -125,6 +128,22 @@ def grad(
     target_unit=None,
     fold_segments: int | None = None,
     fold_slots: int | None = None,
+) -> tuple[Program, dict[str, str | None]]:
+    # the second compile-ish seam (200 §1.10): adjoint derivation announces
+    # itself as a span, nesting the program.build events it causes
+    with events.span("adjoint.derive", (target, wrt)):
+        return _grad(prog, target, input_layouts, seed, wrt, target_unit, fold_segments, fold_slots)
+
+
+def _grad(
+    prog: Program,
+    target: str,
+    input_layouts: dict,
+    seed: str | None,
+    wrt: tuple[str, ...] | None,
+    target_unit,
+    fold_segments: int | None,
+    fold_slots: int | None,
 ) -> tuple[Program, dict[str, str | None]]:
     if target not in prog.vars:
         raise KeyError(f"target {target!r} is not defined by the program")
@@ -271,10 +290,10 @@ def grad(
             contribute(A[0], b.emit("pointwise", (c, neg), {"f": "mul"}))
         elif f in _GRADIENT_FREE:
             pass  # declared gradient-free (bool-carrier outputs); cotangent drops
-        elif f in COMPOSITE_MARKERS:
+        elif f in MARKERS:
             # the marker DSL pays off: partials are DERIVED by tree
             # rewriting, so composite markers differentiate automatically
-            cm = COMPOSITE_MARKERS[f]
+            cm = MARKERS[f]
             for i, operand in enumerate(A):
                 p = cm.partial(i)
                 if isinstance(p.body, Const) and p.body.value == 0:
@@ -325,7 +344,7 @@ def grad(
         C(init, r) = r makes ∂C/∂right the identity at t=start, so the
         boundary needs no special case; the first reversed element's M slot
         is garbage but provably never projected."""
-        f = COMPOSITE_REDUCERS[fname]
+        f = REDUCERS[fname]
         k = f.state
         cs, ls, p_marker = f.component_markers()
         ddim = shadows[elems[0]].dim(dim)
@@ -658,7 +677,7 @@ def grad(
         f = ins.params["f"]
         dims = ins.params["dims"]
         names = (dims,) if isinstance(dims, str) else tuple(dims)
-        if f not in RED and f in COMPOSITE_REDUCERS:
+        if f not in RED and f in REDUCERS:
             # reduce = select the last slot of the scan, so its adjoint is
             # embed-at-last (zeros elsewhere) then the scan adjoint
             (dim,) = names
@@ -692,7 +711,7 @@ def grad(
             raise NotImplementedError(f"reduce({f}) has no adjoint rule yet")
 
     def scan_rule(ins: Instr, c: str) -> None:
-        if ins.params["f"] in COMPOSITE_REDUCERS and ins.params["f"] not in RED:
+        if ins.params["f"] in REDUCERS and ins.params["f"] not in RED:
             composite_scan_adjoint(ins.params["f"], ins.params["dim"], ins.operands, c)
             return
         if ins.params["f"] != "sum":

@@ -3,10 +3,14 @@
 Deliberately not a frontend — no tracing, no operator overloading, no
 expression trees (those live behind the marker DSL's stability boundary).
 This exists so multi-layer zoo models can be written in topological order
-without hand-numbering SSA variables.
+without hand-numbering SSA variables. Name assignment is the CORE's
+(pdum.dsl.naming, P3): explicit inputs claim (collisions refuse), hints
+derive. Build itself lives until P5, when makers replace the zoo builders.
 """
 
 from __future__ import annotations
+
+from pdum.dsl.naming import Namer
 
 from .ir import Instr, Program
 
@@ -14,28 +18,15 @@ from .ir import Instr, Program
 class Build:
     def __init__(self) -> None:
         self.instrs: list[Instr] = []
-        self.taken: set[str] = set()
-
-    def _name(self, hint: str) -> str:
-        if hint not in self.taken:
-            self.taken.add(hint)
-            return hint
-        i = 1
-        while f"{hint}{i}" in self.taken:
-            i += 1
-        name = f"{hint}{i}"
-        self.taken.add(name)
-        return name
+        self.names = Namer()
 
     def input(self, name: str) -> str:
-        if name in self.taken:
-            raise ValueError(f"input {name!r} already defined")
-        self.taken.add(name)
+        self.names.claim(name)
         self.instrs.append(Instr(name, "input", (), {}))
         return name
 
     def emit(self, op: str, operands=(), hint: str | None = None, **params) -> str:
-        var = self._name(hint or op)
+        var = self.names.derive(hint or op)
         self.instrs.append(Instr(var, op, tuple(operands), params))
         return var
 

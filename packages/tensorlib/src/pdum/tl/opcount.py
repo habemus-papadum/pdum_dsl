@@ -38,7 +38,8 @@ from dataclasses import dataclass
 from typing import Mapping
 
 from .ir import Program, _fold_extent, _fold_step_layouts, infer
-from .mdsl import COMPOSITE_MARKERS, COMPOSITE_REDUCERS, Prim
+from .nodes import Prim
+from .registry import MARKERS, REDUCERS
 
 _RED_COMBINE = {"sum": "add", "prod": "mul", "max": "maximum", "min": "minimum", "mean": "add"}
 
@@ -53,8 +54,8 @@ def _tree_ops(node) -> Counter:
 
 
 def _marker_ops(name: str) -> Counter:
-    if name in COMPOSITE_MARKERS:
-        return _tree_ops(COMPOSITE_MARKERS[name].body)
+    if name in MARKERS:
+        return _tree_ops(MARKERS[name].body)
     return Counter({name: 1})
 
 
@@ -104,7 +105,7 @@ def ops_count(prog: Program, input_layouts: dict, fuse_mac: bool = False) -> Pro
                 if f == "mean":
                     c["div"] += lines if ins.op == "reduce" else nin
             else:
-                r = COMPOSITE_REDUCERS[f]
+                r = REDUCERS[f]
                 lift = sum((_tree_ops(n) for n in r.lift), Counter())
                 combine = sum((_tree_ops(n) for n in r.combine), Counter())
                 project = _tree_ops(r.project)

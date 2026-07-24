@@ -36,11 +36,12 @@ from types import MappingProxyType
 from typing import Mapping
 
 import numpy as np
+from pdum.dsl import events
 
 from .compute import Marker, Reducer, iota, pointwise, pw, red, reduce, scan
 from .guarded import GuardedLayout, pad_layout, stencil_layout
 from .layout import Dim, Layout
-from .mdsl import COMPOSITE_MARKERS, COMPOSITE_REDUCERS
+from .registry import MARKERS, REDUCERS
 from .tensor import Tensor, alignment
 
 PW = {m.name: m for m in vars(pw).values() if isinstance(m, Marker)}
@@ -51,16 +52,16 @@ def pw_marker(name: str):
     # resolve a pointwise marker name: primitives, then registered composites
     if name in PW:
         return PW[name]
-    if name in COMPOSITE_MARKERS:
-        return COMPOSITE_MARKERS[name]
+    if name in MARKERS:
+        return MARKERS[name]
     raise KeyError(f"unknown pointwise marker {name!r}")
 
 
 def reducer(name: str):
     if name in RED:
         return RED[name]
-    if name in COMPOSITE_REDUCERS:
-        return COMPOSITE_REDUCERS[name]
+    if name in REDUCERS:
+        return REDUCERS[name]
     raise KeyError(f"unknown reducer {name!r}")
 
 
@@ -104,6 +105,9 @@ class Program:
                 if o not in seen:
                     raise ValueError(f"{ins!r}: operand {o!r} not yet defined")
             seen.add(ins.var)
+        # the compile-ish seam (200 §1.10): building a Program announces
+        # itself, so forbid("program.build") pins "this loop builds nothing"
+        events.emit("program.build", len(self.instrs))
 
     @property
     def vars(self) -> tuple[str, ...]:

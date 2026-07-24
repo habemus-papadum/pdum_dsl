@@ -100,6 +100,12 @@ class _TierCache:
     def __len__(self) -> int:
         return len(self._ready)
 
+    def peek(self, key: tuple) -> Any:
+        """Non-compiling probe: the entry, or None. No counters, no events —
+        a lookup is not a compile act (registries resolve names through this)."""
+        with self._lock:
+            return self._ready.get(key)
+
     def _explain(self, key: tuple) -> str:
         return ""
 

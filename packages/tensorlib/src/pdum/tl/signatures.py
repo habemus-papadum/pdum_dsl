@@ -37,14 +37,9 @@ from fractions import Fraction
 import numpy as np
 
 from .dtypes import CARRIERS, carrier_of
-from .mdsl import (
-    COMPOSITE_MARKERS,
-    COMPOSITE_REDUCERS,
-    Arg,
-    CompositeMarker,
-    Const,
-    Prim,
-)
+from .mdsl import CompositeMarker
+from .nodes import Arg, Const, Prim
+from .registry import MARKERS, REDUCERS
 from .units import ONE, Unit, u
 
 
@@ -139,8 +134,8 @@ def marker_signature(f, args) -> VInfo:
     """Signature of one marker application: `f` is a primitive marker name
     or a CompositeMarker; `args` are per-operand VInfos."""
     args = tuple(args)
-    if isinstance(f, str) and f in COMPOSITE_MARKERS:
-        f = COMPOSITE_MARKERS[f]
+    if isinstance(f, str) and f in MARKERS:
+        f = MARKERS[f]
     if isinstance(f, CompositeMarker):
         if len(args) != f.arity:
             raise SignatureError(f"{f.name} takes {f.arity} operands, got {len(args)}")
@@ -160,7 +155,7 @@ def _reducer_sig(fname: str, infos: tuple) -> VInfo:
             "prod over a dimensioned quantity has unit u**n — not inferable "
             "without a static extent; strip or normalize units first"
         )
-    f = COMPOSITE_REDUCERS.get(fname)
+    f = REDUCERS.get(fname)
     if f is None:
         raise KeyError(f"no signature rule for reducer {fname!r}")
     if len(infos) != f.element:

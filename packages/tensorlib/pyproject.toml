@@ -20,8 +20,14 @@ authors = [
 ]
 requires-python = ">=3.14"
 dependencies = [
+    # Lockstep-pinned sibling (200 §2): scripts/_versioning.py rewrites this
+    # constraint alongside every version bump — do not hand-edit.
+    "habemus-papadum-dsl==0.0.0+dev",
     "numpy>=2.5.0",
 ]
+
+[tool.uv.sources]
+habemus-papadum-dsl = { workspace = true }
 
 [project.urls]
 Homepage = "https://github.com/habemus-papadum/pdum_dsl"

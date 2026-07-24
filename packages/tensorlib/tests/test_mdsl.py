@@ -5,19 +5,9 @@ import pytest
 from pdum.tl import Tensor, defmarker, defreducer, pointwise, reduce, scan
 from pdum.tl.autodiff import grad, numeric_grad
 from pdum.tl.ir import Instr, Program, run
-from pdum.tl.mdsl import (
-    COMPOSITE_MARKERS,
-    Arg,
-    Const,
-    Prim,
-    diff,
-    exp,
-    gt,
-    log,
-    tanh,
-    trace,
-    where,
-)
+from pdum.tl.mdsl import diff, exp, gt, log, tanh, trace, where
+from pdum.tl.nodes import Arg, Const, Prim
+from pdum.tl.registry import MARKERS
 
 
 def I(var, op, operands=(), **params):  # noqa: E743
@@ -84,7 +74,7 @@ def test_composites_work_in_ir_by_name():
 
 def test_partial_is_derived_and_registered():
     ds = sigmoid.partial(0)
-    assert ds.name == "sigmoid_t.d0" and ds.name in COMPOSITE_MARKERS
+    assert ds.name == "sigmoid_t.d0" and ds.name in MARKERS
     x = RNG.standard_normal(5)
     got = pointwise(ds, T(x, ("i",))).to_numpy()
     s = 1 / (1 + np.exp(-x))
