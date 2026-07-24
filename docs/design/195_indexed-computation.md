@@ -325,7 +325,56 @@ itself must receive gradients, that is the discrete-choice estimator
 question of §5 (straight-through/relaxation), declared at the site —
 routing without learned choice has no such question.
 
-## 7. Amendments to 190
+## 7. Incremental compilation is a cache phenomenon
+
+A training loop derives many programs from one model: the training step
+(forward; loss; backward; optimizer), the validation loss (forward;
+loss), the eval forward — plus every branch and unroll chunk of §5–§6.
+The doctrine: **incremental compilation is not a compiler mode; it is
+what the existing caches already do**, and no special mechanism may be
+built for it. "Compilation" here is four memoized tiers, each sharing
+work by content:
+
+1. **Build** — Programs are content-addressed (tier 2); identical
+   subprograms are identical entries.
+2. **Derivation** — grad/DCE/checkpoint transforms are
+   derivation-under-cache: cache entries computed from cache entries;
+   the training step composes the *cached* forward rather than
+   rebuilding it.
+3. **Descent** — the certified-lowerings registry is chunk-granular,
+   keyed by (chunk fingerprint, boundary contract, licenses, …): the
+   training step's attention chunk and the eval forward's attention
+   chunk hit the *same entry* whenever key and contract agree.
+4. **Kernel codegen** — per-artifact, content-addressed as always.
+
+**Warm start without constraint.** Reuse is an *outcome* of content
+addressing, never an input to the compiler. Whole-program optimization
+of the training step may legitimately choose different work for the
+same source — the canonical case is already in the spec: training-flash
+must export the logsumexp (the saved-set demand, which is *in the
+registry key*), eval-flash needn't — so those are two entries and the
+eval-compiled chunk simply does not hit. No staleness, no invalidation
+heuristics: where the optimizer's choices coincide, artifacts are free;
+where they diverge, the miss is the correct answer.
+
+**Why the sharing rate is high in practice.** Within one codebase, the
+eval forward and the forward inside the training step are built by the
+*same makers*, so their subgraphs are syntactically identical — sharing
+works before the Program-normalization pass exists; normalization later
+*broadens* sharing across differently-spelled sources, it does not
+enable it. One honest split: `mode="eval"` changes the built Program
+(dropout gone), so train- and eval-forward differ at the top and share
+at chunk granularity beneath (the contractions and dropout-free cores
+coincide). The branching doctrine (§6) multiplies the payoff: every
+host-orchestrated segment draws from the same memoized substrate.
+
+**The one new commitment.** The L4 descent *search* may consume a
+sibling program's plan as a **non-binding hint** — seeding the
+training step's partition search from the eval forward's chosen
+boundaries, cost-model-checked, freely discarded. Correctness never
+depends on hints; this line carries into the L4 brief.
+
+## 8. Amendments to 190
 
 1. **Units are marked** (§1): the assemblage pipe composes `@unit`
    objects; makers return them; samples updated accordingly. Lands
@@ -364,3 +413,7 @@ routing without learned choice has no such question.
    branch spaces. No mechanics required — it is a consequence of the
    cache polarity; an adaptive-depth or tree-structured zoo sample is a
    natural later addition.
+8. **Incremental compilation as doctrine** (§7): no mechanism is ever
+   built for it — the four memoized tiers are the mechanism; reuse is
+   an outcome of content addressing, never a compiler input; the
+   descent-search plan-as-hint line (non-binding) joins the L4 brief.
