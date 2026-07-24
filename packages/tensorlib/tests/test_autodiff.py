@@ -374,8 +374,11 @@ def test_grad_diagonal_disjoint_parts_is_zero():
     np.testing.assert_allclose(env[grads["x"]].to_numpy(), np.zeros((3, 3)))
 
 
-def test_reduce_max_tie_overcount_is_pinned():
-    # documented caveat: every tied element receives the full cotangent
+def test_reduce_max_tie_partitions_first_wins():
+    # THE AT-KINK LAW (200 §S.2, re-pinned at P4): at a tie exactly ONE
+    # element receives the cotangent — the first along the reduced dim.
+    # (The pre-P4 behavior gave every tied element the full cotangent; that
+    # over-count was not a subgradient selection and is gone.)
     ins = [
         I("x", "input"),
         I("m", "reduce", ["x"], f="max", dims=("i",)),
@@ -384,7 +387,7 @@ def test_reduce_max_tie_overcount_is_pinned():
     x = T([3.0, 3.0, 1.0], ("i",))
     joint, grads = grad(prog, "m", {"x": x})
     env = run(joint, {"x": x})
-    np.testing.assert_allclose(env[grads["x"]].to_numpy(), [1.0, 1.0, 0.0])
+    np.testing.assert_allclose(env[grads["x"]].to_numpy(), [1.0, 0.0, 0.0])
 
 
 def test_unknown_differentiable_marker_raises_not_silent_zero():

@@ -43,25 +43,32 @@ Contracts and conventions:
   structured-state scan is itself a linear recurrence in reversed time, run
   as a generated matrix-linrec scan over derived Jacobian trees
   (composite_scan_adjoint); reduce† = embed-at-last, then scan†.
-- Tie caveat asymmetry: reduce(max/min) gives every tied element the full
-  cotangent (sums to c x #ties); pointwise maximum/minimum split ties
-  cleanly via the ge/gt asymmetry. Both are standard; only the reduce form
-  over-counts.
+- The at-kink law (S.2, re-pinned at P4): the derivative table is one-sided
+  and PARTITIONS — at a tie exactly one operand receives the cotangent,
+  first-wins. Pointwise maximum/minimum select via the ge/gt asymmetry;
+  reduce(max/min) derives as a chain of single-dim reduces with a
+  first-occurrence mask, inheriting the partition. Gradient mass is
+  conserved regardless of tie structure (test_at_kink pins the points).
+- Primitive linearizations come from THE one derivative table
+  (derivative.TABLE): a primitive's slope is registered once as a derived
+  slope marker (f.d{i}) and applied over the operands — the same interface
+  composite partials use. None = gradient-free.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from functools import lru_cache
 
 from pdum.dsl import events
 
-from .ir import PW, RED, Instr, Program, _fold_extent, _fold_parts, _fold_step_layouts, infer
-from .nodes import Const
+from .derivative import TABLE
+from .ir import PW, RED, Instr, Program, _dense_like, _fold_extent, _fold_parts, _fold_step_layouts, infer
+from .mdsl import CompositeMarker
+from .nodes import Arg, Const
 from .registry import MARKERS, REDUCERS
 from .signatures import infer_signatures
 from .units import ONE
-
-_GRADIENT_FREE = frozenset({"eq", "ne", "le", "lt", "ge", "gt"})
 
 
 @lru_cache(maxsize=None)
@@ -235,61 +242,28 @@ def _grad(
 
     # ---- per-instruction adjoint rules --------------------------------
     def pw_rule(ins: Instr, c: str) -> None:
+        """THE ONE DERIVATIVE TABLE (S.2): primitives and composites both
+        linearize through it — a primitive's slope is the table entry
+        applied over its operand slots (registered once as a derived slope
+        marker, derivation-under-cache); a composite's is partial(i), the
+        same rewrite over its lowered body. None = gradient-free."""
         f = ins.params["f"]
         A = ins.operands
-        if f == "add":
-            contribute(A[0], c)
-            contribute(A[1], c)
-        elif f == "sub":
-            contribute(A[0], c)
-            contribute(A[1], b.emit("pointwise", (c,), {"f": "neg"}))
-        elif f == "neg":
-            contribute(A[0], b.emit("pointwise", (c,), {"f": "neg"}))
-        elif f == "mul":
-            contribute(A[0], b.emit("pointwise", (c, A[1]), {"f": "mul"}))
-            contribute(A[1], b.emit("pointwise", (c, A[0]), {"f": "mul"}))
-        elif f == "div":
-            contribute(A[0], b.emit("pointwise", (c, A[1]), {"f": "div"}))
-            bb = b.emit("pointwise", (A[1], A[1]), {"f": "mul"})
-            num = b.emit("pointwise", (c, A[0]), {"f": "mul"})
-            frac = b.emit("pointwise", (num, bb), {"f": "div"})
-            contribute(A[1], b.emit("pointwise", (frac,), {"f": "neg"}))
-        elif f == "exp":
-            contribute(A[0], b.emit("pointwise", (c, ins.var), {"f": "mul"}))
-        elif f == "log":
-            contribute(A[0], b.emit("pointwise", (c, A[0]), {"f": "div"}))
-        elif f == "maximum":
-            m0 = b.emit("pointwise", (A[0], A[1]), {"f": "ge"})
-            contribute(A[0], b.emit("pointwise", (c, m0), {"f": "mul"}))
-            m1 = b.emit("pointwise", (A[1], A[0]), {"f": "gt"})
-            contribute(A[1], b.emit("pointwise", (c, m1), {"f": "mul"}))
-        elif f == "minimum":
-            m0 = b.emit("pointwise", (A[0], A[1]), {"f": "le"})
-            contribute(A[0], b.emit("pointwise", (c, m0), {"f": "mul"}))
-            m1 = b.emit("pointwise", (A[1], A[0]), {"f": "lt"})
-            contribute(A[1], b.emit("pointwise", (c, m1), {"f": "mul"}))
-        elif f == "where":
-            z = zeros_like(shadows[ins.var])
-            contribute(A[1], b.emit("pointwise", (A[0], c, z), {"f": "where"}))
-            contribute(A[2], b.emit("pointwise", (A[0], z, c), {"f": "where"}))
-        elif f == "tanh":
-            sq = b.emit("pointwise", (ins.var, ins.var), {"f": "mul"})
-            one = const_like(shadows[ins.var], 1.0)
-            om = b.emit("pointwise", (one, sq), {"f": "sub"})
-            contribute(A[0], b.emit("pointwise", (c, om), {"f": "mul"}))
-        elif f == "sqrt":
-            two = const_like(shadows[ins.var], 2.0)
-            den = b.emit("pointwise", (two, ins.var), {"f": "mul"})
-            contribute(A[0], b.emit("pointwise", (c, den), {"f": "div"}))
-        elif f == "sin":
-            cv = b.emit("pointwise", (A[0],), {"f": "cos"})
-            contribute(A[0], b.emit("pointwise", (c, cv), {"f": "mul"}))
-        elif f == "cos":
-            sv = b.emit("pointwise", (A[0],), {"f": "sin"})
-            neg = b.emit("pointwise", (sv,), {"f": "neg"})
-            contribute(A[0], b.emit("pointwise", (c, neg), {"f": "mul"}))
-        elif f in _GRADIENT_FREE:
-            pass  # declared gradient-free (bool-carrier outputs); cotangent drops
+        if f in TABLE:
+            for i, operand in enumerate(A):
+                rule = TABLE[f][i]
+                if rule is None:
+                    continue
+                slope = rule(*(Arg(j) for j in range(len(A))))
+                if isinstance(slope, Const) and slope.value == 0:
+                    continue
+                if isinstance(slope, Const) and slope.value == 1:
+                    contribute(operand, c)
+                    continue
+                dn = f"{f}.d{i}"
+                pm = MARKERS.derive(dn, lambda dn=dn, slope=slope: CompositeMarker(dn, len(A), slope))
+                pv = b.emit("pointwise", A, {"f": pm.name})
+                contribute(operand, b.emit("pointwise", (c, pv), {"f": "mul"}))
         elif f in MARKERS:
             # the marker DSL pays off: partials are DERIVED by tree
             # rewriting, so composite markers differentiate automatically
@@ -302,9 +276,9 @@ def _grad(
                 contribute(operand, b.emit("pointwise", (c, pv), {"f": "mul"}))
         elif f in PW:
             raise NotImplementedError(
-                f"marker {f!r} has no gradient rule — add one to pw_rule or "
-                f"declare it in _GRADIENT_FREE (silent zero gradients are how "
-                f"models rot)"
+                f"marker {f!r} has no entry in the derivative table — a "
+                f"primitive joins the core WITH its linearization (silent "
+                f"zero gradients are how models rot)"
             )
         else:
             raise KeyError(f"unknown marker {f!r}")
@@ -703,10 +677,41 @@ def _grad(
             nb = const_like(a_shape, float(n))
             contribute(A, b.emit("pointwise", (r, nb), {"f": "div"}))
         elif f in ("max", "min"):
-            rc = repeats_over(c, names, a_shape)
-            rm = repeats_over(ins.var, names, a_shape)
-            m = b.emit("pointwise", (A, rm), {"f": "eq"})
-            contribute(A, b.emit("pointwise", (rc, m), {"f": "mul"}))
+            # THE AT-KINK RE-PIN (S.2): at a tie exactly ONE element receives
+            # the cotangent — the FIRST along the reduced dims, in declared
+            # order — derived as a chain of single-dim reduces, inheriting
+            # the pairwise combine's partition law. (The old eq-mask
+            # distributed over ties: not a subgradient selection at all.)
+            plain = tuple(replace(d, chart=None, labels=None) for d in a_shape.dims)
+
+            def rep(v: str, d0) -> str:
+                r = b.emit("repeat", (v,), {"name": d0.name, "extent": (d0.start, d0.stop)}, hint="km")
+                if d0.level is not None:  # placement rides the chain (PLACEMENT.md)
+                    r = b.emit("bind", (r,), {"levels": {d0.name: d0.level}}, hint="km")
+                return r
+
+            links = []
+            srcp, sdims = b.emit("strip_charts", (A,), {}, hint="kk"), plain
+            for i, name in enumerate(names):
+                last = i == len(names) - 1
+                dst = ins.var if last else b.emit("reduce", (srcp,), {"f": f, "dims": (name,)}, hint="kr")
+                dstp = b.emit("strip_charts", (dst,), {}, hint="kk") if last else dst
+                links.append((srcp, sdims, name))
+                sdims = tuple(d for d in sdims if d.name != name)
+                srcp = dstp
+            prev, cotan = srcp, b.emit("strip_charts", (c,), {}, hint="kc")
+            for srcp, sdims, name in reversed(links):
+                d0 = next(d for d in sdims if d.name == name)
+                lay = _dense_like(sdims)
+                one, zero = const_like(lay, 1.0), const_like(lay, 0.0)
+                m = b.emit("pointwise", (srcp, rep(prev, d0)), {"f": "eq"}, hint="kt")
+                mnum = b.emit("pointwise", (m, one, zero), {"f": "where"}, hint="kn")
+                s = b.emit("scan", (mnum,), {"f": "sum", "dim": name}, hint="ks")
+                fw = b.emit("pointwise", (s, one), {"f": "eq"}, hint="kf")
+                first = b.emit("pointwise", (m, fw), {"f": "mul"}, hint="kw")
+                cotan = b.emit("pointwise", (rep(cotan, d0), first), {"f": "mul"}, hint="kg")
+                prev = srcp
+            contribute(A, cotan)
         else:
             raise NotImplementedError(f"reduce({f}) has no adjoint rule yet")
 
