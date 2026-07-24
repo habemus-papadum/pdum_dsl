@@ -50,7 +50,7 @@ def _with_loss(m):
 
 @pytest.mark.parametrize(
     ("name", "wrt"),
-    [("gpt2", ("x", "L0.wq")), ("llama", ("x",)), ("heat2d", ("u0",)), ("fdtd", ("E0",))],
+    [("gpt2", ("x", "h.0.attn.wq")), ("llama", ("x",)), ("heat2d", ("u0",)), ("fdtd", ("E0",))],
 )
 def test_zoo_gradients_match_fd(name, wrt):
     m = ENTRIES[name]()

@@ -1,18 +1,28 @@
-"""GPT-2: LayerNorm + causal MHA + GELU MLP + residuals — the baseline canon.
+"""GPT-2 as MAKERS (200 §6.2/6.3) — the flagship of the binding layer.
 
+The library (layernorm, causal_softmax) is parameter-blind: functions from
+tensors to tensors. The makers own names: declare-at-use ``s.param`` lines,
+level-first paths via ``make_attn(s / "attn", cfg)``, and ``s.seq`` giving
+``h.0.attn.wq, h.1.mlp.w1, ...`` — the naming law's worked example. Weights
+are born structured: wq is (d, nh, hk), heads are dims, never splits (D5).
 Starts from hidden states (token embedding is a gather — a recorded
-boundary); learned positions are just another input tensor added in.
-Weights are born structured: wq is (d, nh, hk), so heads are dims, never
-splits (D5 names-first)."""
+boundary); learned positions are the ``wpe`` leaf added in."""
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
 
-from ..build import Build
-from .zoo_common import ZooModel, causal_softmax, contract, layernorm, np_gelu, np_layernorm, np_softmax, t_in
+from ..assemblage import assemblage, unit
+from ..ir import _dense_like
+from ..layout import Dim
+from ..lifting import const_like, contract, iota_of
+from ..mdsl import exp, where
+from ..scope import scope
+from ..tensor import Tensor
+from .zoo_common import ZooModel, gelu, np_gelu, np_layernorm, np_softmax
 
 
 @dataclass(frozen=True)
@@ -23,87 +33,130 @@ class GPT2Config:
     hk: int = 3  # head width
     m: int = 8  # mlp width
     layers: int = 2
-    v: int = 5  # vocab (head only; no embedding gather)
+    v: int = 5  # vocab (head only; embedding gather is a recorded boundary)
     eps: float = 1e-5
+
+
+# --- library (parameter-blind): tensors to tensors, no scope, no names ------
+
+
+def layernorm_t(x, g, b, *, feat, eps):
+    mu = x.mean(feat)
+    xc = x - mu.repeat(feat, x.extent(feat))
+    sd = ((xc * xc).mean(feat) + eps).sqrt()
+    return xc / sd.repeat(feat, x.extent(feat)) * g.repeat_like(x, but=feat) + b.repeat_like(x, but=feat)
+
+
+def causal_softmax_t(sc, *, q="t", k="s"):
+    mask = iota_of(sc, k) <= iota_of(sc, q)
+    sm = where(mask, sc, const_like(sc, -1e9))
+    e = exp(sm - sm.max(k).repeat_like(sm, dim=k))
+    return e / e.sum(k).repeat_like(e, dim=k)
+
+
+# --- the makers (binding layer): declare-at-use -----------------------------
+
+
+def make_attn(s, cfg):
+    D, H, K = cfg.d, cfg.nh, cfg.hk
+    ln1g, ln1b = s.param("ln1g", d=D), s.param("ln1b", d=D)
+    wq = s.param("wq", d=D, nh=H, hk=K)
+    wk = s.param("wk", d=D, nh=H, hk=K)
+    wv = s.param("wv", d=D, nh=H, hk=K)
+    wo = s.param("wo", nh=H, hk=K, d=D)
+    scale = 1.0 / math.sqrt(K)
+
+    @unit
+    def attn(h):
+        a = layernorm_t(h, ln1g, ln1b, feat="d", eps=cfg.eps)
+        q = contract(a, wq)  # unique shared axis: "d"
+        k = contract(a.rename(t="s"), wk)
+        v = contract(a.rename(t="s"), wv)
+        sc = contract(q * scale, k, axis="hk")  # "nh" rides; axis breaks the ambiguity
+        pr = causal_softmax_t(sc)
+        cx = contract(pr, v, axis="s")
+        o = contract(cx, wo, axis=("nh", "hk"))
+        return h + o
+
+    return attn
+
+
+def make_mlp(s, cfg):
+    D, M = cfg.d, cfg.m
+    ln2g, ln2b = s.param("ln2g", d=D), s.param("ln2b", d=D)
+    w1, b1 = s.param("w1", d=D, m=M), s.param("b1", m=M)
+    w2, b2 = s.param("w2", m=M, d=D), s.param("b2", d=D)
+
+    @unit
+    def mlp(h):
+        a = layernorm_t(h, ln2g, ln2b, feat="d", eps=cfg.eps)
+        m = gelu(contract(a, w1) + b1.repeat_like(a, dim="t"))
+        return h + contract(m, w2) + b2.repeat_like(h, but="d")
+
+    return mlp
+
+
+def make_block(s, cfg):
+    return make_attn(s / "attn", cfg) | make_mlp(s / "mlp", cfg)
+
+
+def make_gpt2(s, cfg):
+    wpe = s.param("wpe", t=cfg.t, d=cfg.d)
+    lnfg, lnfb = s.param("lnfg", d=cfg.d), s.param("lnfb", d=cfg.d)
+    wlm = s.param("wlm", d=cfg.d, v=cfg.v)
+
+    @unit
+    def embed(x):
+        return x + wpe
+
+    trunk = s.seq("h", make_block, cfg, n=cfg.layers)  # h.0.attn.wq, h.1.mlp.w1, ...
+
+    @unit
+    def head(h):
+        hf = layernorm_t(h, lnfg, lnfb, feat="d", eps=cfg.eps)
+        return contract(hf, wlm)
+
+    return embed | trunk | head
+
+
+# --- the zoo entry: build, bind test values by contract name ----------------
+
+
+def _t(arr, names):
+    return Tensor.from_numpy(np.asarray(arr, dtype=np.float64), names)
 
 
 def gpt2(cfg: GPT2Config = GPT2Config(), seed: int = 7) -> ZooModel:
     rng = np.random.default_rng(seed)
-    T, D, H, K, M, V = cfg.t, cfg.d, cfg.nh, cfg.hk, cfg.m, cfg.v
-    b = Build()
-    inputs: dict = {}
+    root = scope()
+    xlay = _dense_like((Dim("t", 0, 0, cfg.t), Dim("d", 0, 0, cfg.d)))
+    model = assemblage(make_gpt2(root, cfg), scope=root, x=xlay)
+    inputs = {"x": _t(rng.standard_normal((cfg.t, cfg.d)), ("t", "d"))}
+    for name, p in root.coll.leaves.items():
+        shape = tuple(e for _, e in p.dims)
+        std = 0.1 if name == "wpe" else 0.4
+        inputs[name] = _t(std * rng.standard_normal(shape), tuple(n for n, _ in p.dims))
 
-    def w(name, *shape, names):
-        return t_in(inputs, name, 0.4 * rng.standard_normal(shape), names)
-
-    x = t_in(inputs, "x", rng.standard_normal((T, D)), ("t", "d"))
-    pos = t_in(inputs, "pos", 0.1 * rng.standard_normal((T, D)), ("t", "d"))
-    b.input(x)
-    b.input(pos)
-    td = [("t", (0, T)), ("d", (0, D))]
-    thk = [("t", (0, T)), ("nh", (0, H)), ("hk", (0, K))]
-    tsh = [("t", (0, T)), ("s", (0, T)), ("nh", (0, H))]
-    h = b.pw("add", x, pos, hint="h0")
-    for i in range(cfg.layers):
-        p = f"L{i}."
-        for nm, shape, names in (
-            (p + "ln1g", (D,), ("d",)),
-            (p + "ln1b", (D,), ("d",)),
-            (p + "wq", (D, H, K), ("d", "nh", "hk")),
-            (p + "wk", (D, H, K), ("d", "nh", "hk")),
-            (p + "wv", (D, H, K), ("d", "nh", "hk")),
-            (p + "wo", (H, K, D), ("nh", "hk", "d")),
-            (p + "ln2g", (D,), ("d",)),
-            (p + "ln2b", (D,), ("d",)),
-            (p + "w1", (D, M), ("d", "m")),
-            (p + "b1", (M,), ("m",)),
-            (p + "w2", (M, D), ("m", "d")),
-            (p + "b2", (D,), ("d",)),
-        ):
-            b.input(w(nm, *shape, names=names))
-        a = layernorm(b, h, "d", (0, D), td, p + "ln1g", p + "ln1b", cfg.eps)
-        a_s = b.emit("rename", (a,), hint="as", mapping={"t": "s"})
-        heads = [("nh", (0, H)), ("hk", (0, K))]
-        q = contract(b, a, p + "wq", heads, [("t", (0, T))], ("d",), hint="q")
-        kk = contract(b, a_s, p + "wk", heads, [("s", (0, T))], ("d",), hint="k")
-        vv = contract(b, a_s, p + "wv", heads, [("s", (0, T))], ("d",), hint="v")
-        qs = b.pw("mul", q, b.const(1.0 / np.sqrt(K), thk, hint="scale"), hint="qs")
-        sc = contract(b, qs, kk, [("s", (0, T))], [("t", (0, T))], ("hk",), hint="sc")
-        pr = causal_softmax(b, sc, "t", "s", tsh)
-        ctx = contract(b, pr, vv, [("hk", (0, K))], [("t", (0, T))], ("s",), hint="ctx")
-        o = contract(b, ctx, p + "wo", [("d", (0, D))], [("t", (0, T))], ("nh", "hk"), hint="o")
-        h = b.pw("add", h, o, hint="hres")
-        a2 = layernorm(b, h, "d", (0, D), td, p + "ln2g", p + "ln2b", cfg.eps)
-        m1 = contract(b, a2, p + "w1", [("m", (0, M))], [("t", (0, T))], ("d",), hint="m1")
-        m1b = b.pw("add", m1, b.bcast(p + "b1", [("t", (0, T))]), hint="m1b")
-        gg = b.pw("zoo.gelu", m1b, hint="gelu")
-        m2 = contract(b, gg, p + "w2", [("d", (0, D))], [("t", (0, T))], ("m",), hint="m2")
-        m2b = b.pw("add", m2, b.bcast(p + "b2", [("t", (0, T))]), hint="m2b")
-        h = b.pw("add", h, m2b, hint="hres")
-    b.input(w("lnfg", D, names=("d",)))
-    b.input(w("lnfb", D, names=("d",)))
-    b.input(w("wlm", D, V, names=("d", "v")))
-    hf = layernorm(b, h, "d", (0, D), td, "lnfg", "lnfb", cfg.eps)
-    logits = contract(b, hf, "wlm", [("v", (0, V))], [("t", (0, T))], ("d",), hint="logits")
+    T, K = cfg.t, cfg.hk
 
     def ref(inp):
-        h = inp["x"] + inp["pos"]
+        h = inp["x"] + inp["wpe"]
         mask = np.tril(np.ones((T, T), dtype=bool))
         for i in range(cfg.layers):
-            p = f"L{i}."
-            a = np_layernorm(h, inp[p + "ln1g"], inp[p + "ln1b"], cfg.eps)
-            q = np.einsum("td,dhk->thk", a, inp[p + "wq"]) / np.sqrt(K)
-            kk = np.einsum("sd,dhk->shk", a, inp[p + "wk"])
-            vv = np.einsum("sd,dhk->shk", a, inp[p + "wv"])
+            p = f"h.{i}."
+            a = np_layernorm(h, inp[p + "attn.ln1g"], inp[p + "attn.ln1b"], cfg.eps)
+            q = np.einsum("td,dhk->thk", a, inp[p + "attn.wq"]) / np.sqrt(K)
+            kk = np.einsum("sd,dhk->shk", a, inp[p + "attn.wk"])
+            vv = np.einsum("sd,dhk->shk", a, inp[p + "attn.wv"])
             sc = np.einsum("thk,shk->tsh", q, kk)
             sc = np.where(mask[:, :, None], sc, -1e9)
             pr = np_softmax(sc, axis=1)
             ctx = np.einsum("tsh,shk->thk", pr, vv)
-            h = h + np.einsum("thk,hkd->td", ctx, inp[p + "wo"])
-            a2 = np_layernorm(h, inp[p + "ln2g"], inp[p + "ln2b"], cfg.eps)
-            mm = np_gelu(a2 @ inp[p + "w1"] + inp[p + "b1"])
-            h = h + mm @ inp[p + "w2"] + inp[p + "b2"]
+            h = h + np.einsum("thk,hkd->td", ctx, inp[p + "attn.wo"])
+            a2 = np_layernorm(h, inp[p + "mlp.ln2g"], inp[p + "mlp.ln2b"], cfg.eps)
+            mm = np_gelu(a2 @ inp[p + "mlp.w1"] + inp[p + "mlp.b1"])
+            h = h + mm @ inp[p + "mlp.w2"] + inp[p + "mlp.b2"]
         hf = np_layernorm(h, inp["lnfg"], inp["lnfb"], cfg.eps)
         return hf @ inp["wlm"]
 
-    return ZooModel(b.program(), inputs, logits, ref, ("t", "v"))
+    return ZooModel(model.program, inputs, model.output, ref, ("t", "v"))

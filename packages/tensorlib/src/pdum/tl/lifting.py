@@ -319,6 +319,10 @@ class _Lifter:
         kwargs = self.kwargs_of(node)
         if isinstance(target, _Intrinsic):
             return getattr(self, f"_i_{target.name}")(*args, **kwargs)
+        from .mdsl import CompositeMarker
+
+        if isinstance(target, CompositeMarker):  # ONE named instr — granularity kept
+            return self.pointwise(target.name, *args, hint=target.name.rsplit(".", 1)[-1])
         prim = getattr(target, "op", None)
         if prim is not None:  # a primitive over tensors -> pointwise; over hosts -> refuse
             if not any(isinstance(a, _T) for a in args):

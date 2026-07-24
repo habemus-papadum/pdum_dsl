@@ -122,7 +122,7 @@ def test_checkpoint_gpt2_shrinks_the_boundary_and_the_peak():
     after = peak_memory(ck.program, m.inputs).peak_bytes
     assert after <= before
     ej, ec = run(jp, m.inputs), run(ck.program, m.inputs)
-    for v in ("x", "L0.wq"):
+    for v in ("x", "h.0.attn.wq"):
         np.testing.assert_allclose(
             ec[grads[v]].to_numpy(order=m.inputs[v].names),
             ej[grads[v]].to_numpy(order=m.inputs[v].names),
