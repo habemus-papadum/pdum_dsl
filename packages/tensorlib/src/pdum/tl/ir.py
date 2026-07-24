@@ -297,7 +297,11 @@ def run(prog: Program, inputs: dict[str, Tensor]) -> dict[str, Tensor]:
     for ins in prog.instrs:
         if ins.op == "input":
             if ins.var not in inputs:
-                raise KeyError(f"missing input {ins.var!r}")
+                raise KeyError(
+                    f"missing input {ins.var!r} — virtual leaves analyze for free but "
+                    f"execute only once provisioned: provision(root, source=init(...)"
+                    f"|safetensors(...)) (200 §1.7)"
+                )
             env[ins.var] = inputs[ins.var]
         elif ins.op == "const":
             env[ins.var] = _const(ins.params)

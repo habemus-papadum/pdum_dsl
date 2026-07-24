@@ -84,6 +84,7 @@ class Assemblage:
     params: dict  # flat contract name -> Param (declaration order preserved)
     taps: dict  # site path -> SSA var (every SITE; requested ones are outputs)
     outputs: tuple  # requested tap vars (+ the output) that survive in program
+    layouts: dict  # EVERY input's layout — what virtual analyses consume
 
 
 class _UnitLowerer(_Lifter):
@@ -186,6 +187,7 @@ def _build(u: Unit, taps: tuple, input_layouts: dict) -> Assemblage:
     requested = [v for site, v in sorted(lo.taps.items()) if any(fnmatch.fnmatch(site, p) for p in taps)]
     keep = (out, *requested)
     prog = dce(prog, keep) if len(prog.instrs) else prog
+    layouts = {i.var: lo.shadows[i.var] for i in prog.instrs if i.op == "input"}
     return Assemblage(
         program=prog,
         inputs=inputs,
@@ -193,4 +195,5 @@ def _build(u: Unit, taps: tuple, input_layouts: dict) -> Assemblage:
         params=dict(lo.params),
         taps=dict(lo.taps),
         outputs=keep,
+        layouts=layouts,
     )
