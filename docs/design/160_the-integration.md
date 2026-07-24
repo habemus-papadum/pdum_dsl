@@ -12,6 +12,9 @@ Six decisions from the post-150 walkthrough, recorded as canon. Each names what 
 
 **D2 — The repo becomes a uv workspace of logically-organized packages; mutual cannibalization.** Neither codebase survives as "the core piece": (a) a core-infrastructure package extracted from pdum.dsl kernel machinery — two-tier type-keyed caching, type dispatch (typeof/ValueKind/KindTable), name resolution and name-fate analysis, AST/reflection capture, control-flow (straight-line) detection; pipeline machinery folds in or stands beside it (undecided, §2b combinators row). (b) Tensorlib converted onto that core and promoted out of explorations/. (c) The zoo becomes part of the tensor package and MUST keep working — zoo programs + numpy-pinned denotations are the acceptance gate (§2d). "As-is" means the denotational and naming contract, not source text: every builder takes `b: Build` as first parameter today (zoo_common.py:52-107), and Build dies, so re-authoring is forced; the gate substitutes bit-equal denotations plus name identity for textual identity (amendment from review, recorded so no future reader takes M6 as violating D2c). (d) pdum.dsl stdlib DIES — Named/arrays.py, transforms.py `over`/`jvp` as pdum concepts, batteries' array half; possible residue: in-kernel ambient derivatives (fwidth) at the shader tier. This moots the 150 repair rulings on `over`/jvp/`D`/matmul/Pipeline (HV §2.4c-e, 150:244-252; F3/F12/F22/F31/F36) — their principles survive by construction (binding is representation-level `bind`/`Dim.level`; contraction structure is never erased; frozen-primitives/derived-composites is the only AD polarity left). (e) The scalar statement language (if/for/statement lowering, base_lang.py) SURVIVES as the device-function syntax. (f) The remainder archives, dsl_reference-style. **Reverses:** 040/050-era stdlib canon; F11/F15's flagship loop gate (dies with the stdlib; the no-extent-loops principle is absorbed structurally).
 
+
+Owner's Note:  'out' variable support in invocation brackets [..., out=...] should be retracted as well from pdum.dsl -- probably.  Unless a strong case can be made for why this will be difficult to add later
+
 **D3 — The syntax stack** (§4): (1) tensorlib assemblage at top — straight-line, host Python composes; (2) ONE shared Python-expression syntax for scalar functions AND straight-line tensor fold steps, typed lifting; replaces the mdsl markers and is the fold-step authoring story; the invariant is straight-line/no-branching, not pointwise-only; (3) @compute kernels: `thread_idx(...)` ambient intrinsic (NOT positional params), explicit stores into argument buffers, launch config at invocation, function-valued arguments with FnType-in-key semantics; (4) tile DSL (stage/barrier + capacity/race WF certificates); (5) warp DSL (straight-line lane intrinsics); (6) vendor escapes (090 punning) + external oracles (raw CUDA C / Numba as test fixtures) — no CUDA-clone language. Vocabularies + WF predicates over ONE frontend machine, never separate grammars. Iota unification: ambient coordinates ARE the launch-domain iotas; the descent rewrite iota→thread_idx never materializes them. Straight-line symmetry: branchless at top and bottom; control flow confined to scalar kernels and the host. Invocation concerns (blocks, shared memory, streams, pipelining) never appear in user programs — they become visible only in transformation steps. **Reverses:** 090 §3's "params ARE thread coordinates" core-profile clause (c.py:290-299, wgsl.py:63-72) and F4/F25/F37's per-family coordinate divergence at the root; 040's one-`|` pipeline (`|` survives only as fuse-inline device-function composition).
 
 **D4 — Async is DROPPED.** Explicitly rejected by the owner. **Reverses:** the 090 §5 async-readback path; any async pipeline variant. Readback stays explicit and synchronous.
@@ -34,6 +37,21 @@ The workspace stanza already exists with an empty glob, designed so adding a mem
 - **`packages/tensor` → `pdum.tensor`**: tensorlib promoted and converted — layout stack unchanged; IR/compute/autodiff/transforms/memory/placement/signatures/opcount repointed onto core naming/caching/capture; `pdum.tensor.zoo` inside it (zoo already lives at tensorlib/zoo; in-package avoids an inter-member dep needing the absent repin machinery).
 - **`pdum.core.backends`** (subpackage, not a member yet): c.py minus the GRID family, its one dying import (`from ..stdlib.transforms import Over`, c.py:290-291) severed at extraction. Vendor backends become members later per 090's rule of three.
 - **Root dist `habemus-papadum-dsl`**: shrinks to `pdum.dsl_reference` (frozen, unchanged) + the D2f archive of today's pdum.dsl remainder + docs/book. Root's dependence on members for book execution goes in `[dependency-groups]`, **not** `[project.dependencies]` — a published root wheel naming unpublished members would be uninstallable from PyPI (amendment from review; clearly right, adopted).
+
+
+Owner's Note:  
+-------------------
+This is organization is quite wrong.  First pdum.dsl_reference should be removed.  Generally, after this rewrite, provenance and old references should be removed to stop confusing future work. The new code really shouldn't make too much reference to changes that were made to prior code. The prior code should be simply removed, and we move on. 
+
+`pdum` Is a name space for many of my works, so something like core is not appropriate because it could collide with many other projects. 
+
+So what I propose is the following. 
+
+"core" will live in packages/dsl and it will provide the `pdum.dsl` namespace.
+"tensorlib" will live in packages/tensorlib and it will provide the `pdum.tl` namespace.
+
+I don't want any backends that are poorly conceived. The C backend, probably dies. The web GPU, all of those backends in the demos and so forth, they all die. This is a major purge, and the trick is not to lose information that is critical to the future path, but at the same time we're trying to clean out stuff that is going to be confusing to future work. 
+--------------------------
 
 Kernel extraction is import-clean: `kernel/` imports no satellite (registry.py:7's law holds by grep); the only executable kernel-adjacent coupling to a dying module is c.py:290-291.
 
