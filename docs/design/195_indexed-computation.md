@@ -149,6 +149,41 @@ regions works like any site). Visualization of internals stops being a
 framework feature and becomes a *query*: name patterns over tapped
 sites, exactly like freezing is a query over parameter names.
 
+**Selection, identity, and the derivation request.** The training step
+is derived by one request carrying three name-pattern selection sets,
+all identity-bearing:
+
+```python
+step = compile(loss_fn, wrt=trainable, taps=["h.*.attn.k", "h.*.wq.grad"])
+```
+
+— the keep-set (`wrt`), the output set (`taps`), and freeze overrides.
+A different tap set is a different derived Program, cached like any
+other; bufferization sees exactly which values escape, so buffer reuse
+is planned against the true output set. The derived step is **one
+Program** — forward, loss, backward, optimizer — with updated
+parameters among its outputs; in-place update is L2 buffer donation,
+never syntax. **Sites vs activation:** sites live in code (declared at
+scope paths, possibly inside policy regions — a site under a
+`mode="eval"` region exists in that build); activation is the
+derivation-time pattern set; policies may contribute *default*
+patterns, but the request is the truth. Inside a `fold`, an activated
+tap along the scan dim is the fold's `emit` — per-step stacking already
+has its semantics.
+
+**Gradient names are derived names.** The naming law's derived-suffix
+set (`name.d{i}`, `.rc`) gains `.grad`: the cotangent of any named
+value `x` is `x.grad` — parameter gradients (`h.3.attn.wq.grad`) and
+activation gradients (`h.3.attn.k.grad`) are selectable by the same
+patterns through the same DCE that prunes unrequested gradients today.
+**Names and the compiler:** contract names — inputs, outputs, tap
+sites, and their derived forms — are **ABI: linker symbols** that
+legitimately survive compilation, exactly as symbol names survive a
+linker; interior names are debugging metadata excluded from
+content-addressing; compiler passes operate on structure with names
+riding as annotations. The scope needs no redesign for this — it is
+what the contract/internal division was for.
+
 ## 5. The unrolled autoregressive trainer, worked
 
 The exercise: unroll the sampling step K=2–3 times inside training —
@@ -228,7 +263,69 @@ the recompute theorem (§190 1.7) means the Gumbel draws replay exactly
 under recompute — the unrolled trainer checkpoints *correctly by
 construction*.
 
-## 6. Amendments to 190
+## 6. Control flow: branching is a host right
+
+190's standing invariant — control flow confined to value-language
+kernels and the host — has a positive form, and it is a doctrine, not a
+workaround: **model-level branching is host-level branching over cached
+linear segments, and the cache polarity is what makes it cheap.**
+
+**The shape.** A *prolog* Program runs (linear, as always); its
+predicate outputs — a boolean, five values, whatever the decision needs
+— are read back to host; host Python decides which *branch* segment
+runs next. Each branch is an ordinary Program: built on first visit,
+compiled once, content-cached forever. Revisiting a branch is a warm
+hit with zero recompiles — the live-knob thesis extended from values to
+*paths*. Nothing branch-shaped ever enters the IR: no phi nodes, no
+divergence, no conditional adjoints; every invariant of the
+straight-line representation survives untouched, because control flow
+was never in the representation to begin with.
+
+**Three tools, complete.** Every control-flow need has exactly one
+designated tool, and each preserves straight-line semantics:
+
+1. **Element-wise selection** → `where` in-program: both sides
+   computed, masked — the SIMT-honest form.
+2. **Per-example routing within a batch** → the §3 regrouping idiom:
+   argtopk/scatter/take reshape the batch so each branch runs dense
+   over its members (MoE is this).
+3. **Program-level decisions** → host branching over cached segments —
+   this section.
+
+**Gradients across the joint need no new machinery.** The backward of
+the taken path is VJP chaining over named segments: the branch's
+backward produces cotangents with respect to its inputs — which are the
+prolog's *named* outputs — and those seed the prolog's VJP (explicit
+seeds are already the non-scalar-target contract). Cross-joint
+activation reuse is taps (§4). For small branch counts the joint
+program (prolog + branch fused) is equally valid and cheaper at run
+time; both are cached derivations. The unrolled trainer (§5) is
+precisely this pattern with the decision replaced by sampling — the
+mechanics are identical.
+
+**JIT-on-demand over unbounded branch spaces.** The branch space may be
+combinatorially large or infinite — architectures that recurse over
+per-example structure (tree-shaped models), adaptive depth/early exit,
+data-statistic-dependent topologies. Compilation cost scales with the
+number of *distinct structures visited*, not with steps: each
+encountered structure compiles once and is warm thereafter. This is
+where the doctrine earns "transformative": structure-dependent
+architectures that mainstream compilers handle with guard soup or
+retracing are, here, just host programs over a content-addressed
+program cache.
+
+**Honest costs.** (i) Each joint is a host synchronization — a
+readback; this is the *right* cost at program-level granularity (the
+host must know to decide) and the wrong tool below it (use tools 1–2);
+device-era pipelining across joints is an L5 concern. (ii) High branch
+cardinality with low revisit rates pays build cost per visit — the
+mitigation is the same bucketing idiom as sequence lengths (collapse
+the cardinality, mask the difference). (iii) If the branch *choice*
+itself must receive gradients, that is the discrete-choice estimator
+question of §5 (straight-through/relaxation), declared at the site —
+routing without learned choice has no such question.
+
+## 7. Amendments to 190
 
 1. **Units are marked** (§1): the assemblage pipe composes `@unit`
    objects; makers return them; samples updated accordingly. Lands
@@ -254,3 +351,16 @@ construction*.
    weight-sharing-by-capture, and checkpointing-with-replay in one
    program, which makes it the natural end-to-end gate for this whole
    document.
+6. **Selection and derived names** (§4): the three-set derivation
+   request (`wrt`/`taps`/freeze, identity-bearing); 190 §1.5's naming
+   law gains the derived-suffix clause (`.grad` joins `name.d{i}`/`.rc`)
+   and the linker-symbol sentence; 190 §8's L2 blocker list gains the
+   requested-output sets as a bufferization input; P5's gate gains a
+   tap-set identity pin (different tap sets never share a derived
+   Program).
+7. **The branching doctrine** (§6) enters canon as the positive form of
+   190 §1.2's control-flow invariant: three tools (where / routing /
+   host branch), VJP chaining across named segments, JIT-on-demand over
+   branch spaces. No mechanics required — it is a consequence of the
+   cache polarity; an adaptive-depth or tree-structured zoo sample is a
+   natural later addition.

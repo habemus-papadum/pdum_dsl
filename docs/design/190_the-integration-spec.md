@@ -243,7 +243,14 @@ from Python binding names as debugging niceties, excluded from
 content-addressing, so renaming a local never changes program identity
 or the public ABI). Anonymous temporaries get a deterministic scheme; a
 rebuilt closure maps the same capture to the same name, pinned by a
-rebuild-stability test.
+rebuild-stability test. **Derived names are law:** the suffix set is
+closed and contract — `name.d{i}` (partials), `.rc` (recompute
+duplicates), and `.grad` (adjoints: the cotangent of any named value
+`x` is `x.grad`). Contract names — inputs, outputs, tap sites, and
+their derived forms — are **ABI: linker symbols** that survive
+compilation as interface; interior names are metadata, excluded from
+content-addressing; compiler passes operate on structure with names
+riding as annotations.
 
 **The substrate contracts, and the fashion test.** Everything user-facing
 above the substrate is host-level *convention* over four pinned
@@ -1035,14 +1042,15 @@ charts; the marker-granularity gate (S.2).
 `param` declaration door, path derivation, policy facets
 (**identity-bearing** — part of this step's gate), `seq`, `partition`;
 provisioning (collection, `provision(source=safetensors|init)`, the
-virtual resting state); `@assemblage`; zoo builders re-authored as
-makers (level-first names; bind/iota_of/two-operand-reduce vocabulary
-included); the naming-law literal pins land (gate 7), plus the
-tied-gradient pin (gate 9) and the virtual↔provisioned pin (gate 10);
-Build and the remaining mdsl entry points are deleted. GATE: Z green on
-the re-authored builders with hardcoded name expectations; a
-policy-collision test (train vs eval builds never share identity);
-D + T green.
+virtual resting state); tap sites + requested-outputs selection;
+`@assemblage`; zoo builders re-authored as makers (level-first names;
+bind/iota_of/two-operand-reduce vocabulary included); the naming-law
+literal pins land (gate 7), plus the tied-gradient pin (gate 9) and
+the virtual↔provisioned pin (gate 10); Build and the remaining mdsl
+entry points are deleted. GATE: Z green on the re-authored builders
+with hardcoded name expectations; a policy-collision test (train vs
+eval builds never share identity); a tap-set identity pin (different
+tap sets never share a derived Program); D + T green.
 
 **P6 — Precision and boundaries (M).** The §4 design lands before any
 L4 work: dtypes split (carriers semantic; the Encoding hierarchy
@@ -1144,8 +1152,10 @@ boundary sample with both instances (KV-decode and the audio delay
 line) and its erasure obligation (the same surface program, bufferized,
 reproduces the row-write); **device-resident persistent state** and the
 epoch/ownership handshake for adopted device buffers (on the
-DLPack-device Buffer, §4); and the token mechanism from P7, which
-bufferization consumes directly.
+DLPack-device Buffer, §4); the **requested-output (tap) sets** of
+derived programs, which define what escapes and therefore what may be
+reused; and the token mechanism from P7, which bufferization consumes
+directly.
 
 **What the whole system is, on completion.** One frontend machine with
 six vocabularies over it; one AD with one derivative table and
