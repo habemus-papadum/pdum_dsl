@@ -205,6 +205,8 @@ def infer_signatures(prog, inputs=None) -> dict[str, VInfo]:
                 sigs[ins.var] = VInfo("int", None)
             else:
                 sigs[ins.var] = VInfo("rat", u.parse_unit(unit) if isinstance(unit, str) else unit)
+        elif ins.op == "random":  # uniform bits are exact rationals; normal is real (§1.8)
+            sigs[ins.var] = VInfo("rat" if p["dist"] == "uniform" else "real", ONE)
         elif ins.op == "pointwise":
             sigs[ins.var] = marker_signature(p["f"], tuple(sigs[o] for o in ins.operands))
         elif ins.op in ("reduce", "scan"):

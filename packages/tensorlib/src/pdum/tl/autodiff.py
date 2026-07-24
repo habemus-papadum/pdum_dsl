@@ -875,8 +875,9 @@ def _grad(
         c = finalize(ins.var)
         if c is None:
             continue
-        if ins.op in ("input", "const", "iota"):
-            continue  # leaves: gradient stops (iota/const are gradient-free)
+        if ins.op in ("input", "const", "iota", "random"):
+            continue  # leaves: gradient stops (iota/const/random are gradient-free —
+            # a mask field acts as a constant; AD through dropout needs no rule)
         if ins.op == "pointwise":
             pw_rule(ins, c)
         elif ins.op == "reduce":

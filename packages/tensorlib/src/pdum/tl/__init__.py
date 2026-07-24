@@ -26,6 +26,7 @@ from .mdsl import CompositeMarker, CompositeReducer, defmarker, defreducer, node
 from .memory import MemoryReport, peak_memory
 from .opcount import ProgramOps, ops_count
 from .placement import Collective, Level, Machine, TrafficReport, mesh, traffic
+from .random import fold_in, normal, uniform
 from .signatures import SignatureError, VInfo, infer_signatures, marker_signature
 from .tensor import Misalignment, Tensor, aligned, alignment
 from .transforms import CheckpointReport, checkpoint, dce
@@ -48,14 +49,17 @@ __all__ = [
     "mesh",
     "peak_memory",
     "traffic",
+    "uniform",
     "ProgramOps",
     "SignatureError",
     "VInfo",
     "defmarker",
     "defreducer",
+    "fold_in",
     "infer_signatures",
     "marker_signature",
     "node_digest",
+    "normal",
     "ops_count",
     "FunctionalBuffer",
     "Marker",

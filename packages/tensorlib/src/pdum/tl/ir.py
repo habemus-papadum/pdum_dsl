@@ -65,7 +65,7 @@ def reducer(name: str):
     raise KeyError(f"unknown reducer {name!r}")
 
 
-_LEAF_OPS = ("input", "const", "iota")
+_LEAF_OPS = ("input", "const", "iota", "random")
 _COMPUTE_OPS = ("pointwise", "reduce", "scan", "materialize", "with_value_units", "fold")
 
 
@@ -303,6 +303,10 @@ def run(prog: Program, inputs: dict[str, Tensor]) -> dict[str, Tensor]:
             env[ins.var] = _const(ins.params)
         elif ins.op == "iota":
             env[ins.var] = iota(env[ins.operands[0]], ins.params["name"], ins.params.get("unit"))
+        elif ins.op == "random":
+            from .random import _field
+
+            env[ins.var] = _field(ins.params["dist"], ins.params["key"], env[ins.operands[0]])
         elif ins.op == "pointwise":
             env[ins.var] = pointwise(pw_marker(ins.params["f"]), *[env[o] for o in ins.operands])
         elif ins.op == "reduce":
@@ -374,6 +378,8 @@ def infer_instr(ins: Instr, shadows: dict, input_layouts: dict | None = None):
         d = base.dim(ins.params["name"])
         new = tuple(replace(x, stride=(8 if x.name == d.name else 0)) for x in base.dims)
         return Layout(new, offset=-8 * d.start)
+    if ins.op == "random":
+        return _dense_like(shadows[ins.operands[0]].dims)
     if ins.op == "pointwise":
         return _dense_like(shadows[ins.operands[0]].dims)
     if ins.op == "reduce":
