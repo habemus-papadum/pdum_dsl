@@ -72,6 +72,25 @@ class _T:
     shadow: object
 
 
+@dataclass(frozen=True)
+class _Intrinsic:
+    """An S.1 vocabulary function: meaningful only inside a lowered body."""
+
+    name: str
+
+    def __call__(self, *args, **kwargs):
+        raise TypeError(
+            f"{self.name} is assemblage vocabulary — it lowers by inspection "
+            f"inside a unit or step body; there is nothing to call"
+        )
+
+
+contract = _Intrinsic("contract")
+iota_of = _Intrinsic("iota_of")
+const_like = _Intrinsic("const_like")
+reduce_over = _Intrinsic("reduce_over")
+
+
 def _holds_tensor(v) -> bool:
     if isinstance(v, _T):
         return True
@@ -278,16 +297,13 @@ class _Lifter:
             args = [self.value(a) for a in node.args]
             kwargs = self.kwargs_of(node)
             if isinstance(base, _T):
-                if node.func.attr not in _METHODS:
-                    raise ValueError(f"tensors have no method {node.func.attr!r} in step bodies")
-                if any(_holds_tensor(v) for v in list(args) + list(kwargs.values())):
-                    raise ValueError(_STRUCTURAL_SLOT.format(what=f".{node.func.attr}(...)"))
-                op, pack = _METHODS[node.func.attr]
-                return self.emit(op, (base.var,), node.func.attr, **pack(args, kwargs))
+                return self.tensor_method(base, node.func.attr, args, kwargs)
             return getattr(base, node.func.attr)(*args, **kwargs)
         target = self.value(node.func)
         args = [self.value(a) for a in node.args]
         kwargs = self.kwargs_of(node)
+        if isinstance(target, _Intrinsic):
+            return getattr(self, f"_i_{target.name}")(*args, **kwargs)
         prim = getattr(target, "op", None)
         if prim is not None:  # a primitive over tensors -> pointwise; over hosts -> refuse
             if not any(isinstance(a, _T) for a in args):
@@ -301,17 +317,125 @@ class _Lifter:
             return target(*args, **kwargs)  # fully structural: build-time evaluation
         raise ValueError(f"cannot call {target!r} in a step body")
 
+    # ---- the S.1 method vocabulary --------------------------------------
+
+    def tensor_method(self, base: _T, name: str, args: list, kwargs: dict):
+        if name in ("mean", "sum", "max", "min"):  # reduce by dim name(s)
+            dims = args[0] if args else kwargs.get("dims")
+            names = (dims,) if isinstance(dims, str) else tuple(dims)
+            return self.emit("reduce", (base.var,), name, f=name, dims=names)
+        if name in ("sqrt", "exp", "log", "tanh"):
+            return self.pointwise(name, base, hint=name)
+        if name == "extent":  # a STRUCTURAL read: the dim's (start, stop)
+            d = base.shadow.dim(args[0])
+            return (d.start, d.stop)
+        if name == "repeat_like":
+            return self._repeat_like(base, args[0], **kwargs)
+        if name not in _METHODS:
+            raise ValueError(f"tensors have no method {name!r} in step bodies")
+        if any(_holds_tensor(v) for v in list(args) + list(kwargs.values())):
+            raise ValueError(_STRUCTURAL_SLOT.format(what=f".{name}(...)"))
+        op, pack = _METHODS[name]
+        return self.emit(op, (base.var,), name, **pack(args, kwargs))
+
+    def rep_dim(self, t: _T, d) -> _T:
+        """Broadcast one dim onto ``t``, carrying the source dim's chart,
+        labels, and placement (the declaration stays complete)."""
+        out = self.emit(
+            "repeat", (t.var,), "rep", name=d.name, extent=(d.start, d.stop), chart=d.chart, labels=d.labels
+        )
+        if d.level is not None:
+            out = self.emit("bind", (out.var,), "rep", levels={d.name: d.level})
+        return out
+
+    def _repeat_like(self, base: _T, x, but=None, dim=None) -> _T:
+        """Broadcast ``base`` toward ``x``'s dims: with ``dim=`` add exactly
+        those dims (from x's extents); otherwise add every dim of x that
+        ``base`` lacks, except any named in ``but``."""
+        if not isinstance(x, _T):
+            raise ValueError("repeat_like takes the tensor to align with")
+        src = {d.name: d for d in x.shadow.dims}
+        if dim is not None:
+            names = (dim,) if isinstance(dim, str) else tuple(dim)
+        else:
+            have = {d.name for d in base.shadow.dims}
+            excl = {but} if isinstance(but, str) else set(but or ())
+            names = tuple(n for n in src if n not in have and n not in excl)
+        out = base
+        for n in names:
+            out = self.rep_dim(out, src[n])
+        return out
+
+    # ---- the S.1 function vocabulary (intrinsics) -----------------------
+
+    def _i_iota_of(self, t, dim):
+        if not isinstance(t, _T):
+            raise ValueError("iota_of takes a tensor and a dim name")
+        return self.emit("iota", (t.var,), "iota", name=dim)
+
+    def _i_const_like(self, t, value):
+        return self.const_like(value, t)
+
+    def _i_contract(self, a, b_, axis=None):
+        """Named-axis contraction: sum over the UNIQUE shared axis, or the
+        axis/axes named to break a genuine ambiguity; non-contracted dims
+        ride. Matmul as declaration — repeat + mul + reduce (D5)."""
+        if not (isinstance(a, _T) and isinstance(b_, _T)):
+            raise ValueError("contract takes two tensors")
+        da = {d.name: d for d in a.shadow.dims}
+        db = {d.name: d for d in b_.shadow.dims}
+        shared = [n for n in da if n in db]
+        if axis is None:
+            if len(shared) != 1:
+                what = "no shared axis" if not shared else f"shared axes {sorted(shared)}"
+                raise ValueError(
+                    f"contract: {what} between operands (a: {sorted(da)}, b: {sorted(db)}) — "
+                    f"a unique shared axis contracts implicitly; name the contraction: "
+                    f"contract(a, b, axis=...)"
+                )
+            axes = (shared[0],)
+        else:
+            axes = (axis,) if isinstance(axis, str) else tuple(axis)
+            for ax in axes:
+                if ax not in shared:
+                    raise ValueError(f"contract axis {ax!r} is not shared (a: {sorted(da)}, b: {sorted(db)})")
+        xb = a
+        for n, d in db.items():
+            if n not in da:
+                xb = self.rep_dim(xb, d)
+        yb = b_
+        for n, d in da.items():
+            if n not in db:
+                yb = self.rep_dim(yb, d)
+        m = self.pointwise("mul", xb, yb, hint="mm")
+        return self.emit("reduce", (m.var,), "mm", f="sum", dims=axes)
+
+    def _i_reduce_over(self, f, operands, dims):
+        """The two-operand reduce form (S.1 committed vocabulary): a named
+        (composite) reducer over aligned operand tensors."""
+        ts = operands if isinstance(operands, tuple) else (operands,)
+        if not all(isinstance(t, _T) for t in ts):
+            raise ValueError("reduce_over takes tensor operands")
+        names = (dims,) if isinstance(dims, str) else tuple(dims)
+        fname = f if isinstance(f, str) else f.name
+        return self.emit("reduce", tuple(t.var for t in ts), "red", f=fname, dims=names)
+
     def inline(self, fn, args, kwargs) -> object:
         """A helper called on tensor arguments: lower its body here, its
-        parameters bound to the caller's values — inlining by lowering."""
+        parameters bound to the caller's values — inlining by lowering.
+        Defaults and keyword-only parameters bind through the real
+        signature (S.1 helpers read like ordinary Python)."""
+        import inspect
+
         tree = _fn_ast(fn)
-        params = [a.arg for a in tree.args.args]
         inner = _Lifter(_captured(fn))
         inner.b, inner.shadows = self.b, self.shadows  # one program, one name space
-        bound = dict(zip(params, args)) | kwargs
-        if set(bound) != set(params):
-            raise ValueError(f"{fn.__name__}(...) must bind parameters {params}, got {sorted(bound)}")
-        inner.env.update(bound)
+        try:
+            ba = inspect.signature(fn).bind(*args, **kwargs)
+            ba.apply_defaults()
+        except TypeError as exc:
+            raise ValueError(f"{fn.__name__}(...): {exc}") from None
+        inner.env.update(ba.arguments)
         outs = inner.run_body(tree)
         return _T(outs[0], self.shadows[outs[0]]) if len(outs) == 1 else tuple(
             _T(o, self.shadows[o]) for o in outs
