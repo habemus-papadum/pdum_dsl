@@ -24,6 +24,22 @@ closed form, not memory), and token embedding is treated in §5f. All code
 below is the 170 surface (S.1/S.2 syntax); everything it needs already
 exists or is committed in P0–P9 except where §6 says otherwise.
 
+**The two-layer discipline.** Model code has exactly two layers, and only
+one of them knows about parameters:
+
+- **The standard library is parameter-blind.** `layernorm`, attention
+  cores, dense blocks — functions from tensors to tensors, with
+  parameters passed as *ordinary arguments*. No namespace, no names, no
+  knowledge that provisioning exists. Architecture variants (Llama =
+  rmsnorm + RoPE + GQA) reuse these wholesale.
+- **The binding layer owns names.** Concrete model code (`make_attn`,
+  `make_gpt2`) holds the parameter namespace, declares leaves under
+  chosen names, and hands them to library functions as arguments. Name
+  assignment happens in exactly one visible place — never inside library
+  code. This is deliberate: the naming law is load-bearing (loading,
+  init, freezing, and RNG streams all join on names), so names are never
+  produced by module-internal magic, only by binding-layer declaration.
+
 ### 1.1 Device functions and blocks
 
 ```python
@@ -48,59 +64,85 @@ def causal_softmax(sc, *, q="t", k="s"):
 
 ### 1.2 The blocks, weights in closures, dropout in place
 
-`P` is a parameter namespace (§2): its leaves are tensors — virtual,
-loaded, or initialized, the block code cannot tell. `key` is a **program
-input** (an ordinary value); blocks close over the key *symbol* and derive
-per-site streams by contract name. `training` is host-level: two cached
-Programs (train/eval), no runtime mode flag.
+`p` is a parameter namespace (§2). Blocks **declare their leaves at first
+use** — `p.param(name, **dims)` with dim names as keyword keys and extents
+as values — and receive back tensors: virtual, loaded, or initialized, the
+block code cannot tell. Declaration is idempotent (re-declaring the same
+name with the same shape is the same leaf; a conflict refuses). `key` is a
+**program input** (an ordinary value); blocks close over the key *symbol*
+and derive per-site streams by contract name. `training` is host-level:
+two cached Programs (train/eval), no runtime mode flag.
 
 ```python
 def make_attn(p, cfg, key, *, training):
+    D, H, K = cfg.d, cfg.nh, cfg.hk
+    ln1g, ln1b = p.param("ln1g", d=D), p.param("ln1b", d=D)
+    wq = p.param("wq", d=D, nh=H, hk=K)
+    wk = p.param("wk", d=D, nh=H, hk=K)
+    wv = p.param("wv", d=D, nh=H, hk=K)
+    wo = p.param("wo", nh=H, hk=K, d=D)
+
     def attn(h):
-        a  = layernorm(h, p.ln1g, p.ln1b, feat="d", eps=cfg.eps)
-        q  = contract(a, p.wq)                         # unique shared axis: "d"
-        k  = contract(a.rename(t="s"), p.wk)
-        v  = contract(a.rename(t="s"), p.wv)
+        a  = layernorm(h, ln1g, ln1b, feat="d", eps=cfg.eps)
+        q  = contract(a, wq)                           # unique shared axis: "d"
+        k  = contract(a.rename(t="s"), wk)
+        v  = contract(a.rename(t="s"), wv)
         sc = contract(q * cfg.scale, k, axis="hk")     # "nh" rides; axis named to
                                                        # break the genuine ambiguity
         pr = causal_softmax(sc)
         if training:
             pr = dropout(pr, cfg.p_attn, key / "attn") # site-named stream
         cx = contract(pr, v, axis="s")
-        o  = contract(cx, p.wo, axis=("nh", "hk"))
+        o  = contract(cx, wo, axis=("nh", "hk"))
         if training:
             o = dropout(o, cfg.p_resid, key / "attn.out")
         return h + o
     return attn
 
 def make_mlp(p, cfg, key, *, training):
+    D, M = cfg.d, cfg.m
+    ln2g, ln2b = p.param("ln2g", d=D), p.param("ln2b", d=D)
+    w1, b1 = p.param("w1", d=D, m=M), p.param("b1", m=M)
+    w2     = p.param("w2", m=M, d=D)
+
     def mlp(h):
-        a = layernorm(h, p.ln2g, p.ln2b, feat="d", eps=cfg.eps)
-        m = gelu(contract(a, p.w1) + p.b1.repeat_like(a, but="m"))
-        o = contract(m, p.w2)
+        a = layernorm(h, ln2g, ln2b, feat="d", eps=cfg.eps)
+        m = gelu(contract(a, w1) + b1.repeat_like(a, but="m"))
+        o = contract(m, w2)
         if training:
             o = dropout(o, cfg.p_resid, key / "mlp.out")
         return h + o
     return mlp
 ```
 
+Note the shape of the discipline: `attn`/`mlp` bodies call only
+parameter-blind library functions with the declared tensors as plain
+arguments; every naming decision is a `p.param(...)` line at the top of
+the binding function. An architecture edit — swapping layernorm for
+rmsnorm, adding a gate weight — touches exactly these lines and nothing
+else in the file.
+
 ### 1.3 Assembly: sub-pipelines with `|`
 
 ```python
 def make_gpt2(P, cfg, key, *, training):
+    wte = P.param("wte", v=cfg.v, d=cfg.d)             # declared ONCE — tied below
+    wpe = P.param("wpe", t=cfg.t_max, d=cfg.d)
+    lnfg, lnfb = P.param("lnfg", d=cfg.d), P.param("lnfb", d=cfg.d)
+
     def embed(ids):
-        tok = P.wte.take(ids, dim="v")                 # gather — §5f/§6
-        e   = tok + P.wpe.slice(t=(0, ids.extent("t")))
+        tok = wte.take(ids, dim="v")                   # gather — §5f/§6
+        e   = tok + wpe.slice(t=(0, ids.extent("t")))
         return dropout(e, cfg.p_embd, key / "embd") if training else e
 
     blocks = pipe(
-        make_attn(P[f"L{i}"], cfg, key / f"L{i}", training=training)
-        | make_mlp(P[f"L{i}"], cfg, key / f"L{i}", training=training)
+        make_attn(P / f"L{i}", cfg, key / f"L{i}", training=training)
+        | make_mlp(P / f"L{i}", cfg, key / f"L{i}", training=training)
         for i in range(cfg.layers)
     )
     def head(h):
-        hf = layernorm(h, P.lnfg, P.lnfb, feat="d", eps=cfg.eps)
-        return contract(hf, P.wte, axis="d")           # TIED: wte is the head too
+        hf = layernorm(h, lnfg, lnfb, feat="d", eps=cfg.eps)
+        return contract(hf, wte, axis="d")             # TIED: the same object
 
     model = embed | blocks | head
     return assemblage(model)                           # Handle: capture + 2-tier cache
@@ -116,40 +158,61 @@ as closed-over program symbols, not threaded values — which is what makes
 the user's `attn | mlp` sketch work without widening the pipe. `pipe(...)`
 over a generator is the n-fold spelling of the same operator.
 
-**Weight tying is the identity rule:** `P.wte` is captured by both `embed`
-and `head`; one descriptor object → **one input leaf** (identity, not
-name-string, decides). Its gradient is automatically the sum of both uses'
-contributions because there is only one leaf to seed. Pinned by a test
-(§6.4). GPT-2 makes this unavoidable; the rule was implicit in 170 and is
-now explicit.
+**Weight tying is the identity rule:** `wte` is declared once and the
+same object is captured by both `embed` and `head` → **one input leaf**
+(capture identity, not name-string, decides). Its gradient is
+automatically the sum of both uses' contributions because there is only
+one leaf to seed. Pinned by a test (§6.4). GPT-2 makes this unavoidable;
+the rule was implicit in 170 and is now explicit — and declare-at-use
+makes it visually obvious: tying looks like what it is, one declaration
+used twice.
 
 ---
 
 ## 2. Provisioning: one definition, three materializations
 
-**The resting state of a model is virtual.** A parameter namespace is
-declared once — names, dims, extents, carriers — and *materialization is a
-separate, pluggable act* joining on contract names. The blocks capture
-whatever the namespace holds; they cannot tell virtual from real, because
-`typeof` is identical (layout + carrier; no buffer in the type).
+**The resting state of a model is virtual, and the builder is the single
+source of truth.** A fresh namespace holds nothing; running the builder
+against it *collects* the spec — every `p.param(...)` declaration
+registers a leaf (name, dims, extents, carrier; **no buffer**), and the
+blocks capture exactly the tensors they declared. They cannot tell
+virtual from real, because `typeof` is identical (layout + carrier; no
+buffer in the type). There is no separately-maintained parameter table to
+keep in sync with the code:
 
 ```python
-P = param_spec(gpt2_params(cfg))     # every leaf: name, dims, extents, carrier
-                                     # NO buffers. This is scenario 3 already.
+P     = namespace()
+model = make_gpt2(P, cfg, key, training=True)   # builds AND collects
+P.spec()          # the full table, derived: "L0.wq": (d:768, nh:12, hk:64), ...
 ```
 
-`gpt2_params` is ordinary Python producing the table the zoo already
-implies: `L{i}.wq : (d, nh, hk)`, `L{i}.ln1g : (d,)`, `wte : (v, d)`, …
+A schema-first door remains for those who want it — `namespace(schema=…)`
+validates each declaration against a written table, and provisioning
+validates against a checkpoint's manifest either way — but the code is
+authoritative.
+
+**What `P` is (and is not).** A string-keyed namespace whose **flat name
+space is primary** — `P / "L3"` is a prefix *view*, not a container
+boundary — and which exists **only at build time**: after the build, the
+Program has named inputs, and runtime state (weights, grads, moments) is
+plain name-keyed dicts. It is deliberately not a pytree subsystem: pytree
+machinery (treedefs, container registration, positional flattening)
+exists to turn arbitrary containers into positional argument lists, and
+nothing here consumes positions — Programs, `grad` maps, provisioning,
+and optimizers all **join on names**, so "zip params with grads with
+moments" is a dict join. The whole object is on the order of a hundred
+lines.
 
 **Scenario 3 — analysis, zero allocation.** Virtual is not a mode; it is
-the unprovisioned state. `model = make_gpt2(P, cfg, key, training=True)`
-builds the full Program (layouts are known); `ops_count(model.program)`,
-`peak_memory(model.program, schedule)`, traffic and placement analysis all
-read layouts and never values. Nothing allocates. Only `ir.run`/`item()`
-refuse, quoting the fix ("provision the parameters"). **Cache dividend,
-pinned as a test:** the virtual build and the provisioned build have
-identical types, therefore identical fingerprints — analyze first,
-provision later, and the Program cache hits warm.
+the unprovisioned state, and it is also the collector. The build above
+already produced the full Program (layouts are known);
+`ops_count(model.program)`, `peak_memory(model.program, schedule)`,
+traffic and placement analysis all read layouts and never values. Nothing
+allocates. Only `ir.run`/`item()` refuse, quoting the fix ("provision the
+parameters"). **Cache dividend, pinned as a test:** the virtual build and
+the provisioned build have identical types, therefore identical
+fingerprints — analyze first, provision later, and the Program cache hits
+warm.
 
 **Scenario 1 — load.** `weights = provision(P, source=safetensors("gpt2.st"))`.
 safetensors is an mmap format: each entry becomes a boundary descriptor
@@ -187,6 +250,17 @@ transfer). Same key → same init, forever, on any device. There is no
 allocate-uninitialized-then-fill-then-maybe-copy sequence anywhere in any
 scenario: virtual allocates nothing; load allocates nothing on host
 (mmap) and copies once to device; init allocates once and writes once.
+
+**Name stability under refactoring, stated honestly.** Leaf-level and
+block-internal architecture edits never churn names: declare-at-use means
+the edit and the name live on the same line, and RNG streams — being
+name-derived, not position-derived — ride along unchanged. The one
+instability is **index-derived layer names**: inserting a layer shifts
+`L{i}` for everything after it, and a loaded checkpoint stops joining.
+This is universal (PyTorch `state_dict` keys, Flax scopes — all
+index-derived, all break identically), and the mitigation is the same
+name-translation table that foreign checkpoints already require; it is
+data, not code.
 
 ---
 
@@ -349,14 +423,18 @@ GPT-2 needed none of them.
 naming law, the precision doctrine, and the cost/transform machinery all
 carried GPT-2 without strain — and twice (flash+dropout fusion,
 recompute-with-dropout) the design produces for free what mainstream
-frameworks implement as special machinery. The exercise forces five
+frameworks implement as special machinery. The exercise forces six
 amendments, adopted into 170:
 
 1. **`|` at the assemblage tier** (§1.3): build-time function composition
    threading one value — the same fuse semantics; `pipe(...)` as the
    n-fold form. Never dispatch sequencing.
-2. **Provisioning** (§2): `param_spec` / `provision(source=...)` with
-   virtual as the resting state; safetensors = mmap'd descriptors,
+2. **Provisioning** (§2): the namespace + `provision(source=...)` with
+   virtual as the resting state and **declare-at-use as primary** —
+   `p.param(name, **dims)` at the binding layer; the spec is *collected*
+   by the virtual build (the builder is the single source of truth), with
+   `namespace(schema=…)` as the optional schema-first door and checkpoint
+   manifests validated at provisioning. Safetensors = mmap'd descriptors,
    zero-copy; init strategies keyed by name pattern over the §4 fields;
    the virtual↔provisioned warm-cache pin. Lands with `@assemblage` (P5),
    with the descriptor pieces in P6.
@@ -370,9 +448,16 @@ amendments, adopted into 170:
    model entries, landing between P7 and P9 so the runway's training-loop
    story is honest; top-k/MoE and in-program sampling remain recorded
    boundaries.
+6. **The two-layer discipline and the namespace semantics** (§1, §2): the
+   standard library is parameter-blind (tensors in, tensors out,
+   parameters as ordinary arguments); only binding-layer code touches the
+   namespace, which is build-time-only, flat-name-primary (the tree is a
+   prefix view), and deliberately not a pytree subsystem — names replace
+   positions as the join key everywhere. The index-derived layer-name
+   instability is recorded with its translation-table mitigation.
 
 With these adopted, the 170 plan proceeds unchanged in shape: P0–P9 with
-amendments 2–5 slotted as noted. The exercise's residual watch item is
+amendments 2–6 slotted as noted. The exercise's residual watch item is
 (b): the mma-recognition question stays open in the L4 brief, now with a
 GPT-2-specific worked case showing where recognition holds and what
 breaks it.
