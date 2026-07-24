@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pdum.dsl.types import LiteralAnnotation
 
 from .build import Build
-from .ir import Program, infer_instr
+from .ir import Instr, Program, infer_instr
 from .layout import Layout
 from .producer import _captured, _fn_ast
 from .tensor import Tensor
@@ -140,6 +140,17 @@ class _Lifter:
         self.shadows[var] = infer_instr(self.b.instrs[-1], self.shadows)
         return _T(var, self.shadows[var])
 
+    def rebind(self, t: _T, name: str) -> _T:
+        """Rename the JUST-emitted instr's var to the Python binding name
+        (deduped through the same Namer) — nothing references it yet."""
+        last = self.b.instrs[-1]
+        if last.var != t.var or name in self.b.names:
+            return t  # a re-bound existing var, or a taken name: keep the hint
+        fresh = self.b.names.derive(name)
+        self.b.instrs[-1] = Instr(fresh, last.op, last.operands, dict(last.params))
+        self.shadows[fresh] = self.shadows.pop(t.var)
+        return _T(fresh, self.shadows[fresh])
+
     def const_like(self, value, t: _T) -> _T:
         """A structural scalar broadcast over a tensor operand's lattice —
         charts/labels/placement restamped so alignment holds."""
@@ -183,6 +194,10 @@ class _Lifter:
         if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
             target, value = stmt.targets[0], self.value(stmt.value)
             if isinstance(target, ast.Name):
+                # SSA names come from Python binding names (S.1): the RHS's
+                # final emission takes the binding name as its hint
+                if isinstance(value, _T):
+                    value = self.rebind(value, target.id)
                 self.env[target.id] = value
                 return
             if isinstance(target, ast.Tuple) and all(isinstance(e, ast.Name) for e in target.elts):
