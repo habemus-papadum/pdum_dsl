@@ -130,6 +130,22 @@ class LiteralType(Type):
         return f"Literal[{self.base!r} = {self.value!r}]"
 
 
+@dataclass(frozen=True, slots=True)
+class LiteralAnnotation:
+    """What ``Literal[int]`` evaluates to on a parameter/field annotation."""
+
+    base: type
+
+
+class Literal:
+    """The definition-site annotation door (200 §1.5): ``n: Literal[int]``
+    marks a parameter STRUCTURAL — bound to a build-time value, promoted
+    before fingerprinting. Structural slots accept only these."""
+
+    def __class_getitem__(cls, base: type) -> LiteralAnnotation:
+        return LiteralAnnotation(base)
+
+
 # --- template identity -------------------------------------------------------
 
 

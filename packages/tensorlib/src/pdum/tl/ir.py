@@ -355,57 +355,62 @@ def infer(prog: Program, input_layouts: dict) -> dict[str, Layout | GuardedLayou
     taken)."""
     shadows: dict[str, Layout | GuardedLayout] = {}
     for ins in prog.instrs:
-        if ins.op == "input":
-            src = input_layouts[ins.var]
-            shadows[ins.var] = src.layout if isinstance(src, Tensor) else src
-        elif ins.op == "const":
-            dims = tuple(Dim(name, 0, *_extent(extent)) for name, extent in ins.params.get("dims", ()))
-            # stride-0 broadcast, exactly like run's _const
-            shadows[ins.var] = Layout(dims)
-        elif ins.op == "iota":
-            base = shadows[ins.operands[0]]
-            d = base.dim(ins.params["name"])
-            new = tuple(replace(x, stride=(8 if x.name == d.name else 0)) for x in base.dims)
-            shadows[ins.var] = Layout(new, offset=-8 * d.start)
-        elif ins.op == "pointwise":
-            shadows[ins.var] = _dense_like(shadows[ins.operands[0]].dims)
-        elif ins.op == "reduce":
-            dims = ins.params["dims"]
-            names = (dims,) if isinstance(dims, str) else tuple(dims)
-            survivors = tuple(d for d in shadows[ins.operands[0]].dims if d.name not in names)
-            shadows[ins.var] = _dense_like(survivors)
-        elif ins.op == "scan":
-            shadows[ins.var] = _dense_like(shadows[ins.operands[0]].dims)
-        elif ins.op == "materialize":
-            order = tuple(ins.params["order"])
-            src = shadows[ins.operands[0]]
-            dims = tuple(replace(src.dim(n), chart=None, labels=None) for n in order)
-            shadows[ins.var] = _dense_like(dims)
-        elif ins.op == "fold":
-            shadows[ins.var] = _fold_infer(ins, shadows)
-        elif ins.op == "pad":
-            shadows[ins.var] = pad_layout(shadows[ins.operands[0]], ins.params["extents"])
-        elif ins.op == "stencil":
-            p = ins.params
-            shadows[ins.var] = stencil_layout(
-                shadows[ins.operands[0]],
-                p["name"],
-                p["k"],
-                p.get("k_name"),
-                p.get("dilation", 1),
-            )
-        elif ins.op == "simplify":
-            s = shadows[ins.operands[0]]
-            shadows[ins.var] = s.simplify() if isinstance(s, GuardedLayout) else s
-        elif ins.op == "with_value_units":
-            shadows[ins.var] = shadows[ins.operands[0]]
-        else:
-            # Layout/GuardedLayout share these ops' names and signatures with
-            # Tensor, so run and infer dispatch through ONE table — a new
-            # layout op is added in exactly one place. (pad/stencil/simplify
-            # are the three genuine special cases, handled above.)
-            shadows[ins.var] = _LAYOUT_OPS[ins.op](shadows[ins.operands[0]], ins.params)
+        shadows[ins.var] = infer_instr(ins, shadows, input_layouts)
     return shadows
+
+
+def infer_instr(ins: Instr, shadows: dict, input_layouts: dict | None = None):
+    """One instruction's shadow from its operands' — the single inference
+    dispatch `infer` loops and the step lifter consumes incrementally."""
+    if ins.op == "input":
+        src = (input_layouts or {})[ins.var]
+        return src.layout if isinstance(src, Tensor) else src
+    if ins.op == "const":
+        dims = tuple(Dim(name, 0, *_extent(extent)) for name, extent in ins.params.get("dims", ()))
+        # stride-0 broadcast, exactly like run's _const
+        return Layout(dims)
+    if ins.op == "iota":
+        base = shadows[ins.operands[0]]
+        d = base.dim(ins.params["name"])
+        new = tuple(replace(x, stride=(8 if x.name == d.name else 0)) for x in base.dims)
+        return Layout(new, offset=-8 * d.start)
+    if ins.op == "pointwise":
+        return _dense_like(shadows[ins.operands[0]].dims)
+    if ins.op == "reduce":
+        dims = ins.params["dims"]
+        names = (dims,) if isinstance(dims, str) else tuple(dims)
+        survivors = tuple(d for d in shadows[ins.operands[0]].dims if d.name not in names)
+        return _dense_like(survivors)
+    if ins.op == "scan":
+        return _dense_like(shadows[ins.operands[0]].dims)
+    if ins.op == "materialize":
+        order = tuple(ins.params["order"])
+        src = shadows[ins.operands[0]]
+        dims = tuple(replace(src.dim(n), chart=None, labels=None) for n in order)
+        return _dense_like(dims)
+    if ins.op == "fold":
+        return _fold_infer(ins, shadows)
+    if ins.op == "pad":
+        return pad_layout(shadows[ins.operands[0]], ins.params["extents"])
+    if ins.op == "stencil":
+        p = ins.params
+        return stencil_layout(
+            shadows[ins.operands[0]],
+            p["name"],
+            p["k"],
+            p.get("k_name"),
+            p.get("dilation", 1),
+        )
+    if ins.op == "simplify":
+        s = shadows[ins.operands[0]]
+        return s.simplify() if isinstance(s, GuardedLayout) else s
+    if ins.op == "with_value_units":
+        return shadows[ins.operands[0]]
+    # Layout/GuardedLayout share these ops' names and signatures with
+    # Tensor, so run and infer dispatch through ONE table — a new
+    # layout op is added in exactly one place. (pad/stencil/simplify
+    # are the three genuine special cases, handled above.)
+    return _LAYOUT_OPS[ins.op](shadows[ins.operands[0]], ins.params)
 
 
 def _extent(spec) -> tuple[int, int]:

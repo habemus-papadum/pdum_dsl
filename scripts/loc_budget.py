@@ -36,7 +36,7 @@ KERNEL_TOTAL_CAP = 2600  # P1 redraw: measured 2253 at the move + headroom for t
 # discipline); the P1 arrivals were capped at their measured size + slack.
 FILE_CAPS = {
     "__init__.py": 40,  # batteries-included install + the version anchor
-    "types.py": 100,
+    "types.py": 115,  # P4: +Literal/LiteralAnnotation — the §1.5 annotation door (was 100)
     "valuekind.py": 95,
     "capture.py": 85,
     "api.py": 50,
