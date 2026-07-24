@@ -16,6 +16,7 @@ collide with the caller's env paths. Enforced loudly at registration.
 from __future__ import annotations
 
 import inspect
+import sys
 from dataclasses import fields as dc_fields
 from dataclasses import is_dataclass
 
@@ -83,11 +84,17 @@ def record(registry: Registry, cls):
         raise TypeError(f"@record wants a dataclass, got {cls.__name__}")
 
     def _field_type(f):  # annotations may be strings under `from __future__ import annotations`
-        py = f.type if isinstance(f.type, type) else {"float": float, "int": int, "bool": bool}.get(f.type)
+        py = f.type
+        if not isinstance(py, type):
+            module = vars(sys.modules.get(cls.__module__, None) or object())
+            py = {"float": float, "int": int, "bool": bool}.get(f.type) or module.get(f.type)
+        nested = getattr(py, "__dsl_record__", None)
+        if nested is not None:  # value-type expansion (200 §S.2): records NEST
+            return nested
         if py not in _PYTYPES:
             raise TypeError(
-                f"record field {f.name!r}: only float/int/bool are supported (got {f.type!r}); "
-                f"nested records and tuples are a later step"
+                f"record field {f.name!r}: float/int/bool or an @record class (got {f.type!r}); "
+                f"register the nested record first — tuples are a later step"
             )
         return _PYTYPES[py]
 
