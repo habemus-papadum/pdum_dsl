@@ -154,6 +154,18 @@ class _Lifter:
 
     # ---- emission --------------------------------------------------------
 
+    def adopt(self, v):
+        """Hook: convert a captured value at name resolution (the unit
+        lowerer turns captured Params into named inputs here)."""
+        return v
+
+    def child(self, env: dict) -> "_Lifter":
+        """A same-kind lowerer over ``env`` sharing this one's program and
+        name space — how helpers inline without losing the subclass."""
+        inner = type(self)(env)
+        inner.b, inner.shadows = self.b, self.shadows
+        return inner
+
     def emit(self, op: str, operands: tuple[str, ...], hint: str, **params) -> _T:
         var = self.b.emit(op, operands, hint=hint, **params)
         self.shadows[var] = infer_instr(self.b.instrs[-1], self.shadows)
@@ -227,6 +239,9 @@ class _Lifter:
                 return
         if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
             return  # a docstring
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+            self.value(stmt.value)  # an effectful statement call (tap sites)
+            return
         if isinstance(stmt, ast.FunctionDef):  # a local helper: bind it for later inlining
             raise ValueError("define step helpers OUTSIDE the step body; calls inline them")
         raise ValueError(
@@ -242,7 +257,7 @@ class _Lifter:
         if isinstance(node, ast.Name):
             if node.id not in self.env:
                 raise ValueError(f"unknown name {node.id!r} in a step body")
-            return self.env[node.id]
+            return self.adopt(self.env[node.id])
         if isinstance(node, ast.Tuple):
             return tuple(self.value(e) for e in node.elts)
         if isinstance(node, ast.Dict):
@@ -428,8 +443,7 @@ class _Lifter:
         import inspect
 
         tree = _fn_ast(fn)
-        inner = _Lifter(_captured(fn))
-        inner.b, inner.shadows = self.b, self.shadows  # one program, one name space
+        inner = self.child(_captured(fn))
         try:
             ba = inspect.signature(fn).bind(*args, **kwargs)
             ba.apply_defaults()
