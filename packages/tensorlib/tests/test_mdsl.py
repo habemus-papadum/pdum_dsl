@@ -38,8 +38,18 @@ def test_trace_builds_trees():
 
 
 def test_python_control_flow_is_refused():
-    with pytest.raises(TypeError, match="where"):
+    # straight-line detection at LOWERING (P4) — the producer refuses by
+    # inspection, where the tracer used to trip at trace time
+    with pytest.raises(ValueError, match=r"straight-line.*where\(cond, a, b\)"):
         defmarker("bad_t", 1, lambda x: x if x else -x)
+    with pytest.raises(ValueError, match=r"straight-line"):
+        defmarker("bad_loop_t", 1, _looped)
+
+
+def _looped(x):
+    for _ in range(3):
+        x = x * x
+    return x
 
 
 def test_composite_eval_matches_numpy():

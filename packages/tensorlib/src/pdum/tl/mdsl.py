@@ -35,6 +35,7 @@ import hashlib
 from dataclasses import dataclass
 from fractions import Fraction
 
+from . import producer
 from .derivative import TABLE, diff  # noqa: F401 — diff re-exported for consumers
 from .nodes import Arg, Const, Node, Prim  # noqa: F401 — re-exported for consumers
 from .registry import MARKERS, REDUCERS
@@ -98,6 +99,7 @@ def _fn(op, arity):
             raise TypeError(f"{op} takes {arity} arguments")
         return Sym(Prim(op, tuple(_lift(a) for a in args)))
 
+    apply.op, apply.arity = op, arity  # the AST producer resolves captured calls by these
     return apply
 
 
@@ -271,30 +273,38 @@ def _matrix_pair_nodes(k: int) -> tuple:
 
 
 def defmarker(name: str | None, arity: int, fn) -> CompositeMarker:
-    """Trace a plain lambda over symbolic scalars into a composite marker.
+    """Lower a plain function (a def or a lambda) into a composite marker
+    via the AST producer — one named, inspectable body tree over primitives
+    (the marker-granularity gate, S.2). Nothing is executed.
 
     sigmoid = defmarker("sigmoid", 1, lambda x: 1 / (1 + exp(-x)))
 
     `name=None` derives a content-addressed name (`m_<digest>`) from the
-    traced tree — naming becomes optional, and re-tracing the same body in
-    a loop dedupes onto the same registry entry (the registry as cache,
+    lowered tree — naming becomes optional, and re-lowering the same body
+    in a loop dedupes onto the same registry entry (the registry as cache,
     not namespace).
     """
     if name in _PRIMITIVE_NAMES:
         raise ValueError(f"{name!r} is a primitive marker name")
-    body = trace(fn, arity)
+    (body,) = producer.lower(fn, producer.scalars(arity))
     if name is None:
         name = f"m_{node_digest(body)}"
     return _register_marker(name, arity, body)
 
 
 def defreducer(
-    name: str, *, state: int, element: int, lift, combine, init, project=None, associative: bool = True
+    name: str, *, state, element: int, lift, combine, init, project=None, associative: bool = True
 ) -> CompositeReducer:
-    """Define a structured-state reducer. `lift(e1..em) -> k-tuple`,
-    `combine(left, right) -> k-tuple` where left/right are k-tuples of
-    symbolic scalars, `init` is the k identity values, `project(s1..sk) ->
-    scalar` (default: the first state component).
+    """Define a structured-state reducer; bodies lower via the AST producer.
+
+    `state` is a count OR a record class (a frozen dataclass / NamedTuple):
+    with `state=k`, `lift(e1..em) -> k-tuple`, `combine(left, right)` takes
+    k-tuples (subscripted by literal index) and `project(s1..sk) -> scalar`
+    (default: the first component). With `state=State`, lift returns
+    `State(...)`, combine takes two State-typed arguments (fields by
+    attribute) and returns one, project takes ONE State argument, and
+    `init` may be a `State(...)` instance — record-typed reducer state
+    (S.2); the state layout is the record's field order.
 
         linrec = defreducer("linrec", state=2, element=2,
             lift=lambda a, b: (a, b),
@@ -302,16 +312,27 @@ def defreducer(
             init=(1.0, 0.0),
             project=lambda A, B: B)
     """
-    lift_nodes = _trace_tuple(lift, element)
-    if len(lift_nodes) != state:
-        raise ValueError(f"lift must produce {state} components, got {len(lift_nodes)}")
-    combine_nodes = _trace_tuple(lambda *args: combine(tuple(args[:state]), tuple(args[state:])), 2 * state)
-    if len(combine_nodes) != state:
-        raise ValueError(f"combine must produce {state} components")
-    if len(init) != state:
-        raise ValueError(f"init must have {state} components")
-    project_node = trace(project, state) if project is not None else Arg(0)
-    r = CompositeReducer(name, state, element, lift_nodes, combine_nodes, tuple(init), project_node, associative)
+    record = state if producer.is_record(state) else None
+    k = len(producer.record_fields(record)) if record else state
+    lift_nodes = producer.lower(lift, producer.scalars(element))
+    if len(lift_nodes) != k:
+        raise ValueError(f"lift must produce {k} components, got {len(lift_nodes)}")
+    if record:
+        combine_nodes = producer.lower(
+            combine, producer.record_binding(record, k) + producer.record_binding(record, k, k)
+        )
+        project_bindings = producer.record_binding(record, k)
+    else:
+        combine_nodes = producer.lower(combine, producer.tuple_binding(k) + producer.tuple_binding(k, k))
+        project_bindings = producer.scalars(k)
+    if len(combine_nodes) != k:
+        raise ValueError(f"combine must produce {k} components")
+    if producer.is_record(type(init)):
+        init = tuple(getattr(init, f) for f in producer.record_fields(type(init)))
+    if len(init) != k:
+        raise ValueError(f"init must have {k} components")
+    project_node = producer.lower(project, project_bindings)[0] if project is not None else Arg(0)
+    r = CompositeReducer(name, k, element, lift_nodes, combine_nodes, tuple(init), project_node, associative)
     return REDUCERS.register(
         name, r, lambda v: (v.state, v.element, v.lift, v.combine, v.init, v.project, v.associative)
     )
