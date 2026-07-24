@@ -1,0 +1,36 @@
+[project]
+name = "habemus-papadum-dsl"
+# Managed by the release workflow (scripts/_versioning.py); between releases it carries a
+# "+dev" marker (a PEP 440 local version, which PyPI refuses to upload). Do not hand-edit.
+version = "0.0.0+dev"
+description = "pdum.dsl — type-keyed DSL compiler infrastructure (capture, caching, IR, the value language)"
+readme = "README.md"
+license = { text = "MIT" }
+keywords = []
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+authors = [
+    { name = "Nehal Patel", email = "nehal@alum.mit.edu" }
+]
+requires-python = ">=3.14"
+# The core depends on stdlib Python only (design 200 §1.1).
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/habemus-papadum/pdum_dsl"
+Repository = "https://github.com/habemus-papadum/pdum_dsl"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# pdum is a PEP 420 implicit namespace package (no src/pdum/__init__.py), shared with the
+# sibling habemus-papadum-* distributions. Don't add pdum/__init__.py.
+packages = ["src/pdum"]

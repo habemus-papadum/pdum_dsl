@@ -22,6 +22,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 KERNEL = ROOT / "src" / "pdum" / "dsl" / "kernel"
+# Migration P0+ (design 200 §7): packages/dsl/src/pdum/dsl is the kernel's destination; it is
+# budgeted from birth against the same caps and the same total, so the tripwire never lapses
+# during the move. The legacy KERNEL dir is deleted at P1. packages/tensorlib joins the budget
+# when it is converted onto the core (P3) — it was never under the old budget.
+NEW_KERNEL = ROOT / "packages" / "dsl" / "src" / "pdum" / "dsl"
 
 KERNEL_TOTAL_CAP = 1500  # tripwire, not a wall (010 §6 policy, 2026-07-13): crossing any cap
 # means a LEDGER ENTRY stating what was bought — never silent growth. Raised 1150→1500 when
@@ -93,19 +98,23 @@ def report(kernel_dir: Path = KERNEL, caps: dict[str, int] | None = None) -> tup
     caps = FILE_CAPS if caps is None else caps
     errors: list[str] = []
     files: dict[str, dict] = {}
-    for path in sorted(kernel_dir.rglob("*.py")):
-        name = path.relative_to(kernel_dir).as_posix()
-        try:
-            n = counted_lines(path)
-        except SyntaxError as exc:
-            errors.append(f"{name}: does not parse ({exc}) — cannot be budgeted")
-            continue
-        cap = caps.get(name)
-        files[name] = {"lines": n, "cap": cap}
-        if cap is None:
-            errors.append(f"{name}: no cap declared — add it to FILE_CAPS consciously")
-        elif n > cap:
-            errors.append(f"{name}: {n} counted lines exceeds its cap of {cap}")
+    scan: list[tuple[Path, str]] = [(kernel_dir, "")]
+    if kernel_dir == KERNEL and NEW_KERNEL.exists():  # the migration target counts too (same caps, same total)
+        scan.append((NEW_KERNEL, "packages/"))
+    for dir_, prefix in scan:
+        for path in sorted(dir_.rglob("*.py")):
+            name = path.relative_to(dir_).as_posix()
+            try:
+                n = counted_lines(path)
+            except SyntaxError as exc:
+                errors.append(f"{prefix}{name}: does not parse ({exc}) — cannot be budgeted")
+                continue
+            cap = caps.get(name)
+            files[prefix + name] = {"lines": n, "cap": cap}
+            if cap is None:
+                errors.append(f"{prefix}{name}: no cap declared — add it to FILE_CAPS consciously")
+            elif n > cap:
+                errors.append(f"{prefix}{name}: {n} counted lines exceeds its cap of {cap}")
     total = sum(f["lines"] for f in files.values())
     if total > KERNEL_TOTAL_CAP:
         errors.append(f"kernel total {total} exceeds the hard cap of {KERNEL_TOTAL_CAP}")

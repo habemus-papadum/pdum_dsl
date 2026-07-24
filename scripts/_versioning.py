@@ -13,11 +13,16 @@ Versioning model (see AGENTS.md):
     guard. The release writes the clean ``X.Y.Z`` before building, so artifacts are never +dev;
   * **lockstep** — every published package shares one version, agreement is enforced.
 
-This repo is a uv workspace (``[tool.uv.workspace] members = ["packages/*"]``) that currently
-ships ONE package. ``discover_version_files`` globs the members, so adding one needs no edit
-here. A workspace member that the root depends on WOULD need its constraint repinned in lockstep
-(cf. pdum_rfb's ``rewrite_internal_constraints``); there are no such deps today, so that
-machinery is deliberately absent rather than speculatively ported.
+This repo is a uv workspace (``[tool.uv.workspace] members = ["packages/*"]``). The ROOT is
+the unpublished virtual root (design 200 §2); the published dists are the members —
+packages/dsl (habemus-papadum-dsl, providing ``pdum.dsl``) and packages/tensorlib
+(habemus-papadum-tl, providing ``pdum.tl``) — all sharing one lockstep version.
+``discover_version_files`` globs the members, so adding one needs no edit here. The version
+ANCHOR is ``packages/dsl/src/pdum/dsl/__init__.py``. A member that another member depends on
+WOULD need its constraint repinned in lockstep (cf. pdum_rfb's
+``rewrite_internal_constraints``); there are no such deps yet, so that machinery is
+deliberately absent rather than speculatively ported — it arrives when pdum.tl grows its
+dependency on pdum.dsl (migration P3).
 """
 
 from __future__ import annotations
@@ -29,7 +34,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT_TOML = REPO_ROOT / "pyproject.toml"
-INIT_PY = REPO_ROOT / "src" / "pdum" / "dsl" / "__init__.py"
+INIT_PY = REPO_ROOT / "packages" / "dsl" / "src" / "pdum" / "dsl" / "__init__.py"
+# Transitional mirror: the legacy tree's __version__, deleted with that tree at migration P1.
+# The exists() check in discover_version_files makes the P1 deletion edit-free here.
+LEGACY_INIT_PY = REPO_ROOT / "src" / "pdum" / "dsl" / "__init__.py"
 
 _TOML_VERSION_RE = r'^(version = ")([^"]+)(")'
 _INIT_VERSION_RE = r'(__version__ = ")([^"]+)(")'
@@ -62,13 +70,16 @@ def _toml_name(path: Path) -> str:
 def discover_version_files() -> list[VersionFile]:
     """Find every version-bearing file across the workspace, dynamically.
 
-    The root pyproject + every ``packages/*/pyproject.toml`` workspace member, plus the
-    ``__init__.py`` mirror. Adding a workspace member needs no edit here.
+    The (unpublished) root pyproject + every ``packages/*/pyproject.toml`` workspace member,
+    plus the ``pdum.dsl.__version__`` anchor mirror. Adding a workspace member needs no edit
+    here.
     """
     files = [
-        VersionFile(PYPROJECT_TOML, "toml", _toml_name(PYPROJECT_TOML), True),
+        VersionFile(PYPROJECT_TOML, "toml", _toml_name(PYPROJECT_TOML), False),
         VersionFile(INIT_PY, "init_py", "pdum.dsl.__version__", False),
     ]
+    if LEGACY_INIT_PY.exists():  # transitional; the P1 purge deletes the legacy tree
+        files.append(VersionFile(LEGACY_INIT_PY, "init_py", "legacy pdum.dsl.__version__", False))
     for pyproject in sorted((REPO_ROOT / "packages").glob("*/pyproject.toml")):
         files.append(VersionFile(pyproject, "toml", _toml_name(pyproject), True))
     return files

@@ -1,4 +1,7 @@
-# Release pipeline — the single, CI-driven way pdum.dsl is released (AGENTS.md).
+# Release pipeline — the single, CI-driven way the pdum workspace is released (AGENTS.md).
+#
+# LOCKSTEP: every published member (packages/dsl -> habemus-papadum-dsl, packages/tensorlib ->
+# habemus-papadum-tl) shares one version and ships in one run; the root is unpublished.
 #
 # Trigger it from the GitHub UI (Actions -> release -> Run workflow) or `gh workflow run
 # release.yml -f bump=minor`. There is NO local release script and NO tag trigger — this is the
@@ -121,32 +124,41 @@ jobs:
           git tag -a "${{ steps.ver.outputs.tag }}" -m "${{ steps.ver.outputs.version }}"
           git push origin "HEAD:${GITHUB_REF_NAME}" "refs/tags/${{ steps.ver.outputs.tag }}"
 
-  # --- build from the freshly-cut tag ---------------------------------------
+  # --- build every published member from the freshly-cut tag ----------------
+  # LOCKSTEP (design 200 §2): all workspace members build and publish together in one
+  # tagged run. The root (pdum-workspace) is the unpublished virtual root — never built.
   build:
-    name: build habemus-papadum-dsl (sdist + wheel)
+    name: build workspace members (sdist + wheel, lockstep)
     needs: [prepare]
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
+    env:
+      MEMBERS: habemus-papadum-dsl habemus-papadum-tl
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.prepare.outputs.tag }} # build the tagged tree, never a moving branch
       - uses: astral-sh/setup-uv@v7
-      - name: Build
+      - name: Build all members
         run: |
-          uv build --package habemus-papadum-dsl --sdist
-          uv build --package habemus-papadum-dsl --wheel
-      - name: Verify the artifacts carry the release version
+          for pkg in $MEMBERS; do
+            uv build --package "$pkg" --sdist
+            uv build --package "$pkg" --wheel
+          done
+      - name: Verify every artifact carries the release version
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           # A +dev marker here means the release commit didn't take — PyPI would reject the
           # upload anyway (local versions are refused), so fail loudly and early instead.
           ls -l dist/
-          test -f "dist/habemus_papadum_dsl-${VERSION}.tar.gz" \
-            || { echo "::error::no sdist for ${VERSION} (found: $(ls dist))"; exit 1; }
-          test -f "dist/habemus_papadum_dsl-${VERSION}-py3-none-any.whl" \
-            || { echo "::error::no wheel for ${VERSION} (found: $(ls dist))"; exit 1; }
+          for pkg in $MEMBERS; do
+            base=$(echo "$pkg" | tr '-' '_')
+            test -f "dist/${base}-${VERSION}.tar.gz" \
+              || { echo "::error::no sdist for ${pkg} ${VERSION} (found: $(ls dist))"; exit 1; }
+            test -f "dist/${base}-${VERSION}-py3-none-any.whl" \
+              || { echo "::error::no wheel for ${pkg} ${VERSION} (found: $(ls dist))"; exit 1; }
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: dist

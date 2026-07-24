@@ -1,9 +1,13 @@
 [project]
-name = "habemus-papadum-dsl"
+# The UNPUBLISHED workspace root (design 200 §2): workspace glue, dev groups, docs tooling.
+# The published dists are the members: packages/dsl -> habemus-papadum-dsl (pdum.dsl),
+# packages/tensorlib -> habemus-papadum-tl (pdum.tl). The root still installs the legacy
+# src/pdum/dsl tree for its test suite until migration P1 deletes it.
+name = "pdum-workspace"
 # Managed by the release workflow (scripts/_versioning.py); between releases it carries a
 # "+dev" marker (a PEP 440 local version, which PyPI refuses to upload). Do not hand-edit.
 version = "0.0.0+dev"
-description = "A Python DSL toolkit"
+description = "Workspace root for the pdum.dsl / pdum.tl packages (unpublished)"
 readme = "README.md"
 license = { file = "LICENSE" }
 keywords = []
@@ -42,10 +46,10 @@ build-backend = "hatchling.build"
 # Don't add pdum/__init__.py: a regular package here would shadow their portions.
 packages = ["src/pdum"]
 
-# --- uv workspace: this repo hosts habemus-papadum-dsl (root) + packages/* ---
-# One workspace, one lock. No members yet — the glob is here so adding one (a native
-# backend, say) is a pure add: scripts/_versioning.py already discovers members and bumps
-# them in lockstep, and the release workflow builds the root package by name.
+# --- uv workspace: unpublished root + published members under packages/* ---
+# One workspace, one lock. Members: packages/dsl (habemus-papadum-dsl), packages/tensorlib
+# (habemus-papadum-tl) — versioned and published in LOCKSTEP (scripts/_versioning.py
+# discovers members; release.yml builds and publishes all of them in one tagged run).
 [tool.uv.workspace]
 members = ["packages/*"]
 
@@ -86,6 +90,9 @@ exclude = ["archive"]  # historical material, not maintained code
 "src/pdum/dsl/stdlib/batteries.py" = ["F821"]  # battery cross-refs resolve via the overload table
 "src/pdum/dsl/demo/graphics.py" = ["F821"]  # same: sqrt/mix are overload-table names, not globals
 "scripts/book/build_chapters.py" = ["E501"]  # chapter PROSE inside string literals wraps at its own width
+# Pre-P2 staging area: the tensorlib notebooks are lab material with their own conventions;
+# they move into packages/tensorlib at migration P2 and get that member's lint config.
+"explorations/tensorlib/notebooks/*.ipynb" = ["E501", "I001", "E402", "E702", "E743"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]

@@ -55,6 +55,15 @@ jobs:
         run: uv run pytest -rs --cov=src/pdum/dsl --cov-report=xml --cov-report=term
       - name: Build Documentation
         run: uv run mkdocs build
+
+      - name: Workspace members — build + isolated install (migration P0 gate)
+        run: |
+          rm -rf dist-members
+          uv build --package habemus-papadum-dsl -o dist-members
+          uv build --package habemus-papadum-tl  -o dist-members
+          uv venv /tmp/members-check
+          uv pip install --python /tmp/members-check/bin/python dist-members/*.whl
+          /tmp/members-check/bin/python -c "import pdum.dsl, pdum.tl; print('members OK:', pdum.dsl.__version__)"
       - name: Temporarily disable git hooks for coverage action
         run: |
           if [ -f .git/hooks/pre-commit ]; then
