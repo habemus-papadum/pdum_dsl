@@ -11,7 +11,7 @@ in LOCKSTEP versioning:
   infrastructure (capture, two-tier cache, Node/Region IR, the value language, the fuse pipe,
   the reference evaluator).
 - `packages/tensorlib` — dist **habemus-papadum-tl**, module `pdum.tl`: the assemblage tensor
-  language (arrives at migration P2 from `explorations/tensorlib/`).
+  language (layout algebra, compute primitives, Program/Instr IR, AD, cost semantics, the zoo).
 
 **THE SPECIFICATION is `docs/design/200_the-spec.md`** — the system, its principles, and the
 migration plan (P0–P9). Everything numbered 010–195 in `docs/design/history/` is history.
@@ -43,8 +43,7 @@ do not suggest releasing unless the user asks about the process.
 
 ```bash
 ./scripts/setup.sh          # bootstrap (uv sync --frozen, hooks)
-uv run pytest               # the D suite (packages/dsl/tests)
-uv run pytest explorations/tensorlib/tests   # the T suite (until P2 moves it)
+uv run pytest               # all suites: D (packages/dsl/tests) + T/Z (packages/tensorlib/tests)
 uv run ruff check .         # lint
 uv run python scripts/loc_budget.py          # the budget gate
 uv run mkdocs build         # docs

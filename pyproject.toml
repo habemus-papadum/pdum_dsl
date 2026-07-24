@@ -1,8 +1,7 @@
 [project]
 # The UNPUBLISHED workspace root (design 200 §2): workspace glue, dev groups, docs tooling.
 # The published dists are the members: packages/dsl -> habemus-papadum-dsl (pdum.dsl),
-# packages/tensorlib -> habemus-papadum-tl (pdum.tl). The root still installs the legacy
-# src/pdum/dsl tree for its test suite until migration P1 deletes it.
+# packages/tensorlib -> habemus-papadum-tl (pdum.tl).
 name = "dsl_workspace"
 # Managed by the release workflow (scripts/_versioning.py); between releases it carries a
 # "+dev" marker (a PEP 440 local version, which PyPI refuses to upload). Do not hand-edit.
@@ -81,23 +80,24 @@ line-length = 120
 # BY DESIGN.
 "packages/dsl/src/pdum/dsl/intrinsics.py" = ["F821"]  # battery cross-refs resolve via the overload table
 "packages/dsl/tests/*.py" = ["F821"]  # kernels in tests use bare DSL vocabulary
-# Pre-P2 staging area: the tensorlib notebooks are lab material with their own conventions;
-# they move into packages/tensorlib at migration P2 and get that member's lint config.
-"explorations/tensorlib/notebooks/*.ipynb" = ["E501", "I001", "E402", "E702", "E743"]
+# The tensorlib notebooks are teaching material with their own conventions (00–06
+# canonical; 07–13 re-authored or dropped as APIs change during P4–P6).
+"packages/tensorlib/notebooks/*.ipynb" = ["E501", "I001", "E402", "E702", "E743"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 ignore = []
 
 [tool.pytest.ini_options]
-testpaths = ["packages/dsl/tests"]
-addopts = "-s"
+testpaths = ["packages/dsl/tests", "packages/tensorlib/tests"]
+# importlib mode: the two members' suites may share test basenames (test_ir.py)
+addopts = "-s --import-mode=importlib"
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 
 [tool.coverage.run]
-source = ["packages/dsl/src/pdum/dsl"]
+source = ["packages/dsl/src/pdum/dsl", "packages/tensorlib/src/pdum/tl"]
 relative_files = true
 omit = [
     "*/tests/*",

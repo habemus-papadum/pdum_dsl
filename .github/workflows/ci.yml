@@ -37,7 +37,7 @@ jobs:
         run: uv run ruff check .
 
       - name: Run Tests with Coverage
-        run: uv run pytest -rs --cov=packages/dsl/src/pdum/dsl --cov-report=xml --cov-report=term
+        run: uv run pytest -rs --cov=packages/dsl/src/pdum/dsl --cov=packages/tensorlib/src/pdum/tl --cov-report=xml --cov-report=term
       - name: Build Documentation
         run: uv run mkdocs build
 
