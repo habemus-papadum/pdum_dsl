@@ -8,8 +8,8 @@ from pdum.dsl import events
 from pdum.dsl.naming import NameCollision
 from pdum.tl import Tensor
 from pdum.tl.assemblage import assemblage, unit
+from pdum.tl.compute import contract, repeat_like
 from pdum.tl.ir import run
-from pdum.tl.lifting import contract
 from pdum.tl.scope import dropout, scope, tap
 
 
@@ -22,7 +22,7 @@ def make_dense(s, cfg):
 
     @unit
     def dense(h):
-        return contract(h, w)
+        return contract(h, w, axis="d")
 
     return dense
 
@@ -32,7 +32,7 @@ def make_scale(s, cfg):
 
     @unit
     def scaled(h):
-        y = h * g.repeat_like(h, but="m")
+        y = h * repeat_like(g, h)
         tap(y, s / "y")
         return dropout(y, 0.5, s / "drop")
 
@@ -103,11 +103,11 @@ def test_the_tie_capture_identity_makes_one_leaf():
 
     @unit
     def first(h):
-        return contract(h, shared)
+        return contract(h, shared, axis="v")
 
     @unit
     def second(h):
-        return contract(h, shared.rename(v="o"))
+        return contract(h, shared.rename(v="o"), axis="t")
 
     a = assemblage(first | second, scope=root, h=T(np.zeros((2, 3)), ("t", "v")).layout)
     assert list(a.params) == ["wte"]  # one leaf, not two

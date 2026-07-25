@@ -15,10 +15,9 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..assemblage import assemblage, unit
-from ..compute import iota, pointwise
+from ..compute import contract, extent, iota, pointwise, repeat_like
 from ..ir import _dense_like
 from ..layout import Dim
-from ..lifting import contract
 from ..markers import cos, sin
 from ..scope import scope
 from ..tensor import Tensor
@@ -41,8 +40,8 @@ class LlamaConfig:
 def _rope(qv, cos_v, sin_v):
     # qv: (..., c, u); rotate each pair by theta — selects + pointwise trig
     q0, q1 = qv.select(u=0), qv.select(u=1)
-    cb = cos_v.repeat_like(q0)
-    sb = sin_v.repeat_like(q0)
+    cb = repeat_like(cos_v, q0)
+    sb = repeat_like(sin_v, q0)
     return q0 * cb - q1 * sb, q0 * sb + q1 * cb
 
 
@@ -64,22 +63,22 @@ def make_llama_block(s, cfg):
     def block(x):
         a = rmsnorm(x, rms1g, feat="d", eps=cfg.eps)
         # RoPE angles: theta[t, c] = t * omega_c — positions from iota, exactly
-        ot = omega.repeat_like(x, dim="t")
+        ot = omega.repeat("t", extent(x, "t"))  # structural construction: explicit
         th = iota(ot, "t") * ot
         cs, sn = pointwise(cos, th), pointwise(sin, th)
-        q = contract(a, wq)  # unique shared axis: "d"
-        kk = contract(a.rename(t="s"), wk)
+        q = contract(a, wq, axis="d")
+        kk = contract(a.rename(t="s"), wk, axis="d")
         q0, q1 = _rope(q, cs, sn)
         k0, k1 = _rope(kk, cs.rename(t="s"), sn.rename(t="s"))
         sc = (contract(q0, k0, axis="c") + contract(q1, k1, axis="c")) * scale
         pr = causal_softmax(sc)
-        vv = contract(a.rename(t="s"), wv)
+        vv = contract(a.rename(t="s"), wv, axis="d")
         ctx = contract(pr, vv, axis="s")
         o = contract(ctx, wo, axis=("g", "r", "kv"))
         h = x + o
         a2 = rmsnorm(h, rms2g, feat="d", eps=cfg.eps)
-        hh = pointwise(silu, contract(a2, w1)) * contract(a2, w3)
-        return h + contract(hh, w2)
+        hh = pointwise(silu, contract(a2, w1, axis="d")) * contract(a2, w3, axis="d")
+        return h + contract(hh, w2, axis="m")
 
     return block
 

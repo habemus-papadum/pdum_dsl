@@ -11,8 +11,8 @@ import pytest
 from pdum.dsl import events
 from pdum.tl import Tensor
 from pdum.tl.assemblage import assemblage, unit
+from pdum.tl.compute import contract, repeat_like
 from pdum.tl.ir import run
-from pdum.tl.lifting import contract
 from pdum.tl.opcount import ops_count
 from pdum.tl.provisioning import init, normal, ones, provision, safetensors, zeros
 from pdum.tl.scope import scope
@@ -28,7 +28,8 @@ def make_dense(s, cfg):
 
     @unit
     def dense(h):
-        return contract(h, w) * g.repeat_like(h, but="m", dim="t")
+        u = contract(h, w, axis="d")
+        return u * repeat_like(g, u)
 
     return dense
 

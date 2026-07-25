@@ -100,7 +100,7 @@ def peak_memory(
     root: dict[str, str | None] = {}
     size: dict[str, int] = {}
     for ins in instrs:
-        if ins.op in _LAYOUT_OPS or ins.op == "with_value_units":
+        if ins.op in _LAYOUT_OPS or ins.op in ("with_value_units", "repeat_like"):
             root[ins.var] = root[ins.operands[0]]
         elif ins.op in _FREE:
             root[ins.var] = None

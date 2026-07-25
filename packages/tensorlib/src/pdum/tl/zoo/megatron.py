@@ -22,10 +22,9 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..assemblage import assemblage, unit
-from ..compute import pointwise
+from ..compute import contract, pointwise, repeat_like
 from ..ir import _dense_like
 from ..layout import Dim
-from ..lifting import contract
 from ..scope import scope
 from ..tensor import Tensor
 from .zoo_common import ZooModel, causal_softmax, gelu, layernorm, np_gelu, np_layernorm, np_softmax
@@ -60,19 +59,19 @@ def make_megatron_block(s, cfg, level):
     @unit
     def block(x):
         a = layernorm(x, ln1g, ln1b, feat="d", eps=cfg.eps)
-        q = contract(a, wq)  # placement rides: broadcasts against wq bind g
-        kk = contract(a.rename(t="s"), wk)
-        vv = contract(a.rename(t="s"), wv)
+        q = contract(a, wq, axis="d")  # placement rides via repeat_like against the bound leaf
+        kk = contract(a.rename(t="s"), wk, axis="d")
+        vv = contract(a.rename(t="s"), wv, axis="d")
         sc = contract(q * scale, kk, axis="hk")
         pr = causal_softmax(sc)
         ctx = contract(pr, vv, axis="s")
         o = contract(ctx, wo, axis=("g", "hl", "hk"))  # all-reduce #1
         h = x + o
         a2 = layernorm(h, ln2g, ln2b, feat="d", eps=cfg.eps)
-        a1 = contract(a2, w1)
-        gg = pointwise(gelu, a1 + b1.repeat_like(a1, dim="t"))
+        a1 = contract(a2, w1, axis="d")
+        gg = pointwise(gelu, a1 + repeat_like(b1, a1))
         m2 = contract(gg, w2, axis=("g", "ml"))  # all-reduce #2
-        return h + m2 + b2.repeat_like(h, but="d")
+        return h + m2 + repeat_like(b2, h)
 
     return block
 

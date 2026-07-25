@@ -16,10 +16,9 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..assemblage import assemblage, unit
-from ..compute import const_like, iota, pointwise
+from ..compute import const_like, contract, iota, pointwise, red, reduce, repeat_like
 from ..ir import _dense_like
 from ..layout import Dim
-from ..lifting import contract
 from ..markers import exp, le, sqrt, where
 from ..scope import scope
 from ..tensor import Tensor
@@ -42,17 +41,17 @@ class GPT2Config:
 
 
 def layernorm_t(x, g, b, *, feat, eps):
-    mu = x.mean(feat)
-    xc = x - mu.repeat(feat, x.extent(feat))
-    sd = pointwise(sqrt, (xc * xc).mean(feat) + eps)
-    return xc / sd.repeat(feat, x.extent(feat)) * g.repeat_like(x, but=feat) + b.repeat_like(x, but=feat)
+    mu = reduce(red.mean, x, feat)
+    xc = x - repeat_like(mu, x)
+    sd = pointwise(sqrt, reduce(red.mean, xc * xc, feat) + eps)
+    return xc / repeat_like(sd, x) * repeat_like(g, x) + repeat_like(b, x)
 
 
 def causal_softmax_t(sc, *, q="t", k="s"):
     mask = pointwise(le, iota(sc, k), iota(sc, q))
     sm = pointwise(where, mask, sc, const_like(sc, -1e9))
-    e = pointwise(exp, sm - sm.max(k).repeat_like(sm, dim=k))
-    return e / e.sum(k).repeat_like(e, dim=k)
+    e = pointwise(exp, sm - repeat_like(reduce(red.max, sm, k), sm))
+    return e / repeat_like(reduce(red.sum, e, k), sm)
 
 
 # --- the makers (binding layer): declare-at-use -----------------------------
@@ -70,9 +69,9 @@ def make_attn(s, cfg):
     @unit
     def attn(h):
         a = layernorm_t(h, ln1g, ln1b, feat="d", eps=cfg.eps)
-        q = contract(a, wq)  # unique shared axis: "d"
-        k = contract(a.rename(t="s"), wk)
-        v = contract(a.rename(t="s"), wv)
+        q = contract(a, wq, axis="d")
+        k = contract(a.rename(t="s"), wk, axis="d")
+        v = contract(a.rename(t="s"), wv, axis="d")
         sc = contract(q * scale, k, axis="hk")  # "nh" rides; axis breaks the ambiguity
         pr = causal_softmax_t(sc)
         cx = contract(pr, v, axis="s")
@@ -91,8 +90,9 @@ def make_mlp(s, cfg):
     @unit
     def mlp(h):
         a = layernorm_t(h, ln2g, ln2b, feat="d", eps=cfg.eps)
-        m = pointwise(gelu, contract(a, w1) + b1.repeat_like(a, dim="t"))
-        return h + contract(m, w2) + b2.repeat_like(h, but="d")
+        u = contract(a, w1, axis="d")
+        m = pointwise(gelu, u + repeat_like(b1, u))
+        return h + contract(m, w2, axis="m") + repeat_like(b2, h)
 
     return mlp
 
@@ -115,7 +115,7 @@ def make_gpt2(s, cfg):
     @unit
     def head(h):
         hf = layernorm_t(h, lnfg, lnfb, feat="d", eps=cfg.eps)
-        return contract(hf, wlm)
+        return contract(hf, wlm, axis="d")
 
     return embed | trunk | head
 

@@ -258,46 +258,6 @@ class Tensor:
     def __gt__(self, o):
         return self._pw("gt", o)
 
-    def _red(self, fname: str, dims) -> "Tensor":
-        from .compute import red, reduce
-
-        return reduce(getattr(red, fname), self, dims)
-
-    def mean(self, dims) -> "Tensor":
-        return self._red("mean", dims)
-
-    def sum(self, dims) -> "Tensor":
-        return self._red("sum", dims)
-
-    def max(self, dims) -> "Tensor":
-        return self._red("max", dims)
-
-    def min(self, dims) -> "Tensor":
-        return self._red("min", dims)
-
-    def extent(self, name: str) -> tuple[int, int]:
-        d = self.layout.dim(name)
-        return (d.start, d.stop)
-
-    def repeat_like(self, x: "Tensor", but=None, dim=None) -> "Tensor":
-        """Broadcast toward ``x``'s dims: with dim= add exactly those (from
-        x's extents); otherwise every dim of x this tensor lacks, minus
-        ``but``. Explicit — broadcast stays a DECLARATION."""
-        src = {d.name: d for d in x.layout.dims}
-        if dim is not None:
-            names = (dim,) if isinstance(dim, str) else tuple(dim)
-        else:
-            have = {d.name for d in self.layout.dims}
-            excl = {but} if isinstance(but, str) else set(but or ())
-            names = tuple(n for n in src if n not in have and n not in excl)
-        out = self
-        for n in names:
-            d = src[n]
-            out = out.repeat(n, (d.start, d.stop), d.chart, d.labels)
-            if d.level is not None:
-                out = out.bind(**{n: d.level})
-        return out
-
     def rename(self, **mapping: str) -> "Tensor":
         return self._via(self.layout.rename(**mapping))
 

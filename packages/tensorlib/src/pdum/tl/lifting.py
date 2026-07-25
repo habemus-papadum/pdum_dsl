@@ -361,15 +361,6 @@ class _Lifter:
     # ---- the S.1 method vocabulary --------------------------------------
 
     def tensor_method(self, base: _T, name: str, args: list, kwargs: dict):
-        if name in ("mean", "sum", "max", "min"):  # one-line sugar over reduce
-            dims = args[0] if args else kwargs.get("dims")
-            names = (dims,) if isinstance(dims, str) else tuple(dims)
-            return self.emit("reduce", (base.var,), name, f=name, dims=names)
-        if name == "extent":  # a STRUCTURAL read: the dim's (start, stop)
-            d = base.shadow.dim(args[0])
-            return (d.start, d.stop)
-        if name == "repeat_like":
-            return self._repeat_like(base, args[0], **kwargs)
         if name not in _METHODS:
             raise ValueError(f"tensors have no method {name!r} in step bodies")
         if any(_holds_tensor(v) for v in list(args) + list(kwargs.values())):
@@ -387,32 +378,13 @@ class _Lifter:
             out = self.emit("bind", (out.var,), "rep", levels={d.name: d.level})
         return out
 
-    def _repeat_like(self, base: _T, x, but=None, dim=None) -> _T:
-        """Broadcast ``base`` toward ``x``'s dims: with ``dim=`` add exactly
-        those dims (from x's extents); otherwise add every dim of x that
-        ``base`` lacks, except any named in ``but``."""
-        if not isinstance(x, _T):
-            raise ValueError("repeat_like takes the tensor to align with")
-        src = {d.name: d for d in x.shadow.dims}
-        if dim is not None:
-            names = (dim,) if isinstance(dim, str) else tuple(dim)
-        else:
-            have = {d.name for d in base.shadow.dims}
-            excl = {but} if isinstance(but, str) else set(but or ())
-            names = tuple(n for n in src if n not in have and n not in excl)
-        out = base
-        for n in names:
-            out = self.rep_dim(out, src[n])
-        return out
-
-    # ---- the S.1 function vocabulary: THE compute operators -------------
-
     def compute_call(self, target, args, kwargs):
-        """Recognize the real compute-layer functions by identity — the
-        assemblage surface IS the user-level API (owner ruling, P6):
-        pointwise/reduce/scan/iota/const_like emit here and run eagerly
-        outside. A bare marker call on tensors refuses, pointing at
-        pointwise. Returns None when target is not compute vocabulary."""
+        """THE surface↔IR correspondence (220): the recognized set is
+        exactly the primitive set — pointwise/reduce/scan/iota/const_like/
+        repeat_like emit one instruction each, extent is the structural
+        read, and NOTHING else is recognized: every other function is plain
+        code that inlines (or refuses). A bare marker call on tensors
+        refuses, pointing at pointwise. Returns None for non-vocabulary."""
         from . import compute
         from .markers import Marker
         from .mdsl import CompositeMarker
@@ -422,20 +394,22 @@ class _Lifter:
             fname = f.name if isinstance(f, (Marker, CompositeMarker)) else f
             return self.pointwise(fname, *ops, hint=str(fname).rsplit(".", 1)[-1])
         if target is compute.reduce or target is compute.scan:
-            f, a, dims = args[0], args[1], args[2] if len(args) > 2 else kwargs.get(
-                "dims" if target is compute.reduce else "dim"
-            )
+            f, a = args[0], args[1]
+            dims = args[2] if len(args) > 2 else kwargs.get("dims" if target is compute.reduce else "dim")
             fname = f if isinstance(f, str) else f.name
             ops = tuple(t.var for t in (a if isinstance(a, tuple) else (a,)))
             if target is compute.reduce:
                 names = (dims,) if isinstance(dims, str) else tuple(dims)
                 return self.emit("reduce", ops, "red", f=fname, dims=names)
             return self.emit("scan", ops, "scan", f=fname, dim=dims)
-        if target is compute.contract:
-            return self._i_contract(*args, **kwargs)
+        if target is compute.repeat_like:
+            x, like = args
+            return self.emit("repeat_like", (x.var, like.var), "rl")
+        if target is compute.extent:
+            d = args[0].shadow.dim(args[1])
+            return (d.start, d.stop)
         if target is compute.iota:
-            t, dim = args[0], args[1]
-            return self.emit("iota", (t.var,), "iota", name=dim)
+            return self.emit("iota", (args[0].var,), "iota", name=args[1])
         if target is compute.const_like:
             return self.const_like(args[1], args[0])
         if isinstance(target, (Marker, CompositeMarker)):
@@ -445,50 +419,6 @@ class _Lifter:
                 f"only inside scalar marker bodies)"
             )
         return None
-
-    def _i_contract(self, a, b_, axis=None):
-        """Named-axis contraction: sum over the UNIQUE shared axis, or the
-        axis/axes named to break a genuine ambiguity; non-contracted dims
-        ride. Matmul as declaration — repeat + mul + reduce (D5)."""
-        if not (isinstance(a, _T) and isinstance(b_, _T)):
-            raise ValueError("contract takes two tensors")
-        da = {d.name: d for d in a.shadow.dims}
-        db = {d.name: d for d in b_.shadow.dims}
-        shared = [n for n in da if n in db]
-        if axis is None:
-            if len(shared) != 1:
-                what = "no shared axis" if not shared else f"shared axes {sorted(shared)}"
-                raise ValueError(
-                    f"contract: {what} between operands (a: {sorted(da)}, b: {sorted(db)}) — "
-                    f"a unique shared axis contracts implicitly; name the contraction: "
-                    f"contract(a, b, axis=...)"
-                )
-            axes = (shared[0],)
-        else:
-            axes = (axis,) if isinstance(axis, str) else tuple(axis)
-            for ax in axes:
-                if ax not in shared:
-                    raise ValueError(f"contract axis {ax!r} is not shared (a: {sorted(da)}, b: {sorted(db)})")
-        xb = a
-        for n, d in db.items():
-            if n not in da:
-                xb = self.rep_dim(xb, d)
-        yb = b_
-        for n, d in da.items():
-            if n not in db:
-                yb = self.rep_dim(yb, d)
-        m = self.pointwise("mul", xb, yb, hint="mm")
-        return self.emit("reduce", (m.var,), "mm", f="sum", dims=axes)
-
-    def _i_reduce_over(self, f, operands, dims):
-        """The two-operand reduce form (S.1 committed vocabulary): a named
-        (composite) reducer over aligned operand tensors."""
-        ts = operands if isinstance(operands, tuple) else (operands,)
-        if not all(isinstance(t, _T) for t in ts):
-            raise ValueError("reduce_over takes tensor operands")
-        names = (dims,) if isinstance(dims, str) else tuple(dims)
-        fname = f if isinstance(f, str) else f.name
-        return self.emit("reduce", tuple(t.var for t in ts), "red", f=fname, dims=names)
 
     def inline(self, fn, args, kwargs) -> object:
         """A helper called on tensor arguments: lower its body here, its

@@ -66,7 +66,7 @@ def reducer(name: str):
 
 
 _LEAF_OPS = ("input", "const", "iota", "random")
-_COMPUTE_OPS = ("pointwise", "reduce", "scan", "materialize", "with_value_units", "fold", "round_to")
+_COMPUTE_OPS = ("pointwise", "reduce", "scan", "materialize", "with_value_units", "fold", "round_to", "repeat_like")
 
 
 @dataclass(frozen=True, eq=False)
@@ -345,6 +345,10 @@ def run(prog: Program, inputs: dict[str, Tensor]) -> dict[str, Tensor]:
             env[ins.var] = _materialize(env[ins.operands[0]], ins.params)
         elif ins.op == "round_to":
             env[ins.var] = _round_to(env[ins.operands[0]], ins.params["encoding"])
+        elif ins.op == "repeat_like":
+            from .compute import repeat_like
+
+            env[ins.var] = repeat_like(env[ins.operands[0]], env[ins.operands[1]])
         elif ins.op == "fold":
             env[ins.var] = _run_fold(ins, env)
         elif ins.op == "with_value_units":
@@ -414,6 +418,17 @@ def infer_instr(ins: Instr, shadows: dict, input_layouts: dict | None = None):
         return _dense_like(dims)
     if ins.op == "round_to":
         return _dense_like(shadows[ins.operands[0]].dims)
+    if ins.op == "repeat_like":
+        # the batching-unawareness mechanism (220): added dims are LAYOUT-
+        # DERIVED from the like operand — referenced for its layout only
+        x, like = shadows[ins.operands[0]], shadows[ins.operands[1]]
+        have = {d.name for d in x.dims}
+        for d in like.dims:
+            if d.name not in have:
+                x = x.repeat(d.name, (d.start, d.stop), d.chart, d.labels)
+                if d.level is not None:
+                    x = x.bind(**{d.name: d.level})
+        return x
     if ins.op == "fold":
         return _fold_infer(ins, shadows)
     if ins.op == "pad":

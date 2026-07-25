@@ -803,9 +803,14 @@ pinned. Operators (``x * g``, comparisons) are pointwise-with-refusal;
 numbers const-lift (the one implicit lift); ``.mean/.sum/.max/.min``
 are one-line documented sugar over reduce; unary method spellings
 (``.sqrt()``) are withdrawn in favor of ``pointwise(sqrt, …)``;
-``contract`` and ``repeat_like`` are dual-mode VISIBLE sugar
-(repeat + mul + reduce; broadcast by declaration), never an opaque
-method surface.
+``repeat_like(x, like)`` is an IR PRIMITIVE — the batching-unawareness
+mechanism (220 §5): its added-dim set is layout-derived from the like
+operand (referenced for layout only, the iota precedent; adjoint =
+reduce-sum over the added dims) — and ``contract(a, b, axis=…)`` is one
+visible line over it with the contraction axes MANDATORY (axes are
+author knowledge; batch dims are not). Reduce spellings are
+``reduce(red.mean, x, dims)``; the method surface is the frozen layout
+set only. The principles ledger is docs/design/220_principles.md.
 
 ### S.2 The shared expression syntax
 

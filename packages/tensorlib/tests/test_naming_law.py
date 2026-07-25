@@ -8,6 +8,7 @@ summed gradient."""
 import numpy as np
 from pdum.tl.assemblage import assemblage, unit
 from pdum.tl.autodiff import grad, numeric_grad
+from pdum.tl.compute import repeat_like
 from pdum.tl.ir import Instr, Program, run
 from pdum.tl.scope import scope
 from pdum.tl.zoo.gpt2 import GPT2Config, gpt2, make_gpt2
@@ -57,11 +58,11 @@ def test_the_tied_gradient_pin():
 
     @unit
     def first(h):
-        return h * w.repeat_like(h, dim="t")  # capture 1
+        return h * repeat_like(w, h)  # capture 1
 
     @unit
     def second(h):
-        return h + (w * w).repeat_like(h, dim="t")  # capture 2, nonlinearly
+        return h + repeat_like(w * w, h)  # capture 2, nonlinearly
 
     from pdum.tl.ir import _dense_like
     from pdum.tl.layout import Dim

@@ -878,7 +878,14 @@ def _grad(
         if ins.op in ("input", "const", "iota", "random"):
             continue  # leaves: gradient stops (iota/const/random are gradient-free —
             # a mask field acts as a constant; AD through dropout needs no rule)
-        if ins.op == "round_to":
+        if ins.op == "repeat_like":
+            # adjoint: reduce-sum over the ADDED dims (layout-derived, from
+            # the shadows); the like operand is layout-only — no gradient
+            have = {d.name for d in shadows[ins.operands[0]].dims}
+            added = tuple(d.name for d in shadows[ins.var].dims if d.name not in have)
+            gv = b.emit("reduce", (c,), {"f": "sum", "dims": added}) if added else c
+            contribute(ins.operands[0], gv)
+        elif ins.op == "round_to":
             # STRAIGHT-THROUGH by default (200 §4): a zero derivative would
             # make every quantized parameter untrainable; zero by declaration
             if ins.params.get("grad", "straight_through") != "zero":

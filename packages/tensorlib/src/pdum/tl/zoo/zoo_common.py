@@ -10,7 +10,7 @@ from typing import Callable
 
 import numpy as np
 
-from ..compute import const_like, iota, pointwise
+from ..compute import const_like, iota, pointwise, red, reduce, repeat_like
 from ..ir import Program
 from ..markers import exp, le, sqrt, where
 from ..mdsl import defmarker, tanh
@@ -54,16 +54,16 @@ def t_in(inputs: dict, name: str, arr, names) -> str:
 
 
 def layernorm(x, g, b, *, feat, eps):
-    mu = x.mean(feat)
-    xc = x - mu.repeat(feat, x.extent(feat))
-    sd = pointwise(sqrt, (xc * xc).mean(feat) + eps)
-    return xc / sd.repeat(feat, x.extent(feat)) * g.repeat_like(x, but=feat) + b.repeat_like(x, but=feat)
+    mu = reduce(red.mean, x, feat)
+    xc = x - repeat_like(mu, x)
+    sd = pointwise(sqrt, reduce(red.mean, xc * xc, feat) + eps)
+    return xc / repeat_like(sd, x) * repeat_like(g, x) + repeat_like(b, x)
 
 
 def rmsnorm(x, g, *, feat, eps):
-    ms = (x * x).mean(feat)
+    ms = reduce(red.mean, x * x, feat)
     sd = pointwise(sqrt, ms + eps)
-    return x / sd.repeat(feat, x.extent(feat)) * g.repeat_like(x, but=feat)
+    return x / repeat_like(sd, x) * repeat_like(g, x)
 
 
 def np_layernorm(x, g, beta, eps, axis=-1):
@@ -77,8 +77,8 @@ def np_rmsnorm(x, g, eps, axis=-1):
 
 
 def softmax(sm, *, k):
-    e = pointwise(exp, sm - sm.max(k).repeat_like(sm, dim=k))
-    return e / e.sum(k).repeat_like(e, dim=k)
+    e = pointwise(exp, sm - repeat_like(reduce(red.max, sm, k), sm))
+    return e / repeat_like(reduce(red.sum, e, k), sm)
 
 
 def causal_softmax(sc, *, q="t", k="s"):

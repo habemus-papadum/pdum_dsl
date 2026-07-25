@@ -15,10 +15,9 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..assemblage import assemblage, unit
-from ..compute import const_like, iota, pointwise, reduce
+from ..compute import const_like, contract, iota, pointwise, reduce, repeat_like
 from ..ir import _dense_like
 from ..layout import Dim
-from ..lifting import contract
 from ..markers import le, lt, where
 from ..mdsl import defreducer, exp, maximum
 from ..scope import scope
@@ -92,7 +91,7 @@ def sliding_attention(T=5, E=3, OD=2, W=2, seed=3) -> ZooModel:
 
     @unit
     def attend(q):
-        sc = contract(q, k)  # unique shared axis: "e"
+        sc = contract(q, k, axis="e")
         causal = pointwise(le, iota(sc, "s"), iota(sc, "t"))
         inwin = pointwise(lt, iota(sc, "t") - iota(sc, "s"), const_like(sc, W))
         m = causal * inwin  # bool AND
@@ -120,9 +119,9 @@ def gated_attention(T=5, E=3, OD=2, seed=4) -> ZooModel:
 
     @unit
     def attend(q):
-        pr = causal_softmax(contract(q, k))
+        pr = causal_softmax(contract(q, k, axis="e"))
         ctx = contract(pr, v, axis="s")
-        gate = pointwise(sigmoid, contract(q, wg))
+        gate = pointwise(sigmoid, contract(q, wg, axis="e"))
         return gate * ctx
 
     model = assemblage(attend, scope=root, q=_qlay(T, E))
@@ -150,7 +149,7 @@ def qknorm_attention(T=5, E=3, OD=2, eps=1e-6, seed=5) -> ZooModel:
     def attend(q):
         qn = rmsnorm(q, gq, feat="e", eps=eps)
         kn = rmsnorm(k, gk, feat="e", eps=eps)
-        pr = causal_softmax(contract(qn, kn))
+        pr = causal_softmax(contract(qn, kn, axis="e"))
         return contract(pr, v, axis="s")
 
     model = assemblage(attend, scope=root, q=_qlay(T, E))
@@ -176,16 +175,16 @@ def flash_attention(T=5, E=3, OD=2, seed=6, naive=False) -> ZooModel:
 
     @unit
     def attend_naive(q):
-        pr = causal_softmax(contract(q, k))
+        pr = causal_softmax(contract(q, k, axis="e"))
         return contract(pr, v, axis="s")
 
     @unit
     def attend_flash(q):
-        sc = contract(q, k)
+        sc = contract(q, k, axis="e")
         m = pointwise(le, iota(sc, "s"), iota(sc, "t"))
         sm = pointwise(where, m, sc, const_like(sc, -1e9))
-        se = sm.repeat_like(v, dim="o")
-        ve = v.repeat_like(sm, dim="t")
+        se = repeat_like(sm, v)
+        ve = repeat_like(v, sm)
         return reduce(flashsm, (se, ve), "s")
 
     model = assemblage(attend_naive if naive else attend_flash, scope=root, q=_qlay(T, E))

@@ -1,14 +1,13 @@
-"""The S.1 assemblage vocabulary: rmsnorm/layernorm/causal_softmax written
-in the spec's own style (200 §6.1, nearly verbatim) lower through the
-lifting machinery and match numpy; contract infers the unique shared axis
-and refuses genuine ambiguity; the two-operand reduce form works."""
+"""The S.1 assemblage vocabulary (amended P6): the library in the final
+functional surface — pointwise/reduce application, repeat_like alignment,
+mandatory contract axes — lowered AND eager, matching numpy."""
 
 import numpy as np
 import pytest
 from pdum.tl import Tensor
-from pdum.tl.compute import const_like, iota, pointwise, reduce
+from pdum.tl.compute import const_like, contract, iota, pointwise, red, reduce, repeat_like
 from pdum.tl.ir import run
-from pdum.tl.lifting import contract, lift_step
+from pdum.tl.lifting import lift_step
 from pdum.tl.markers import exp, le, sqrt, where
 
 
@@ -26,24 +25,24 @@ def _run1(fn, **tensors):
 
 
 def rmsnorm(x, g, *, feat="e", eps=1e-5):
-    ms = (x * x).mean(feat)
+    ms = reduce(red.mean, x * x, feat)
     sd = pointwise(sqrt, ms + eps)
-    xn = x / sd.repeat(feat, x.extent(feat))
-    return xn * g.repeat_like(x, but=feat)
+    xn = x / repeat_like(sd, x)
+    return xn * repeat_like(g, x)
 
 
 def layernorm(x, g, b, *, feat, eps=1e-5):
-    mu = x.mean(feat)
-    xc = x - mu.repeat(feat, x.extent(feat))
-    sd = pointwise(sqrt, (xc * xc).mean(feat) + eps)
-    return xc / sd.repeat(feat, x.extent(feat)) * g.repeat_like(x, but=feat) + b.repeat_like(x, but=feat)
+    mu = reduce(red.mean, x, feat)
+    xc = x - repeat_like(mu, x)
+    sd = pointwise(sqrt, reduce(red.mean, xc * xc, feat) + eps)
+    return xc / repeat_like(sd, x) * repeat_like(g, x) + repeat_like(b, x)
 
 
 def causal_softmax(sc, *, q="t", k="s"):
     mask = pointwise(le, iota(sc, k), iota(sc, q))
     sm = pointwise(where, mask, sc, const_like(sc, -1e9))
-    e = pointwise(exp, sm - sm.max(k).repeat_like(sm, dim=k))
-    return e / e.sum(k).repeat_like(e, dim=k)
+    e = pointwise(exp, sm - repeat_like(reduce(red.max, sm, k), sm))
+    return e / repeat_like(reduce(red.sum, e, k), sm)
 
 
 def test_rmsnorm_the_s1_worked_example():
@@ -85,9 +84,15 @@ def test_causal_softmax_masks_by_closed_form():
 # --- contract: the unique shared axis, and the named ambiguity --------------
 
 
-def test_contract_infers_the_unique_shared_axis():
+def test_contract_axis_is_mandatory_and_declared():
+    """The owner ruling: contraction axes are structural knowledge the
+    author HAS — no inference. The unknown part (batch dims) flows only
+    through repeat_like."""
+    with pytest.raises(TypeError, match="axis"):
+        contract(T(np.zeros((2, 3)), ("t", "d")), T(np.zeros((3, 4)), ("d", "m")))
+
     def step(a, w):
-        return contract(a, w)
+        return contract(a, w, axis="d")
 
     rng = np.random.default_rng(6)
     a, w = rng.standard_normal((4, 6)), rng.standard_normal((6, 3))
@@ -95,14 +100,26 @@ def test_contract_infers_the_unique_shared_axis():
     np.testing.assert_allclose(got.to_numpy(order=("t", "m")), a @ w, rtol=1e-12)
 
 
-def test_contract_ambiguity_refuses_naming_the_fix():
-    def step(q, k):
-        return contract(q, k)
+def test_repeat_like_makes_code_batching_unaware():
+    """THE mechanism (220): the SAME body lowers for (t, d) and for
+    (b, t, d) — the batch dim is never named; it flows in through
+    repeat_like's layout-derived added-dim set, as ONE IR instruction."""
 
-    rng = np.random.default_rng(7)
-    q, k = rng.standard_normal((4, 2, 3)), rng.standard_normal((5, 2, 3))
-    with pytest.raises(ValueError, match=r"shared axes \['hk', 'nh'\].*contract\(a, b, axis=...\)"):
-        _run1(step, q=T(q, ("t", "nh", "hk")), k=T(k, ("s", "nh", "hk")))
+    def step(a, w):
+        return contract(a, w, axis="d")
+
+    rng = np.random.default_rng(13)
+    w = rng.standard_normal((6, 3))
+    plain = rng.standard_normal((4, 6))
+    batched = rng.standard_normal((5, 4, 6))
+    got = _run1(step, a=T(plain, ("t", "d")), w=T(w, ("d", "m")))
+    np.testing.assert_allclose(got.to_numpy(order=("t", "m")), plain @ w, rtol=1e-12)
+    gotb = _run1(step, a=T(batched, ("b", "t", "d")), w=T(w, ("d", "m")))
+    np.testing.assert_allclose(
+        gotb.to_numpy(order=("b", "t", "m")), np.einsum("btd,dm->btm", batched, w), rtol=1e-12
+    )
+    ls = lift_step(step, a=T(batched, ("b", "t", "d")).layout, w=T(w, ("d", "m")).layout)
+    assert sum(1 for i in ls.program.instrs if i.op == "repeat_like") == 2  # one per operand
 
 
 def test_contract_named_axis_lets_heads_ride():
@@ -127,12 +144,12 @@ def test_contract_tuple_axis():
     np.testing.assert_allclose(got.to_numpy(order=("t", "d")), want, rtol=1e-12)
 
 
-def test_contract_no_shared_axis_refuses():
+def test_contract_bogus_axis_refuses_through_reduce():
     def step(a, b):
-        return contract(a, b)
+        return contract(a, b, axis="z")
 
-    with pytest.raises(ValueError, match="no shared axis"):
-        _run1(step, a=T(np.zeros(2), ("i",)), b=T(np.zeros(3), ("j",)))
+    with pytest.raises(KeyError):
+        _run1(step, a=T(np.zeros(2), ("i",)), b=T(np.zeros((2, 3)), ("i", "j")))
 
 
 # --- the two-operand reduce form + calling vocabulary outside a body --------
@@ -152,13 +169,12 @@ def test_reduce_the_two_operand_form():
 
 
 def test_contract_is_one_dual_mode_function():
-    """contract is visible sugar (repeat_like + mul + reduce) — the SAME
-    function runs eagerly on real tensors and emits when lowered."""
-    with pytest.raises(TypeError, match="contract takes two tensors"):
-        contract(1, 2)
+    """contract is ONE visible line (repeat_like + mul + reduce) — the
+    SAME plain function runs eagerly on real tensors and inlines when
+    lowered; nothing recognizes it."""
     rng = np.random.default_rng(12)
     a, w = rng.standard_normal((4, 6)), rng.standard_normal((6, 3))
-    eager = contract(T(a, ("t", "d")), T(w, ("d", "m")))  # EXECUTED
+    eager = contract(T(a, ("t", "d")), T(w, ("d", "m")), axis="d")  # EXECUTED
     np.testing.assert_allclose(eager.to_numpy(order=("t", "m")), a @ w, rtol=1e-12)
 
 

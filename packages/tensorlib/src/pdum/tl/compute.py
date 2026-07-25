@@ -121,37 +121,42 @@ def pointwise(f: Marker, *tensors: Tensor) -> Tensor:
     return _tensor_like(np.asarray(out), tensors[0].layout.dims)
 
 
-def shared_axes(a, b, axis=None) -> tuple:
-    """The contraction axes: the UNIQUE shared axis, or the axis/axes named
-    to break a genuine ambiguity. One rule, both modes (eager + lowered)."""
-    da = {d.name for d in a.layout.dims}
-    db = {d.name for d in b.layout.dims}
-    shared = sorted(da & db)
-    if axis is None:
-        if len(shared) != 1:
-            what = "no shared axis" if not shared else f"shared axes {shared}"
-            raise ValueError(
-                f"contract: {what} between operands (a: {sorted(da)}, b: {sorted(db)}) — "
-                f"a unique shared axis contracts implicitly; name the contraction: "
-                f"contract(a, b, axis=...)"
-            )
-        return tuple(shared)
-    axes = (axis,) if isinstance(axis, str) else tuple(axis)
-    for ax in axes:
-        if ax not in shared:
-            raise ValueError(f"contract axis {ax!r} is not shared (a: {sorted(da)}, b: {sorted(db)})")
-    return axes
+def repeat_like(x: Tensor, like: Tensor) -> Tensor:
+    """THE alignment primitive — and the mechanism that makes
+    BATCHING-UNAWARE code possible (220): broadcast ``x`` by adding every
+    dim of ``like`` that ``x`` lacks, each as a stride-0 declaration
+    carrying ``like``'s extent, chart, labels, and placement. The added-dim
+    set is LAYOUT-DERIVED at build time, never author-enumerated — code
+    written against (t, d) works untouched when the data carries (b, t, d),
+    because the batch dims flow in through ``like``. ``like`` is referenced
+    for its LAYOUT only (the iota precedent): no value dependency, no
+    gradient; the adjoint on ``x`` is reduce-sum over the added dims. ONE
+    IR instruction; the discipline is to align against the tensor you are
+    about to combine with."""
+    have = {d.name for d in x.layout.dims}
+    out = x
+    for d in like.layout.dims:  # the primitive's internal expansion
+        if d.name not in have:
+            out = out.repeat(d.name, (d.start, d.stop), d.chart, d.labels)
+            if d.level is not None:
+                out = out.bind(**{d.name: d.level})
+    return out
 
 
-def contract(a: Tensor, b: Tensor, axis=None) -> Tensor:
-    """Matmul as DECLARATION — three lines of visible sugar you can always
-    read: broadcast each operand over the dims only the other carries
-    (repeat_like), multiply pointwise, reduce-sum over the contraction
-    axes. Riding dims ride; misalignment refuses like everything else."""
-    if not (hasattr(a, "layout") and hasattr(b, "layout")):
-        raise TypeError("contract takes two tensors")
-    axes = shared_axes(a, b, axis)
-    return reduce(red.sum, pointwise(pw.mul, a.repeat_like(b), b.repeat_like(a)), axes)
+def contract(a: Tensor, b: Tensor, *, axis) -> Tensor:
+    """Matmul as DECLARATION — one visible line: align each operand to the
+    other, multiply, reduce-sum over the DECLARED contraction axes.
+    ``axis`` is mandatory (owner ruling): contraction axes are structural
+    knowledge the author has; batch dims are the part the author doesn't
+    have, and those flow only through repeat_like. Riding dims ride."""
+    return reduce(red.sum, pointwise(pw.mul, repeat_like(a, b), repeat_like(b, a)), axis)
+
+
+def extent(x, name: str) -> tuple[int, int]:
+    """A structural READ: the dim's (start, stop) — build-time fact."""
+    lay = getattr(x, "shadow", None) or x.layout
+    d = lay.dim(name)
+    return (d.start, d.stop)
 
 
 def const_like(t: Tensor, value) -> Tensor:
