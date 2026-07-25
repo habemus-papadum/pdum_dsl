@@ -131,6 +131,7 @@ class _KernelLowerer(_Lifter):
         self.token: str | None = None
         self.stored: list[str] = []  # parameter names stored to, in order
         self.fn_markers: dict[str, str] = {}
+        self.param_names: tuple = ()  # kernel parameters — fn-arg slots live here ONLY
 
     def _i_thread_idx(self, *names):
         if self.target is None:
@@ -206,7 +207,7 @@ class _KernelLowerer(_Lifter):
         """A function-valued argument applied at the thread coordinates:
         ONE pointwise instr over a launch-rebindable marker — per-element
         dispatch through the spelled oracle (oracle-grade by doctrine)."""
-        pname = next((n for n, v in self.env.items() if v is handle), None)
+        pname = next((n for n in self.param_names if self.env.get(n) is handle), None)
         mname = f"kernel.fn.{hashlib.sha256(repr(handle.fp).encode()).hexdigest()[:10]}"
 
         def _make(mname=mname):
@@ -230,6 +231,7 @@ def _compile(fn, args) -> _Artifact:
     if len(params) != len(args):
         raise TypeError(f"{fn.__qualname__} takes {len(params)} arguments, got {len(args)}")
     lo = _KernelLowerer(_captured(fn))
+    lo.param_names = tuple(params)
     writable_target = next((a for a in args if isinstance(a, Tensor)), None)
     if writable_target is None:
         raise TypeError("@compute needs at least one tensor argument (the thread lattice)")

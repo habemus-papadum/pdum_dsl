@@ -214,3 +214,36 @@ def test_kernels_return_nothing_and_data_dependent_indexing_refuses():
 
     with pytest.raises(ValueError, match=r"exactly the thread coordinates.*arriving P9"):
         bad_index(T(np.zeros(3), ("y",)))
+
+
+@jit()
+def _looped_device_fn(cr, ci):
+    zr = 0.0
+    zi = 0.0
+    n = 0.0
+    for i in range(8):
+        zr2 = zr * zr - zi * zi + cr
+        zi = 2.0 * zr * zi + ci
+        zr = zr2
+        if zr * zr + zi * zi < 4.0:
+            n = n + 1.0
+    return n / 8.0
+
+
+@compute
+def _escape_kernel(f, img):
+    y, x = thread_idx("y", "x")
+    img[y, x] = f(y * 0.5 - 1.0, x * 0.5 - 1.0)
+
+
+def test_fn_arg_with_loops_and_module_global_name():
+    """Two pins: (a) per-pixel LOOPS/BRANCHES live in @jit device functions
+    (the value language) — the kernel body stays straight-line plumbing;
+    (b) REGRESSION: an argument handle also visible as a module global under
+    its own name must bind through the PARAMETER slot (the lookup once found
+    the global first and the launch rebind broke)."""
+    img = T(np.zeros((4, 4)), ("y", "x"))
+    _escape_kernel(_looped_device_fn, img)
+    ref = reference(_looped_device_fn)
+    want = np.array([[ref(y * 0.5 - 1.0, x * 0.5 - 1.0) for x in range(4)] for y in range(4)])
+    np.testing.assert_allclose(img.to_numpy(), want, rtol=1e-12)
