@@ -386,7 +386,7 @@ def infer_instr(ins: Instr, shadows: dict, input_layouts: dict | None = None):
     dispatch `infer` loops and the step lifter consumes incrementally."""
     if ins.op == "input":
         src = (input_layouts or {})[ins.var]
-        return src.layout if isinstance(src, Tensor) else src
+        return getattr(src, "layout", src)  # Tensor or boundary Descriptor; a Layout is itself
     if ins.op == "const":
         dims = tuple(Dim(name, 0, *_extent(extent)) for name, extent in ins.params.get("dims", ()))
         # stride-0 broadcast, exactly like run's _const

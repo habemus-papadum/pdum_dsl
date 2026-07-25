@@ -171,3 +171,30 @@ def test_qat_master_weights_train_through_quantized_forward():
     loss1 = run(prog, inputs)["loss"].item()
     loss2 = run(prog, {"w": T(w2, ("d",)), "x": inputs["x"]})["loss"].item()
     assert float(loss2) < float(loss1)
+
+
+# --- cost oracles read boundary byte truth (the re-derivation) --------------
+
+
+def test_cost_oracles_read_boundary_byte_truth():
+    """Descriptor-fed byte-exact sizes (200 §4): an f16 boundary fact halves
+    the INPUT bytes; the interior stays the DECLARED oracle f64 — byte truth
+    enters at descriptors, never mid-program."""
+    from pdum.tl.memory import peak_memory
+
+    prog = Program((I("w", "input"), I("y", "pointwise", ("w", "w"), f="mul")))
+    lay = T(np.zeros(16), ("d",)).layout
+    full = peak_memory(prog, {"w": T(np.zeros(16), ("d",))})
+    fact16 = peak_memory(prog, {"w": Descriptor(buffer=None, layout=lay, encoding=NumpyEncoding(np.float16))})
+    assert full.input_bytes == 16 * 8
+    assert fact16.input_bytes == 16 * 2  # the checkpoint's dtype is a FACT
+    assert full.alloc_bytes["y"] == fact16.alloc_bytes["y"] == 16 * 8  # declared interior
+
+
+def test_quant_descriptor_bytes_are_sub_byte_exact():
+    from pdum.tl.memory import peak_memory
+
+    prog = Program((I("w", "input"), I("y", "pointwise", ("w", "w"), f="mul")))
+    lay = T(np.zeros(64), ("d",)).layout
+    q = peak_memory(prog, {"w": Descriptor(buffer=None, layout=lay, encoding=QuantGroupEncoding(group=16))})
+    assert q.input_bytes == 32 + 4 * 4  # nibbles + f32 scales, byte-exact

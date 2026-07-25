@@ -34,8 +34,25 @@ from typing import Mapping
 
 from .ir import _LAYOUT_OPS, Program, _fold_step_layouts, infer
 
-_ITEM = 8
-_FREE = frozenset({"iota", "const"})
+# The DECLARED interior itemsize (200 §4): the reference oracle computes in
+# f64 — a declared property, never semantics. L2's encoding assignment
+# replaces this for materialized intermediates; BOUNDARY values take their
+# byte truth from the inputs themselves (a Tensor's dtype, a Descriptor's
+# encoding) — descriptor-fed, byte-exact, never the old uniform convention.
+_INTERIOR_ITEM = 8
+_FREE = frozenset({"iota", "const", "random"})
+
+
+def _boundary_bytes(value, layout, local: bool) -> int | None:
+    """Byte truth for an INPUT: Descriptor -> encoding-fed; Tensor -> its
+    dtype's itemsize; a bare Layout has no boundary fact (None)."""
+    enc = getattr(getattr(value, "encoding", None), "nbytes", None)
+    if enc is not None:
+        return value.encoding.nbytes(_numel(value.layout, local))
+    itemsize = getattr(getattr(value, "dtype", None), "itemsize", None)
+    if itemsize is not None:
+        return _numel(layout, local) * itemsize
+    return None
 
 
 def _numel(layout, local: bool = False) -> int:
@@ -89,7 +106,11 @@ def peak_memory(
             root[ins.var] = None
         else:
             root[ins.var] = ins.var
-            size[ins.var] = _numel(shadows[ins.var], local) * _ITEM
+            size[ins.var] = _numel(shadows[ins.var], local) * _INTERIOR_ITEM
+            if ins.op == "input":
+                b = _boundary_bytes(input_layouts.get(ins.var), shadows[ins.var], local)
+                if b is not None:
+                    size[ins.var] = b
 
     last_use: dict[str, int] = {}
     for i, ins in enumerate(instrs):
@@ -106,7 +127,7 @@ def peak_memory(
             return 0
         state_names = tuple(ins.params["state"])
         k = len(state_names)
-        carry_bytes = sum(size.get(o, _numel(shadows[o], local) * _ITEM) for o in ins.operands[:k])
+        carry_bytes = sum(size.get(o, _numel(shadows[o], local) * _INTERIOR_ITEM) for o in ins.operands[:k])
         step_layouts = _fold_step_layouts(ins, shadows)
         sub = peak_memory(ins.params["step"], step_layouts, free_inputs=True, local=local)
         return carry_bytes + sub.peak_bytes

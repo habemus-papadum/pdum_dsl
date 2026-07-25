@@ -30,6 +30,10 @@ from fractions import Fraction
 
 from .ir import Program, _fold_parts, _fold_step_layouts, infer
 
+# The DECLARED interior itemsize (200 §4): collectives in the reference
+# move f64 interior values — a declared oracle property. L2's encoding
+# assignment makes per-value bytes real; boundary facts enter via the
+# descriptors the capacity checks read.
 _ITEM = 8
 _SURGERY = ("slice", "select", "shift", "flip", "decimate", "window", "stencil", "pad", "split", "diagonal")
 
