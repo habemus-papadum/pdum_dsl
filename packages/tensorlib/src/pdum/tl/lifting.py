@@ -201,6 +201,10 @@ class _Lifter:
         self.shadows[var] = infer_instr(self.b.instrs[-1], self.shadows)
         return _T(var, self.shadows[var])
 
+    def claim(self, name: str, value) -> None:
+        """Hook: the naming law as the claiming mechanism (S.4 amendment) —
+        kernel-tier lowerers register every binding as a claimable site."""
+
     def rebind(self, t: _T, name: str) -> _T:
         """Rename the JUST-emitted instr's var to the Python binding name
         (deduped through the same Namer) — nothing references it yet."""
@@ -260,17 +264,19 @@ class _Lifter:
                 if isinstance(value, _T):
                     value = self.rebind(value, target.id)
                 self.env[target.id] = value
+                self.claim(target.id, value)
                 return
             if isinstance(target, ast.Tuple) and all(isinstance(e, ast.Name) for e in target.elts):
                 if not isinstance(value, tuple) or len(value) != len(target.elts):
                     raise ValueError(f"cannot destructure {value!r} into {len(target.elts)} names")
                 for e, p in zip(target.elts, value):
                     self.env[e.id] = p
+                    self.claim(e.id, p)
                 return
         if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
             return  # a docstring
         if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
-            self.value(stmt.value)  # an effectful statement call (tap sites)
+            self.value(stmt.value)  # an effectful statement call
             return
         if isinstance(stmt, ast.FunctionDef):  # a local helper: bind it for later inlining
             raise ValueError("define step helpers OUTSIDE the step body; calls inline them")

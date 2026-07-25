@@ -271,17 +271,17 @@ def test_fuzz_as_a_combinator_closes_over_a_buffer():
 
 @P8
 def test_taps_inside_combinator_bodies_with_validity():
-    """A tap site inside a combinator body; applied once it is valid,
-    applied twice its name collides and the site is INVALIDATED —
-    introspection reports both, with reasons."""
+    """A claimed BINDING inside a combinator body — tagless, the naming
+    law; applied once it is valid, applied twice its name goes non-unique
+    and the site is INVALIDATED. Arrives when function-valued ARGUMENTS
+    inline (today they dispatch per element through the oracle, so their
+    bindings are opaque; captured helpers already claim — test_kernel)."""
     from pdum.dsl import jit
-    from pdum.tl.kernel import tap
 
     def scale(s):
         @jit()
         def go(y, x):
             yprime = y * s
-            tap(yprime, "yprime")
             return yprime + x * s
 
         return go
@@ -299,8 +299,160 @@ def test_taps_inside_combinator_bodies_with_validity():
 
 @P8
 def test_record_taps_land_as_struct_tensors():
-    """isBits record taps write struct-element tensors — the structured
-    encoding is the memory shape (200 §4)."""
+    """isBits record-valued bindings claim as struct-element tensors —
+    the structured encoding is the memory shape (200 §4)."""
+
+
+# --- P8: the graphics tier (S.4 amendment) -----------------------------------
+
+
+@P8
+def test_quad_from_vertex_index_pairs_with_the_compute_zoo_f():
+    """The whole S.4 flow in one spelling: a vertex shader with NO vertex
+    buffers (corners computed from the raw ambient), a fragment shader
+    that normalizes into f's space and calls THE SAME f as the compute
+    zoo, PSO pairing (its own composition, never |), and rendering
+    through the reference interpolator. Return is MANDATORY (position /
+    color0); everything else is claimed by naming it."""
+    from pdum.dsl import jit
+    from pdum.tl.graphics import fragment, pair, position, render, vertex  # noqa: F821
+
+    def circle(cy, cx, r):
+        @jit()
+        def go(y, x):
+            d = sqrt((y - cy) * (y - cy) + (x - cx) * (x - cx))  # noqa: F821
+            return 1.0 if d > r else 0.0
+
+        return go
+
+    @vertex
+    def quad():
+        vid = vertex_index()  # noqa: F821 — raw ambient; two triangles, six ids
+        u = 1.0 if (vid == 1 or vid == 3 or vid == 4) else 0.0
+        v = 1.0 if (vid == 2 or vid == 4 or vid == 5) else 0.0  # claimed varyings
+        return position(u * 2.0 - 1.0, v * 2.0 - 1.0)
+
+    @fragment
+    def shade(f, varying):
+        y = varying.v * 23.0  # normalize into f's 24x40 space
+        x = varying.u * 39.0
+        return f(y, x)  # color0 — the SAME f as the compute zoo
+
+    img = T(np.zeros((24, 40)), ("y", "x"))
+    pso = pair(quad, shade)  # the PAIR is the artifact unit
+    render(pso, circle(12.0, 20.0, 8.0), target=img)  # encodable under the hood
+    assert img.to_numpy().min() == 0.0 and img.to_numpy().max() == 1.0
+
+
+@P8
+def test_subset_pairing_shares_one_fragment_artifact():
+    """The boundary is a record TYPE and strings never cross it: the
+    fragment's required record is INFERRED from the fields it touches;
+    pairing checks produced ⊇ required — so two vertex shaders with
+    different superset interfaces share ONE fragment artifact, and
+    adding a varying breaks no existing pairing."""
+    from pdum.dsl import events
+    from pdum.tl.graphics import fragment, pair, position, vertex  # noqa: F821
+
+    @vertex
+    def lean():
+        vid = vertex_index()  # noqa: F821
+        u = 1.0 if vid == 1 else 0.0
+        return position(u, u)
+
+    @vertex
+    def rich():
+        vid = vertex_index()  # noqa: F821
+        u = 1.0 if vid == 1 else 0.0
+        w = u * 3.0  # an EXTRA varying: a superset interface  # noqa: F841
+        return position(u, u)
+
+    @fragment
+    def shade(varying):
+        return varying.u  # requires exactly {u} — inferred from use
+
+    pair(lean, shade)
+    with events.forbid("fragment.miss"):
+        pair(rich, shade)  # superset producer: the same fragment artifact
+
+
+@P8
+def test_flat_is_the_sole_interpolation_annotation():
+    """Interpolation is declared at the vertex claim site — perspective-
+    correct by default, flat(...) the one opt-out — and is a production
+    detail EXCLUDED from the interface type the fragment pairs against."""
+    from pdum.tl.graphics import flat, position, vertex  # noqa: F821
+
+    @vertex
+    def vs():
+        vid = vertex_index()  # noqa: F821
+        u = 0.5  # perspective-corrected by default
+        pick = flat(vid)  # noqa: F841 — provoking vertex's value, no interpolation
+        return position(u, u)
+
+    assert vs.varyings() is not None  # both sites listed; flat-ness not in the type
+
+
+@P8
+def test_fragment_taps_bind_render_buffers_mrt():
+    """A claimed binding in the fragment — or inside the f it calls — binds
+    to a second render target at the pass: MRT, G-buffers for free. The
+    bound NAME SET specializes the pair; the buffers are invocation data."""
+    from pdum.dsl import jit
+    from pdum.tl.graphics import fragment, pair, position, render, vertex  # noqa: F821
+    from pdum.tl.kernel import config
+
+    def shaded(cy, cx, r):
+        @jit()
+        def go(y, x):
+            dist = sqrt((y - cy) * (y - cy) + (x - cx) * (x - cx))  # noqa: F821
+            return 1.0 if dist > r else 0.0
+
+        return go
+
+    @vertex
+    def quad():
+        vid = vertex_index()  # noqa: F821
+        u = 1.0 if (vid == 1 or vid == 3 or vid == 4) else 0.0
+        v = 1.0 if (vid == 2 or vid == 4 or vid == 5) else 0.0
+        return position(u * 2.0 - 1.0, v * 2.0 - 1.0)
+
+    @fragment
+    def shade(f, varying):
+        return f(varying.v * 23.0, varying.u * 39.0)
+
+    img = T(np.zeros((24, 40)), ("y", "x"))
+    gbuf = T(np.zeros((24, 40)), ("y", "x"))
+    pso = pair(quad, shade)
+    render(pso[config(taps={"dist": gbuf})], shaded(12.0, 20.0, 8.0), target=img)
+    assert gbuf.to_numpy().max() > 0.0  # the f-interior distance field, second target
+
+
+@P8
+def test_textures_are_runtime_objects_recognized_not_tensors():
+    """A texture is a proper RUNTIME object (the wgpu-py texture) that the
+    type system RECOGNIZES as its own leaf kind — never a dressed-up
+    tensor. It may be BUILT from a tensor (the upload door). v1: exactly
+    ONE format — rgba8unorm-srgb over the existing FormatEncoding; the
+    format registry is later work. Sampling takes the SAMPLER (the
+    interpolation object); explicit-LOD mips first; auto-LOD is ANALYTIC
+    (log2 footprint from the wrt-ambient gradient), no 2x2 quad."""
+    from pdum.dsl import jit
+    from pdum.tl.graphics import sample, sampler, upload  # noqa: F821
+
+    src = T(np.zeros((16, 16)), ("y", "x"))
+    tex = upload(src)  # a wgpu texture, rgba8unorm-srgb — NOT a Tensor
+    assert not isinstance(tex, Tensor)  # recognized in the type system, never impersonated
+    smp = sampler(filter="linear", address="clamp")
+
+    def lookup(t, s):
+        @jit()
+        def go(y, x):
+            return sample(t, s, (y / 16.0, x / 16.0), lod=0)
+
+        return go
+
+    assert lookup(tex, smp) is not None
 
 
 # --- L4: shared memory — both committed forms --------------------------------

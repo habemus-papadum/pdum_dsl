@@ -249,18 +249,19 @@ def test_fn_arg_with_loops_and_module_global_name():
     np.testing.assert_allclose(img.to_numpy(), want, rtol=1e-12)
 
 
-# --- the bracket config + taps (owner-ruled syntax) --------------------------
+# --- the bracket config + taps (owner-ruled syntax, TAGLESS) -----------------
+# The naming law is the claiming mechanism (S.4 amendment): there is no
+# tap() call — every uniquely-named binding IS a site.
 
 
-from pdum.tl.kernel import config, shared, tap  # noqa: E402
+from pdum.tl.kernel import config, shared  # noqa: E402
 
 
 @compute
 def tapped_kernel(img):
     y, x = thread_idx("y", "x")
-    d = (y - 1.0) * (y - 1.0) + x * 0.0
-    tap(d, "dist")
-    img[y, x] = d * 2.0
+    dist = (y - 1.0) * (y - 1.0) + x * 0.0
+    img[y, x] = dist * 2.0
 
 
 def test_config_bracket_taps_write_into_caller_tensors():
@@ -288,27 +289,30 @@ def test_tap_name_set_specializes_tensors_do_not():
             tapped_kernel(img2 := T(np.zeros((5, 5)), ("y", "x")))  # noqa: F841 — shape miss still misses
 
 
-def test_tap_introspection_lists_sites():
+def test_tap_introspection_lists_every_named_binding():
+    """Tagless: EVERY uniquely-named binding is a site — the thread
+    coordinates included (tapping a coordinate dumps its iota field)."""
     img = T(np.zeros((2, 3)), ("y", "x"))
     sites = tapped_kernel.taps(img)
-    assert sites == {"dist": {"valid": True, "dims": ("y", "x"), "reason": None}}
+    assert sites["dist"] == {"valid": True, "dims": ("y", "x"), "reason": None}
+    assert sites["y"]["valid"] and sites["x"]["valid"]  # bindings, so sites
 
 
 def _tapped_helper(v):
-    tap(v * 3.0, "inner")
-    return v * 2.0
+    inner = v * 3.0
+    return inner * 2.0
 
 
 @compute
 def colliding_kernel(img):
     y, x = thread_idx("y", "x")
     a = _tapped_helper(y + 0.0)
-    b = _tapped_helper(x + 0.0)  # the SAME site inlined twice: non-unique
+    b = _tapped_helper(x + 0.0)  # the SAME binding inlined twice: non-unique
     img[y, x] = a + b
 
 
 def test_colliding_tap_sites_invalidate_honestly():
-    """The naming law never auto-suffixes: a site inlined into
+    """The naming law never auto-suffixes: a binding inlined into
     non-uniqueness is reported INVALID, and requesting it refuses."""
     img = T(np.zeros((2, 2)), ("y", "x"))
     sites = colliding_kernel.taps(img)
@@ -320,7 +324,7 @@ def test_colliding_tap_sites_invalidate_honestly():
 
 def test_unknown_tap_refuses_listing_sites():
     img = T(np.zeros((2, 2)), ("y", "x"))
-    with pytest.raises(ValueError, match=r"no tap site 'nope' — sites: dist"):
+    with pytest.raises(ValueError, match=r"no tap site 'nope' — sites: .*dist"):
         tapped_kernel[config(taps={"nope": img})](img)
 
 

@@ -8,6 +8,11 @@ argument is writable iff it is stored to. Ordering is TOKEN THREADING:
 one implicit token threads through all stores in statement order (the
 frontend policy); tokens never appear in user syntax.
 
+Claiming is TAGLESS (S.4 amendment): every uniquely-named binding is a
+claimable site — ``config(taps={"dist": t})`` binds the binding named
+``dist``; a name bound more than once is invalidated with the reason,
+never auto-suffixed.
+
 The reference lowering is the IOTA UNIFICATION: thread coordinates are
 coordinate iotas over the writable target's lattice, the body lowers to
 pointwise/store instructions over them, and the whole kernel is one tl
@@ -212,31 +217,34 @@ class _KernelLowerer(_Lifter):
         self.param_names: tuple = ()  # kernel parameters — fn-arg slots live here ONLY
         self.tap_vars: dict[str, str] = {}  # site name -> SSA var
         self.invalid_taps: dict[str, str] = {}  # site name -> reason
+        self.claimed: set[str] = set()  # every binding name ever seen (uniqueness law)
 
     def child(self, env: dict) -> "_KernelLowerer":
-        """Helpers inlined into a kernel share its tap/thread context (tap
-        dicts are shared by reference, so a helper's sites register and
-        collide honestly). Stores inside helpers are not yet supported."""
+        """Helpers inlined into a kernel share its claiming/thread context
+        (the site dicts are shared by reference, so a helper's bindings
+        register and collide honestly). Stores inside helpers are not yet
+        supported."""
         inner = super().child(env)
         inner.threads, inner.target = self.threads, self.target
         inner.tap_vars, inner.invalid_taps = self.tap_vars, self.invalid_taps
+        inner.claimed = self.claimed
         inner.fn_markers, inner.param_names = self.fn_markers, self.param_names
         return inner
 
-    def _i_tap(self, x, site):
-        """A tap SITE: free unless requested. Collisions invalidate — the
-        naming law never auto-suffixes, so a site inlined into non-uniqueness
-        is reported invalid, never silently renamed."""
-        if not isinstance(x, _T) or not isinstance(site, str):
-            raise ValueError('tap takes a value and a site name: tap(v, "name")')
-        if site in self.invalid_taps:
-            return x
-        if site in self.tap_vars:
-            del self.tap_vars[site]
-            self.invalid_taps[site] = "declared at more than one site (inlining made it non-unique)"
-            return x
-        self.tap_vars[site] = x.var
-        return x
+    def claim(self, name: str, value) -> None:
+        """The naming law IS the claiming mechanism (S.4 amendment, tagless):
+        every uniquely-named binding is a site — free unless requested. A
+        name bound more than once (rebinding, or a helper inlined twice) is
+        INVALIDATED with the reason; the law never auto-suffixes."""
+        if name in self.claimed:
+            self.tap_vars.pop(name, None)
+            self.invalid_taps[name] = "bound at more than one site (rebinding or inlining made it non-unique)"
+            return
+        self.claimed.add(name)
+        if isinstance(value, _T):
+            self.tap_vars[name] = value.var
+        else:
+            self.invalid_taps[name] = "not a lattice value (nothing to store)"
 
     def _i_thread_idx(self, *names):
         if self.target is None:
@@ -399,8 +407,6 @@ def _compile(fn, args, tap_names=()) -> _Artifact:
     )
 
 
-tap = _Intrinsic("tap")
-
-__all__ = ["ComputeKernel", "Config", "compute", "config", "grid", "shared", "tap", "thread_idx"]
+__all__ = ["ComputeKernel", "Config", "compute", "config", "grid", "shared", "thread_idx"]
 
 _ = _tensor_like  # noqa: F841 — keep the import surface stable for kernels
