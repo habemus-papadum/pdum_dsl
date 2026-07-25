@@ -199,30 +199,52 @@ class _KernelLowerer(_Lifter):
         if made is not None:
             return made
         fp = getattr(target, "fp", None)
-        if fp is not None and all(isinstance(a, _T) for a in args):
+        if fp is not None and all(
+            isinstance(a, _T) or (isinstance(a, tuple) and all(isinstance(x, _T) for x in a)) for a in args
+        ):
             return self._fn_arg_call(target, args)
         return None
 
     def _fn_arg_call(self, handle, args):
         """A function-valued argument applied at the thread coordinates:
         ONE pointwise instr over a launch-rebindable marker — per-element
-        dispatch through the spelled oracle (oracle-grade by doctrine)."""
+        dispatch through the spelled oracle (oracle-grade by doctrine).
+        A tuple argument (``f((y, x))``) flattens into the operands and
+        regroups per element — the pipe threads one value, so coordinate
+        PAIRS ride as tuples through pipelines."""
         pname = next((n for n in self.param_names if self.env.get(n) is handle), None)
-        mname = f"kernel.fn.{hashlib.sha256(repr(handle.fp).encode()).hexdigest()[:10]}"
+        flat, spec = [], []
+        for a in args:
+            if isinstance(a, _T):
+                flat.append(a)
+                spec.append(None)
+            else:
+                spec.append(len(a))
+                flat.extend(a)
+        mname = f"kernel.fn.{hashlib.sha256(repr((handle.fp, tuple(spec))).encode()).hexdigest()[:10]}"
 
-        def _make(mname=mname):
+        def _make(mname=mname, spec=tuple(spec)):
             def apply(*coords):
                 from pdum.dsl.reference import reference
 
                 f = _ARG_BINDINGS[mname]
-                return np.vectorize(lambda *cs: reference(f)(*(float(c) for c in cs)))(*coords)
+
+                def call(*cs):
+                    it = iter(cs)
+                    rebuilt = [
+                        float(next(it)) if k is None else tuple(float(next(it)) for _ in range(k))
+                        for k in spec
+                    ]
+                    return reference(f)(*rebuilt)
+
+                return np.vectorize(call)(*coords)
 
             return Marker(mname, apply)
 
         MARKERS.derive(mname, _make)
         if pname is not None:
             self.fn_markers[pname] = mname
-        return self.pointwise(mname, *args, hint="fx")
+        return self.pointwise(mname, *flat, hint="fx")
 
 
 def _compile(fn, args) -> _Artifact:
