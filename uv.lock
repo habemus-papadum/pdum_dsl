@@ -624,6 +624,12 @@ wheels = [
 name = "habemus-papadum-dsl"
 version = "0.0.0+dev"
 source = { editable = "packages/dsl" }
+dependencies = [
+    { name = "numpy" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "numpy", specifier = ">=2.5.0" }]
 
 [[package]]
 name = "habemus-papadum-tl"

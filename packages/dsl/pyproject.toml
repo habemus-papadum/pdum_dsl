@@ -20,7 +20,11 @@ authors = [
 ]
 requires-python = ">=3.14"
 # The core depends on stdlib Python only (design 200 §1.1).
-dependencies = []
+dependencies = [
+    # The numpy-authority ruling (200 §S.2 amendment, P8): numpy names the
+    # primitives and provides their reference semantics (IEEE non-trapping).
+    "numpy>=2.5.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/habemus-papadum/pdum_dsl"

@@ -872,6 +872,37 @@ partitions — at a tie, exactly one operand receives the cotangent
 inheriting the partition law. `jvp` returns a fixed subgradient
 selection at kinks; this is frozen contract, pinned at the kink points.
 
+**S.2 amendment (P8, owner-ruled): the numpy authority.** ONE
+vocabulary, declared once, at the language tier. `pdum.dsl` carries a
+numpy dependency, and **numpy is the naming authority and the
+reference semantics for primitives**: `maximum`/`minimum` are the
+binary pointwise ops and `max`/`min` the reductions (numpy's line IS
+our pointwise/reduce split), `where` the ternary, `np.fmod` the float
+mod. The MARKER OBJECT — `Marker(name, numpy_fn)`, home:
+`pdum.dsl.markers`, re-exported unchanged by `pdum.tl.markers` — is
+the user-facing identity at every tier: bare in scalar and kernel
+bodies, `pointwise(marker, t)` at the tensor tier, and on HOST SCALARS
+it simply computes (the P6 bare-call refusal is sharpened, not
+reversed: anything non-scalar still refuses toward `pointwise`).
+Strings survive only as internal dict keys; every op↔name map is
+GENERATED from the declarations, never hand-kept. Value-tier ops:
+operators and structure stay `core.*` (where IS `core.select`);
+function primitives are the `pw.*` dialect, spelled `np.*` on the
+reference — whose float dataflow runs on numpy scalars and is
+therefore IEEE NON-TRAPPING like a device (0/0 flows as nan; the 210
+numeric policy is amended; integer exactness unchanged). *The two-door
+process for new vocabulary:* (1) can it be written over existing
+primitives? Then it is a DSL-WRITTEN BATTERY — an `@overload`, inlined
+at call sites, no op, no spelling, no table row, derivative free
+through inlining — and it keeps its DOMAIN name (clamp/mix/smoothstep
+are GLSL heritage; only primitives take numpy names). (2) Must it be
+primitive? Then ONE marker declaration plus its derivative row — or an
+explicit gradient-free row (`floor`); a float primitive missing its
+derivative decision refuses to differentiate, never guesses (`pow`,
+`mod` are deliberate refusals today). Bessel-class vocabulary ships in
+ecosystem packages through the same surfaces; the stdlib stays small
+(090).
+
 ### S.3 @compute kernels [build]
 
 ```python

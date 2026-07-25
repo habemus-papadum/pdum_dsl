@@ -100,3 +100,8 @@ def test_the_one_table_has_one_home():
 
     assert tl_d.TABLE is dsl_d.TABLE and tl_d.diff is dsl_d.diff
     assert tl_n.Prim is dsl_d.Prim and tl_n.Const is dsl_d.Const and tl_n.Arg is dsl_d.Arg
+    import pdum.dsl.markers as dsl_m
+    import pdum.tl.markers as tl_m
+
+    assert tl_m.Marker is dsl_m.Marker and tl_m.pw is dsl_m.pw  # numpy-authority: one vocabulary
+    assert tl_m.sqrt is dsl_m.sqrt and tl_m.maximum is dsl_m.maximum

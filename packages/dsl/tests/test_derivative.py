@@ -33,12 +33,12 @@ def test_at_kink_first_wins_at_the_value_tier():
 
     @jit()
     def dleft(y, x):
-        m = max(y, x)
+        m = maximum(y, x)  # noqa: F821 — numpy names the primitive
         return with_respect_to(m, y)  # noqa: F821
 
     @jit()
     def dright(y, x):
-        m = max(y, x)
+        m = maximum(y, x)  # noqa: F821
         return with_respect_to(m, x)  # noqa: F821
 
     assert reference(dleft)(2.0, 2.0) == 1.0  # the tie goes left...
@@ -107,3 +107,58 @@ def test_value_and_grad_refuses_an_unknown_wrt_name():
 
     with pytest.raises(VerifyError, match="wrt name 'z' is not a parameter"):
         reference(value_and_grad(go, wrt=("z",)))(1.0, 2.0)
+
+
+# --- the numpy-authority amendment (200 §S.2) --------------------------------
+
+
+def test_markers_are_ordinary_math_on_host_scalars():
+    """The marker OBJECT is the identity at every tier — and on plain
+    numbers it just computes (np.sqrt on a scalar IS a float)."""
+    from pdum.dsl.markers import maximum, sqrt
+
+    assert sqrt(4.0) == 2.0 and isinstance(sqrt(4.0), float)
+    assert maximum(2.0, 3.0) == 3.0
+    with pytest.raises(TypeError, match="spelled\\s+pointwise"):
+        sqrt([1.0, 2.0])  # anything non-scalar refuses toward the tensor tier
+
+
+def test_the_oracle_is_ieee_non_trapping():
+    """Floats compute on numpy scalars: 0/0 flows as nan and sqrt(-1) is
+    nan — like a device, never a Python exception (210 amendment)."""
+    import numpy as np
+
+    @jit()
+    def go(y, x):
+        return sqrt(y) + x / (x - 1.0)  # noqa: F821
+
+    with np.errstate(invalid="ignore", divide="ignore"):
+        assert np.isnan(reference(go)(-1.0, 0.5))  # sqrt(-1) -> nan
+        assert np.isinf(reference(go)(4.0, 1.0))  # 1/0 -> inf
+
+
+def test_tanh_and_log_arrived_with_the_vocabulary():
+    """The drift is closed: the value language speaks every table row."""
+
+    @jit()
+    def go(y, x):
+        v = tanh(y) * log(x)  # noqa: F821
+        return with_respect_to(v, y)  # noqa: F821 — (1 - tanh²y)·log x
+
+    import math
+
+    assert reference(go)(0.5, 2.0) == pytest.approx((1 - math.tanh(0.5) ** 2) * math.log(2.0))
+
+
+def test_abs_row_ties_to_plus_one_and_floor_is_gradient_free():
+    @jit()
+    def dabs(y, x):
+        return with_respect_to(abs(y), y)  # noqa: F821
+
+    @jit()
+    def dfloor(y, x):
+        return with_respect_to(floor(y), y)  # noqa: F821
+
+    assert reference(dabs)(0.0, 0.0) == 1.0  # the tie at 0 goes +1 (first-wins)
+    assert reference(dabs)(-2.0, 0.0) == -1.0
+    assert reference(dfloor)(2.5, 0.0) == 0.0  # gradient-free BY DECLARATION

@@ -84,6 +84,8 @@ TABLE = {
     # the kinks: first-wins — a tie sends the whole cotangent LEFT
     "maximum": (lambda a, b: Prim("ge", (a, b)), lambda a, b: Prim("gt", (b, a))),
     "minimum": (lambda a, b: Prim("le", (a, b)), lambda a, b: Prim("lt", (b, a))),
+    "abs": (lambda a: Prim("where", (Prim("ge", (a, Const(0))), Const(1), Const(-1))),),  # tie at 0 -> +1
+    "floor": (None,),  # gradient-free BY DECLARATION (zero a.e.; the carrier discipline)
     "where": (
         None,  # the condition is gradient-free
         lambda c, x, y: Prim("where", (c, Const(1), Const(0))),
@@ -129,23 +131,22 @@ def diff(node: Node, i: int) -> Node:
 
 
 # --- the value-tier engine: forward seeding over core IR ---------------------
+# The op<->base-name maps are GENERATED from the table (never hand-kept):
+# operators and structure stay core-owned; every other row is a pw.* op.
 
-_TABLE_KEY = {  # value-tier op -> the table's base name (ONE table, two tiers)
-    "core.add": "add",
-    "core.sub": "sub",
-    "core.neg": "neg",
-    "core.mul": "mul",
-    "core.div": "div",
-    "math.sqrt": "sqrt",
-    "math.exp": "exp",
-    "math.sin": "sin",
-    "math.cos": "cos",
-    "math.max": "maximum",
-    "math.min": "minimum",
-    "core.select": "where",
-}
-_SPLICE_OPS = {v: k for k, v in _TABLE_KEY.items() if v != "where"}
 _PRED_SET = {"lt", "gt", "le", "ge", "eq", "ne"}
+_CORE_OWNED = {
+    "add": "core.add",
+    "sub": "core.sub",
+    "neg": "core.neg",
+    "mul": "core.mul",
+    "div": "core.div",
+    "where": "core.select",
+}  # noqa: E501
+_TABLE_KEY = {op: base for base, op in _CORE_OWNED.items()} | {
+    f"pw.{n}": n for n in TABLE if n not in _CORE_OWNED and n not in _PRED_SET
+}
+_SPLICE_OPS = {n: op for op, n in _TABLE_KEY.items() if n != "where"}
 _ZERO_LEAVES = {"core.param", "core.env", "core.const", "abi.slot"}
 _GRAD_FREE = {"core.cmp"}
 

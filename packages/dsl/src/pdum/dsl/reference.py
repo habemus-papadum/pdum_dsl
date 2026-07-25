@@ -18,9 +18,11 @@ Reference semantics, stated once:
   region that dominates all its uses.
 - Python has one float; ``f32`` computes as f64 here. Narrowing gets real in
   device backends.
-- Numeric policy (distilled): TRUNC integer div/mod via exact helpers
-  (float rounding would lose precision past 2^53); float mod is
-  ``math.fmod`` (sign of the dividend).
+- Numeric policy (distilled, amended by the numpy-authority ruling): floats
+  compute on **numpy scalars** — IEEE NON-TRAPPING, like a device: 0/0
+  flows as nan, sqrt(-1) is nan, never a Python exception. TRUNC integer
+  div/mod via exact helpers (float rounding would lose precision past
+  2^53); float mod is ``np.fmod`` (sign of the dividend).
 - Composite (record-typed) *arguments* are refused loudly: their leaf slots
   exist in the plan, but the IR keeps one logical ``core.param``.
 """
@@ -40,6 +42,15 @@ _PREDS = {"lt": "<", "gt": ">", "le": "<=", "ge": ">=", "eq": "==", "ne": "!="}
 _CASTS = {"f64": "float", "f32": "float", "i64": "int", "i32": "int", "u64": "int", "u32": "int", "bool": "bool"}
 
 
+def _unpack(fmt: str, offset) -> str:
+    """Float slots arrive as np.float64 so the WHOLE float dataflow runs on
+    numpy scalars — IEEE non-trapping (0/0 flows as nan, like a device; the
+    210 amendment). Integer slots stay Python ints (exact, trunc-div policy
+    unchanged)."""
+    base = f"_u({fmt!r}, staging, {offset})[0]"
+    return f"np.float64({base})" if fmt.endswith(("d", "f")) else base
+
+
 def render(region: Region, plan: PackPlan, backend=None, name: str = "kernel") -> str:
     """Legalized Region -> Python source. One assignment per node, DAG-shared
     nodes emitted once in their OWNER region (the dominator-placed walker in
@@ -56,9 +67,9 @@ def render(region: Region, plan: PackPlan, backend=None, name: str = "kernel") -
                     f"argument {attrs['index']} has no scalar slot — composite (record-typed) "
                     "arguments are not marshalable yet; pass fields as separate arguments"
                 )
-            return f"_u({spec.dest.fmt!r}, staging, {spec.dest.offset})[0]"
+            return _unpack(spec.dest.fmt, spec.dest.offset)
         if node.op == "abi.slot":
-            return f"_u({attrs['fmt']!r}, staging, {attrs['offset']})[0]"
+            return _unpack(attrs["fmt"], attrs["offset"])
         if node.op == "core.const":
             v = attrs["value"]
             if isinstance(v, float) and not math.isfinite(v):
@@ -68,7 +79,7 @@ def render(region: Region, plan: PackPlan, backend=None, name: str = "kernel") -
             if node.op in ("core.div", "core.mod") and isinstance(node.type, Scalar) and node.type.kind[0] in "iu":
                 return f"{'_tdiv' if node.op == 'core.div' else '_tmod'}({arg[0]}, {arg[1]})"
             if node.op == "core.mod":
-                return f"math.fmod({arg[0]}, {arg[1]})"
+                return f"np.fmod({arg[0]}, {arg[1]})"  # sign of the dividend (numeric policy)
             return f"{arg[0]} {_BIN[node.op]} {arg[1]}"
         if node.op == "core.neg":
             return f"-{arg[0]}"
@@ -119,7 +130,8 @@ def render(region: Region, plan: PackPlan, backend=None, name: str = "kernel") -
     lines, names, result = emit_dominated(region, statement, branch_join, indent="    ", loop=loop_join)
     body = "\n".join(lines) or "    pass"
     head = (
-        "import math\nfrom struct import unpack_from as _u\n\n"
+        "import math\n"  # user-registered ops may spell math.* (surface D)
+        "import numpy as np\nfrom struct import unpack_from as _u\n\n"
         "def _tdiv(a, b):  # exact trunc division (numeric policy: C semantics)\n"
         "    q = a // b\n"
         "    return q + 1 if q < 0 and q * b != a else q\n\n"

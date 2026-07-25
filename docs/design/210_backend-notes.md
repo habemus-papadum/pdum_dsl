@@ -7,6 +7,11 @@ from this page and the two reference executors, not from old code.
 
 ## Numeric policy (enforced on BOTH sides of every differential test)
 
+- **Floats are IEEE NON-TRAPPING** (amended at P8, the numpy-authority
+  ruling): the reference computes floats on numpy scalars, so 0/0 flows as
+  nan and sqrt(−1) is nan — like a device, never a Python exception. The
+  pre-amendment oracle trapped (ZeroDivisionError at a pole a GPU would
+  sail through); tests that dodged poles are un-dodged.
 - **Integer division/modulo are TRUNCATING** (C semantics), never Python's
   floored `//`/`%`. The reference twin computes them with exact integer
   helpers — routing through float division loses exactness past 2^53 (a
@@ -16,7 +21,7 @@ from this page and the two reference executors, not from old code.
   preamble today; every device backend must match them bit-for-bit.
 - **Float modulo is `fmod`** (sign of the dividend) on both sides — C's `%`
   does not compile for doubles, Python's `%` is floored; both were caught by
-  tests, neither is the policy.
+  tests, neither is the policy. The reference spells it `np.fmod`.
 - **u64 constants refuse** on targets whose literal range cannot carry them;
   inf/nan constants refuse at rendering (`repr(inf)` is not a literal — the
   reference spells `float('inf')` explicitly where a type allows it at all).

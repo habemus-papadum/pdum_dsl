@@ -1,29 +1,35 @@
-"""The first batteries: math intrinsics + DSL-written scalar helpers.
+"""The batteries: the marker vocabulary's ops + DSL-written scalar helpers.
 
 Two economics, deliberately mixed (the numba 2:1 lesson, architecture risk
-#4): ops that GPUs have natively are *intrinsics* (an op + a per-target
-spelling — hand-spelled once per target), while everything composable is
-*DSL-written* (an ``@overload`` body inlined at call sites — portable to
-every target for free, including targets that don't exist yet). The step-10
-exit gate counts the ratio.
+#4): PRIMITIVES are markers (numpy-named, numpy-executed — the vocabulary in
+``markers.py``) whose value-tier ops, type rules, and reference spellings
+are DERIVED here from the declarations — one primitive, one registration
+walk, no hand-kept parallel lists. Everything composable is *DSL-written*
+(an ``@overload`` body inlined at call sites — portable to every target for
+free, derivative for free through inlining). Batteries keep their DOMAIN
+names (clamp/mix/smoothstep are GLSL heritage); only primitives take
+numpy's names.
+
+The two-door process for adding vocabulary (200 §S.2): can it be written
+over existing primitives? Then it is a battery — no op, no spelling, no
+table row. Must it be primitive? Then ONE marker declaration plus its
+derivative row (or an explicit gradient-free row) — a float primitive
+missing its derivative decision refuses to differentiate, never guesses.
 
 The DSL-written batteries are MODULE-LEVEL on purpose: their bodies call
-each other by bare name (``smoothstep`` uses ``clamp``), and at module level
-those names are *globals* — invisible to capture (env stays empty), resolved
-through the overload table at lower time. Defined inside a function they
-would close over each other and trip the capture-free rule.
-
-The stdlib stays deliberately SMALL (090's minimalism policy): scalar math
-only. Domain vocabulary — even something as innocent-looking as a Color
-record — belongs to demo or ecosystem packages, because the whole point of
-the five surfaces is that such a package is an ordinary import away.
+each other by bare name, resolved through the overload table at lower
+time. The stdlib stays deliberately SMALL (090): scalar math only —
+domain vocabulary (Bessel-class functions, a Color record) belongs to
+ecosystem packages, an ordinary import away through the same surfaces.
 
 Nothing here touches the kernel; ``install(registry)`` is the whole API.
 """
 
 from __future__ import annotations
 
-from .surfaces import defop, intrinsic, overload, spell
+from .derivative import TABLE
+from .markers import Marker, pw, value_op
+from .surfaces import defop, overload, spell
 
 _REF = "reference"
 
@@ -43,24 +49,26 @@ def _binary_same(args, attrs, regions):
     return args[0]
 
 
-_OPS = {  # op -> (type_rule, reference spelling); device spellings arrive with the L4 backends
-    "math.sqrt": (_unary_float, "math.sqrt({0})"),
-    "math.exp": (_unary_float, "math.exp({0})"),
-    "math.sin": (_unary_float, "math.sin({0})"),
-    "math.cos": (_unary_float, "math.cos({0})"),
-    "math.floor": (_unary_float, "float(math.floor({0}))"),
-    "math.abs": (_unary_float, "abs({0})"),
-    "math.min": (_binary_same, "min({0}, {1})"),
-    "math.max": (_binary_same, "max({0}, {1})"),
-}
+_TYPE_RULES = {1: _unary_float, 2: _binary_same}
+_PREDS = {"eq", "ne", "le", "lt", "ge", "gt"}  # comparisons ride core.cmp
 
 
-# --- DSL-written batteries: portable by construction ---------------------------
+def _pw_markers() -> list[Marker]:
+    """The function primitives: every marker whose value-tier op is pw.*
+    (operators and where stay core-owned; predicates ride core.cmp)."""
+    out = []
+    for m in vars(pw).values():
+        if isinstance(m, Marker) and value_op(m).startswith("pw.") and m.name not in _PREDS:
+            out.append(m)
+    return out
+
+
+# --- DSL-written batteries: portable by construction, domain-named -----------
 # (Cross-references are bare-name calls resolved via the overload table.)
 
 
 def clamp(x, lo, hi):
-    return min(max(x, lo), hi)
+    return minimum(maximum(x, lo), hi)  # noqa: F821 — the numpy-named kinks
 
 
 def mix(a, b, t):
@@ -77,17 +85,20 @@ def smoothstep(e0, e1, x):
 
 
 def fract(x):
-    return x - floor(x)
+    return x - floor(x)  # noqa: F821
 
 
 _DSL_BATTERIES = (clamp, mix, step, smoothstep, fract)
 
 
 def install(registry) -> None:
-    for op, (rule, py) in _OPS.items():
-        defop(registry, op, rule)
-        intrinsic(registry, op.split(".", 1)[1], op)  # `sqrt(x)` in DSL source -> the math.sqrt op
+    for m in _pw_markers():
+        op, arity = value_op(m), len(TABLE[m.name])
+        defop(registry, op, _TYPE_RULES[arity])
+        registry.overloads[m.name] = m  # the MARKER is the overload value
         if _REF in registry.backends:
-            spell(registry, _REF, op, py)
+            args = ", ".join("{%d}" % i for i in range(arity))
+            spell(registry, _REF, op, f"np.{m.fn.__name__}({args})")
+    registry.overloads["where"] = pw.where  # op = core.select (structure stays core)
     for fn in _DSL_BATTERIES:
         overload(registry, fn.__name__)(fn)

@@ -59,6 +59,7 @@ FILE_CAPS = {
     "reference.py": 140,  # the oracle: renderer + the spelled door
     "render.py": 90,  # the shared dominator-walking emitter
     "derivative.py": 235,  # P8: the ONE table at its forced altitude + schema + both engines
+    "markers.py": 60,  # P8 numpy-authority: THE vocabulary moves down (one marker per primitive)
 }
 
 _SKIP = {tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER}

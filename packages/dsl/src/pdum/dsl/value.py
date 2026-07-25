@@ -385,6 +385,10 @@ def _call(ctx, node):
     impl = registry.overloads.get(name) if registry else None
     if getattr(impl, "__lower_macro__", False):  # a lowering macro: receives ctx + arg NODES
         return impl(ctx, args, node)
+    from .markers import Marker, value_op
+
+    if isinstance(impl, Marker):  # THE vocabulary: the marker names its op
+        return ctx.emit(value_op(impl), *args, node=node)
     if isinstance(impl, str):  # an intrinsic: the name IS an op (spelling per target)
         return ctx.emit(impl, *args, node=node)
     if impl is not None:  # a DSL-written battery: capture-free, inlined like a callee

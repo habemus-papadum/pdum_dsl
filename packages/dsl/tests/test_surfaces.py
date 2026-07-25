@@ -62,8 +62,8 @@ def test_decomposition_gates_on_the_target_op_set():
                     "core.div",
                     b.emit(
                         "core.sub",
-                        b.emit("math.exp", m["root"].args[0]),
-                        b.emit("math.exp", b.emit("core.neg", m["root"].args[0])),
+                        b.emit("pw.exp", m["root"].args[0]),
+                        b.emit("pw.exp", b.emit("core.neg", m["root"].args[0])),
                     ),
                     b.emit("core.const", type=m["root"].type, value=2.0),
                 ),
@@ -79,7 +79,7 @@ def test_decomposition_gates_on_the_target_op_set():
 
     assert abs(reg.dispatch(f, (0.3,), backend="reference") - math.sinh(0.3)) < 1e-12
     src = next(iter(reg.specializations._ready.values())).artifact.__pdum_source__
-    assert "math.exp(" in src and "sinh" not in src  # decomposed away
+    assert "np.exp(" in src and "sinh" not in src  # decomposed away
     # now give the backend a native spelling: fresh registry, same kernel shape
     reg2 = fresh()
     defop(reg2, "math.sinh", lambda args, attrs, regions: args[0])
