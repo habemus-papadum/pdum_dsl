@@ -63,13 +63,86 @@ def grid(blocks=None, threads=None) -> dict:
 
 
 @dataclass(frozen=True)
+class Shared:
+    """Reserved: shared-memory declarations (the tile tier, L4)."""
+
+    layouts: tuple
+
+
+def shared(**layouts) -> Shared:
+    return Shared(tuple(sorted(layouts.items())))
+
+
+@dataclass(frozen=True)
+class Config:
+    """The bracket config (040 §3c's contract, 200-era): each component
+    declares its SPECIALIZATION REGIME, defaulting to invocation-only —
+    blocks/threads are invocation data (threads-per-block is the recorded
+    value-specialized carve-out when device backends declare it); the tap
+    NAME SET specializes (a different tap set is a different artifact,
+    the P5 identity law) while the tap TENSORS are invocation data;
+    shared_mem is structural (specializes) and arrives with the tile
+    tier."""
+
+    blocks: tuple | None = None
+    threads: tuple | None = None
+    taps: tuple = ()  # sorted (name, tensor) pairs
+    shared_mem: Shared | None = None
+
+
+def config(blocks=None, threads=None, taps=None, shared_mem=None) -> Config:
+    return Config(
+        blocks=blocks,
+        threads=threads,
+        taps=tuple(sorted((taps or {}).items())),
+        shared_mem=shared_mem,
+    )
+
+
+@dataclass(frozen=True)
 class ComputeKernel:
     fn: object
 
     def __call__(self, *args, launch: dict | None = None):
-        key = (_code_fp(self.fn), tuple(_arg_fp(a) for a in args))
-        art = KERNELS.get_or_compile(key, lambda: _compile(self.fn, args))
-        return art.launch(args, launch)
+        return self._invoke(Config(), args)
+
+    def __getitem__(self, cfg: Config) -> "_Bound":
+        if not isinstance(cfg, Config):
+            raise TypeError("kernel[...] takes a config(...) object")
+        return _Bound(self, cfg)
+
+    def _invoke(self, cfg: Config, args):
+        if cfg.shared_mem is not None:
+            raise NotImplementedError(
+                "shared memory arrives with the tile tier (L4) — the config "
+                "slot is reserved; see test_kernel_spec for the committed syntax"
+            )
+        tap_names = tuple(n for n, _ in cfg.taps)
+        key = (_code_fp(self.fn), tuple(_arg_fp(a) for a in args), tap_names)
+        art = KERNELS.get_or_compile(key, lambda: _compile(self.fn, args, tap_names))
+        return art.launch(args, dict(cfg.taps))
+
+    def taps(self, *args) -> dict:
+        """Introspection: the kernel's tap SITES for these argument shapes —
+        {name: {"valid": bool, "dims": (...) | None, "reason": str | None}}.
+        Compiles (cached) with an empty tap set to discover the sites."""
+        key = (_code_fp(self.fn), tuple(_arg_fp(a) for a in args), ())
+        art = KERNELS.get_or_compile(key, lambda: _compile(self.fn, args, ()))
+        out = {}
+        for name, dims in art.tap_sites.items():
+            out[name] = {"valid": True, "dims": dims, "reason": None}
+        for name, reason in art.invalid_taps.items():
+            out[name] = {"valid": False, "dims": None, "reason": reason}
+        return out
+
+
+@dataclass(frozen=True)
+class _Bound:
+    kernel: ComputeKernel
+    cfg: Config
+
+    def __call__(self, *args):
+        return self.kernel._invoke(self.cfg, args)
 
 
 def compute(fn) -> ComputeKernel:
@@ -100,9 +173,14 @@ class _Artifact:
     params: tuple  # kernel parameter names, in order
     writable: tuple  # parameter names that are stored to
     fn_markers: dict  # parameter name -> marker name (launch rebind slots)
+    tap_sites: dict  # site name -> lattice dim names (valid sites)
+    invalid_taps: dict  # site name -> reason (the naming law met inlining)
+    requested_taps: tuple = ()  # the name set this artifact was built for
 
-    def launch(self, args, launch_cfg=None):
+    def launch(self, args, taps=None):
         bound = dict(zip(self.params, args))
+        for name in self.requested_taps:  # tap buffers are writable inputs
+            bound[f"tap:{name}"] = (taps or {})[name]
         for w in self.writable:  # the day-one overlap refusal (210)
             for name, a in bound.items():
                 if name in self.writable or not isinstance(a, Tensor):
@@ -117,7 +195,7 @@ class _Artifact:
             _ARG_BINDINGS[mname] = bound[name]
         inputs = {name: a for name, a in bound.items() if isinstance(a, Tensor)}
         run(self.program, inputs)
-        return None  # stores are the effect; kernels return nothing
+        return None  # stores are the effect; kernels return nothing (taps included)
 
 
 class _KernelLowerer(_Lifter):
@@ -132,6 +210,33 @@ class _KernelLowerer(_Lifter):
         self.stored: list[str] = []  # parameter names stored to, in order
         self.fn_markers: dict[str, str] = {}
         self.param_names: tuple = ()  # kernel parameters — fn-arg slots live here ONLY
+        self.tap_vars: dict[str, str] = {}  # site name -> SSA var
+        self.invalid_taps: dict[str, str] = {}  # site name -> reason
+
+    def child(self, env: dict) -> "_KernelLowerer":
+        """Helpers inlined into a kernel share its tap/thread context (tap
+        dicts are shared by reference, so a helper's sites register and
+        collide honestly). Stores inside helpers are not yet supported."""
+        inner = super().child(env)
+        inner.threads, inner.target = self.threads, self.target
+        inner.tap_vars, inner.invalid_taps = self.tap_vars, self.invalid_taps
+        inner.fn_markers, inner.param_names = self.fn_markers, self.param_names
+        return inner
+
+    def _i_tap(self, x, site):
+        """A tap SITE: free unless requested. Collisions invalidate — the
+        naming law never auto-suffixes, so a site inlined into non-uniqueness
+        is reported invalid, never silently renamed."""
+        if not isinstance(x, _T) or not isinstance(site, str):
+            raise ValueError('tap takes a value and a site name: tap(v, "name")')
+        if site in self.invalid_taps:
+            return x
+        if site in self.tap_vars:
+            del self.tap_vars[site]
+            self.invalid_taps[site] = "declared at more than one site (inlining made it non-unique)"
+            return x
+        self.tap_vars[site] = x.var
+        return x
 
     def _i_thread_idx(self, *names):
         if self.target is None:
@@ -146,11 +251,7 @@ class _KernelLowerer(_Lifter):
         return tuple(out)
 
     def statement(self, stmt) -> None:
-        if (
-            isinstance(stmt, ast.Assign)
-            and len(stmt.targets) == 1
-            and isinstance(stmt.targets[0], ast.Subscript)
-        ):
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Subscript):
             target = self.value(stmt.targets[0].value)
             if not isinstance(target, _T):
                 raise ValueError("stores write into a tensor argument")
@@ -178,8 +279,10 @@ class _KernelLowerer(_Lifter):
 
     def value(self, node):
         if isinstance(node, ast.Subscript):
-            base = super().value(node.value) if not isinstance(node.value, ast.Name) else self.adopt(
-                self.env.get(node.value.id)
+            base = (
+                super().value(node.value)
+                if not isinstance(node.value, ast.Name)
+                else self.adopt(self.env.get(node.value.id))
             )
             if isinstance(base, _T):  # a LOAD at the thread coordinates: the view itself
                 self._check_indices(node, base)
@@ -231,10 +334,7 @@ class _KernelLowerer(_Lifter):
 
                 def call(*cs):
                     it = iter(cs)
-                    rebuilt = [
-                        float(next(it)) if k is None else tuple(float(next(it)) for _ in range(k))
-                        for k in spec
-                    ]
+                    rebuilt = [float(next(it)) if k is None else tuple(float(next(it)) for _ in range(k)) for k in spec]
                     return reference(f)(*rebuilt)
 
                 return np.vectorize(call)(*coords)
@@ -247,7 +347,7 @@ class _KernelLowerer(_Lifter):
         return self.pointwise(mname, *flat, hint="fx")
 
 
-def _compile(fn, args) -> _Artifact:
+def _compile(fn, args, tap_names=()) -> _Artifact:
     tree = _fn_ast(fn)
     params = [a.arg for a in tree.args.args]
     if len(params) != len(args):
@@ -267,9 +367,7 @@ def _compile(fn, args) -> _Artifact:
     # the thread lattice: the writable argument's layout — discovered from the
     # body's stores, but thread_idx may precede the store syntactically, so we
     # seed with the LAST tensor argument (the S.3 convention: outputs last)
-    lo.target = next(
-        (lo.env[n] for n, a in reversed(list(zip(params, args))) if isinstance(a, Tensor)), None
-    )
+    lo.target = next((lo.env[n] for n, a in reversed(list(zip(params, args))) if isinstance(a, Tensor)), None)
     with events.span("kernel.lower", fn.__qualname__):
         for stmt in tree.body:
             if isinstance(stmt, ast.Return):
@@ -277,15 +375,32 @@ def _compile(fn, args) -> _Artifact:
             lo.statement(stmt)
     if not lo.stored:
         raise ValueError(f"{fn.__qualname__} stores nothing — a kernel's effect is its stores")
+    for name in tap_names:  # requested taps become token-threaded stores
+        if name in lo.invalid_taps:
+            raise ValueError(f"tap {name!r} is INVALID: {lo.invalid_taps[name]}")
+        if name not in lo.tap_vars:
+            have = sorted(lo.tap_vars) or ["<none>"]
+            raise ValueError(f"no tap site {name!r} — sites: {', '.join(have)}")
+        buf = lo.b.input(f"tap:{name}")
+        lo.shadows[buf] = lo.shadows[lo.tap_vars[name]]
+        tok = lo.token or lo.b.emit("token", (), hint="tok")
+        lo.token = lo.b.emit("store", (tok, buf, lo.tap_vars[name]), hint="st")
+        lo.stored.append(buf)
     writable = tuple(dict.fromkeys(lo.stored))
+    tap_sites = {n: tuple(d.name for d in lo.shadows[v].dims) for n, v in lo.tap_vars.items()}
     return _Artifact(
         program=lo.b.program(),
         params=tuple(params),
         writable=writable,
         fn_markers=dict(lo.fn_markers),
+        tap_sites=tap_sites,
+        invalid_taps=dict(lo.invalid_taps),
+        requested_taps=tuple(tap_names),
     )
 
 
-__all__ = ["ComputeKernel", "compute", "grid", "thread_idx"]
+tap = _Intrinsic("tap")
+
+__all__ = ["ComputeKernel", "Config", "compute", "config", "grid", "shared", "tap", "thread_idx"]
 
 _ = _tensor_like  # noqa: F841 — keep the import surface stable for kernels

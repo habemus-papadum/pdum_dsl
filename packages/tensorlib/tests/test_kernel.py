@@ -86,7 +86,7 @@ def test_the_iota_unification_differential():
 def _program_of(f, img):
     from pdum.tl.kernel import _arg_fp, _code_fp
 
-    key = (_code_fp(shader.fn), (_arg_fp(f), _arg_fp(img)))
+    key = (_code_fp(shader.fn), (_arg_fp(f), _arg_fp(img)), ())
     return KERNELS.peek(key).program
 
 
@@ -247,3 +247,84 @@ def test_fn_arg_with_loops_and_module_global_name():
     ref = reference(_looped_device_fn)
     want = np.array([[ref(y * 0.5 - 1.0, x * 0.5 - 1.0) for x in range(4)] for y in range(4)])
     np.testing.assert_allclose(img.to_numpy(), want, rtol=1e-12)
+
+
+# --- the bracket config + taps (owner-ruled syntax) --------------------------
+
+
+from pdum.tl.kernel import config, shared, tap  # noqa: E402
+
+
+@compute
+def tapped_kernel(img):
+    y, x = thread_idx("y", "x")
+    d = (y - 1.0) * (y - 1.0) + x * 0.0
+    tap(d, "dist")
+    img[y, x] = d * 2.0
+
+
+def test_config_bracket_taps_write_into_caller_tensors():
+    img = T(np.zeros((3, 4)), ("y", "x"))
+    dt = T(np.zeros((3, 4)), ("y", "x"))
+    tapped_kernel[config(taps={"dist": dt})](img)
+    Y = np.arange(3.0)[:, None] * np.ones((1, 4))
+    np.testing.assert_allclose(dt.to_numpy(), (Y - 1.0) ** 2)  # the tap, full lattice
+    np.testing.assert_allclose(img.to_numpy(), (Y - 1.0) ** 2 * 2.0)
+    tapped_kernel(img)  # the plain call still works; no tap written
+
+
+def test_tap_name_set_specializes_tensors_do_not():
+    """The config contract: the tap NAME SET is identity-bearing (a
+    different set is a different artifact); the tap TENSORS and the launch
+    GEOMETRY are pure invocation data."""
+    img = T(np.zeros((2, 2)), ("y", "x"))
+    t1, t2 = T(np.zeros((2, 2)), ("y", "x")), T(np.zeros((2, 2)), ("y", "x"))
+    tapped_kernel[config(taps={"dist": t1})](img)
+    with events.forbid("kernel.miss"):
+        tapped_kernel[config(taps={"dist": t2})](img)  # new TENSOR: warm hit
+        tapped_kernel[config(taps={"dist": t1}, blocks=(9, 9), threads=(2, 2))](img)  # geometry never keys
+    with pytest.raises(events.EventForbidden):
+        with events.forbid("kernel.miss"):
+            tapped_kernel(img2 := T(np.zeros((5, 5)), ("y", "x")))  # noqa: F841 — shape miss still misses
+
+
+def test_tap_introspection_lists_sites():
+    img = T(np.zeros((2, 3)), ("y", "x"))
+    sites = tapped_kernel.taps(img)
+    assert sites == {"dist": {"valid": True, "dims": ("y", "x"), "reason": None}}
+
+
+def _tapped_helper(v):
+    tap(v * 3.0, "inner")
+    return v * 2.0
+
+
+@compute
+def colliding_kernel(img):
+    y, x = thread_idx("y", "x")
+    a = _tapped_helper(y + 0.0)
+    b = _tapped_helper(x + 0.0)  # the SAME site inlined twice: non-unique
+    img[y, x] = a + b
+
+
+def test_colliding_tap_sites_invalidate_honestly():
+    """The naming law never auto-suffixes: a site inlined into
+    non-uniqueness is reported INVALID, and requesting it refuses."""
+    img = T(np.zeros((2, 2)), ("y", "x"))
+    sites = colliding_kernel.taps(img)
+    assert sites["inner"]["valid"] is False
+    assert "more than one site" in sites["inner"]["reason"]
+    with pytest.raises(ValueError, match="tap 'inner' is INVALID.*more than one site"):
+        colliding_kernel[config(taps={"inner": img})](img)
+
+
+def test_unknown_tap_refuses_listing_sites():
+    img = T(np.zeros((2, 2)), ("y", "x"))
+    with pytest.raises(ValueError, match=r"no tap site 'nope' — sites: dist"):
+        tapped_kernel[config(taps={"nope": img})](img)
+
+
+def test_shared_mem_slot_is_reserved():
+    img = T(np.zeros((2, 2)), ("y", "x"))
+    with pytest.raises(NotImplementedError, match=r"tile tier \(L4\).*slot is reserved"):
+        tapped_kernel[config(shared_mem=shared(t1=("ty", 16)))](img)
