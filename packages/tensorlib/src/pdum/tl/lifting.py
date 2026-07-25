@@ -385,32 +385,38 @@ class _Lifter:
         read, and NOTHING else is recognized: every other function is plain
         code that inlines (or refuses). A bare marker call on tensors
         refuses, pointing at pointwise. Returns None for non-vocabulary."""
-        from . import compute
+        from .compute import const_like as _cl
+        from .compute import extent as _ex
+        from .compute import iota as _io
+        from .compute import pointwise as _pw
+        from .compute import reduce as _rd
+        from .compute import repeat_like as _rl
+        from .compute import scan as _sc
         from .markers import Marker
         from .mdsl import CompositeMarker
 
-        if target is compute.pointwise:
+        if target is _pw:
             f, *ops = args
             fname = f.name if isinstance(f, (Marker, CompositeMarker)) else f
             return self.pointwise(fname, *ops, hint=str(fname).rsplit(".", 1)[-1])
-        if target is compute.reduce or target is compute.scan:
+        if target is _rd or target is _sc:
             f, a = args[0], args[1]
-            dims = args[2] if len(args) > 2 else kwargs.get("dims" if target is compute.reduce else "dim")
+            dims = args[2] if len(args) > 2 else kwargs.get("dims" if target is _rd else "dim")
             fname = f if isinstance(f, str) else f.name
             ops = tuple(t.var for t in (a if isinstance(a, tuple) else (a,)))
-            if target is compute.reduce:
+            if target is _rd:
                 names = (dims,) if isinstance(dims, str) else tuple(dims)
                 return self.emit("reduce", ops, "red", f=fname, dims=names)
             return self.emit("scan", ops, "scan", f=fname, dim=dims)
-        if target is compute.repeat_like:
+        if target is _rl:
             x, like = args
             return self.emit("repeat_like", (x.var, like.var), "rl")
-        if target is compute.extent:
+        if target is _ex:
             d = args[0].shadow.dim(args[1])
             return (d.start, d.stop)
-        if target is compute.iota:
+        if target is _io:
             return self.emit("iota", (args[0].var,), "iota", name=args[1])
-        if target is compute.const_like:
+        if target is _cl:
             return self.const_like(args[1], args[0])
         if isinstance(target, (Marker, CompositeMarker)):
             raise ValueError(

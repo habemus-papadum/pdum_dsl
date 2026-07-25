@@ -104,3 +104,56 @@ def test_random_regenerates_inside_reruns_identically():
     a = run(prog, {"x": x})["u"].to_numpy()
     b = run(prog, {"x": x})["u"].to_numpy()
     np.testing.assert_array_equal(a, b)
+
+
+def test_the_recompute_theorem_revolve_equals_store_all_with_dropout_on():
+    """THE FULL PIN (200 §1.8.4, P7): a revolve-checkpointed fold and the
+    store-all schedule produce BIT-IDENTICAL gradients with dropout on.
+    The mask is a zero-memory closed-form field over (tm, x) consumed as a
+    fold element — recompute re-reads the same coordinates and regenerates
+    the same bits BY CONSTRUCTION; no mask is ever stored anywhere."""
+    from pdum.dsl.types import Literal
+    from pdum.tl.autodiff import grad
+    from pdum.tl.compute import const_like, pointwise
+    from pdum.tl.lifting import lift_step
+    from pdum.tl.markers import lt, tanh, where
+    from pdum.tl.random import RandomBuffer
+
+    N, TM, p_drop = 4, 6, 0.4
+    key = fold_in(5, "train.drop")
+    rng = np.random.default_rng(2)
+    s0 = T(rng.standard_normal(N), ("x",))
+    mask_lattice = T(np.zeros((TM, N)), ("tm", "x"))
+    mask = uniform(key, mask_lattice.layout)
+    assert isinstance(mask.buffer, RandomBuffer) and mask.buffer.data is None  # zero bytes
+
+    def step(s, m, p: Literal[float]):
+        kept = pointwise(where, pointwise(lt, m, const_like(m, p)), const_like(s, 0.0), s)
+        return s * 0.8 + pointwise(tanh, kept) * 0.3
+
+    ls = lift_step(step, s=s0.layout, m=T(np.zeros(N), ("x",)).layout, p=p_drop)
+    fold_params = {
+        "step": ls.program,
+        "dim": "tm",
+        "state": ("s",),
+        "element": ("m",),
+        "carry": {"s": ls.outputs[0]},
+        "out": ("final", ls.outputs[0]),
+    }
+    prog = Program(
+        (
+            I("s0", "input"),
+            I("mask", "input"),
+            I("sf", "fold", ("s0", "mask"), **fold_params),
+            I("zloss", "reduce", ("sf",), f="sum", dims=("x",)),
+        )
+    )
+    inputs = {"s0": s0, "mask": mask}
+    j_all, g_all = grad(prog, "zloss", dict(inputs), fold_segments=1)
+    j_rev, g_rev = grad(prog, "zloss", dict(inputs), fold_slots=2)
+    e_all = run(j_all, inputs)
+    e_rev = run(j_rev, inputs)
+    got_all = e_all[g_all["s0"]].to_numpy(order=("x",))
+    got_rev = e_rev[g_rev["s0"]].to_numpy(order=("x",))
+    np.testing.assert_array_equal(got_rev, got_all)  # BIT-identical, dropout on
+    assert not np.array_equal(got_all, np.zeros(N))

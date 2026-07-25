@@ -65,8 +65,10 @@ def reducer(name: str):
     raise KeyError(f"unknown reducer {name!r}")
 
 
-_LEAF_OPS = ("input", "const", "iota", "random")
-_COMPUTE_OPS = ("pointwise", "reduce", "scan", "materialize", "with_value_units", "fold", "round_to", "repeat_like")
+_LEAF_OPS = ("input", "const", "iota", "random", "token")
+_COMPUTE_OPS = (
+    "pointwise", "reduce", "scan", "materialize", "with_value_units", "fold", "round_to", "repeat_like", "store"
+)
 
 
 @dataclass(frozen=True, eq=False)
@@ -280,6 +282,38 @@ def _run_fold(ins: Instr, env: dict) -> Tensor:
     return _tensor_like(arr, shadow.dims)
 
 
+class Token:
+    """An ordering value (200 §S.3): a store consumes and produces one, so
+    ordering is ordinary dataflow — the frontend threads ONE implicit token
+    through all stores in statement order; tokens never appear in user
+    syntax. Tile barriers and L2 bufferization consume the same mechanism."""
+
+    __slots__ = ()
+
+
+def _store(tok: Token, target: Tensor, value: Tensor) -> Token:
+    """The store: write ``value`` into the writable ``target``'s buffer —
+    the ONE effect in the reference tier, ordered by its token."""
+    if not isinstance(tok, Token):
+        raise TypeError("store's first operand must be a token")
+    order = target.names
+    if set(order) != set(value.names):
+        raise ValueError(f"store: value dims {value.names} do not match target dims {order}")
+    dims = target.layout.dims
+    if any(d.stride == 0 for d in dims):
+        raise ValueError("store: the writable target must be injective (no broadcast dims)")
+    origin = target.layout.offset + sum(d.stride * d.start for d in dims)
+    arr = np.ndarray(
+        buffer=target.buffer.data,
+        dtype=target.dtype,
+        shape=tuple(d.size for d in dims),
+        strides=tuple(d.stride for d in dims),
+        offset=origin,
+    )
+    arr[...] = value.to_numpy(order=order) if order else value.to_numpy()
+    return Token()
+
+
 def _round_to(t: Tensor, encoding) -> Tensor:
     """The ONE sanctioned precision op (200 §4): encode∘decode over the
     interior value — exact, explicit, boundary-shaped. The value stays
@@ -349,6 +383,10 @@ def run(prog: Program, inputs: dict[str, Tensor]) -> dict[str, Tensor]:
             from .compute import repeat_like
 
             env[ins.var] = repeat_like(env[ins.operands[0]], env[ins.operands[1]])
+        elif ins.op == "token":
+            env[ins.var] = Token()
+        elif ins.op == "store":
+            env[ins.var] = _store(env[ins.operands[0]], env[ins.operands[1]], env[ins.operands[2]])
         elif ins.op == "fold":
             env[ins.var] = _run_fold(ins, env)
         elif ins.op == "with_value_units":
@@ -418,6 +456,8 @@ def infer_instr(ins: Instr, shadows: dict, input_layouts: dict | None = None):
         return _dense_like(dims)
     if ins.op == "round_to":
         return _dense_like(shadows[ins.operands[0]].dims)
+    if ins.op in ("token", "store"):
+        return Layout(())  # ordering values carry no lattice
     if ins.op == "repeat_like":
         # the batching-unawareness mechanism (220): added dims are LAYOUT-
         # DERIVED from the like operand — referenced for its layout only
