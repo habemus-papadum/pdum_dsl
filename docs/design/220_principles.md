@@ -187,3 +187,28 @@ assertion: zero compiles, zero builds, zero derivations — proved, not
 hoped.
 **Pinned:** no_compile throughout the D battery; tl test_events
 ("this training loop builds zero Programs").
+
+## 14. One body language — the kernel is a dialect, not a sibling
+
+The kernel language is not a second language: it is the value language
+plus exactly three extensions — the thread ambient, token-threaded
+stores, and buffer reads. The scalar marker subset is its effect-free
+straight-line core, so device functions ARE value-language kernels and
+compose by capture-and-call; the tensor lifter becomes a vectorizing
+execution strategy for the same programs, not a competing syntax.
+The payoff is singular infrastructure: ONE derivative engine (forward
+seeding over the one table) serves autodiff at the tensor tier,
+`with_respect_to` in a local scope, and `fwidth`-style ambient
+derivatives in a fragment shader — three features, one mechanism.
+Invocation stays out of identity by law, stated per config component:
+launch geometry is launcher data (threads the one value-specialized
+carve-out), tap NAMES specialize while tap tensors are invocation data,
+shared memory is structural. And observability is honest: a tap site
+whose name goes non-unique under inlining is INVALIDATED with the
+reason, never silently renamed.
+**Enables:** shader combinators as ordinary function composition; the
+AA circle whose edge is analytic; kernels gaining derivatives, records,
+and randomness the day the value tier does.
+**Pinned:** test_kernel (config bracket, taps, honest invalidation);
+test_kernel_spec.py — the committed future spellings as skipped tests,
+un-skipping per milestone.

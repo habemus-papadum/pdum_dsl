@@ -1,0 +1,289 @@
+"""THE COMMITTED KERNEL SYNTAX — specified now, implemented later.
+
+Every test here is SKIPPED and is the executable contract for a gated
+milestone: it un-skips when its machinery lands, and its body is the
+ratified spelling (owner-ruled). The governing law (200 §S.3 amendment,
+220 §14):
+
+    There is ONE body language: the value language. A kernel body is the
+    value language plus exactly three dialect extensions — the thread
+    AMBIENT, token-threaded STORES, and buffer READS. The scalar marker
+    subset is its straight-line, effect-free core. One derivative engine
+    (forward seeding over the one derivative table) serves every
+    per-element tier.
+
+Names used below (global_thread_idx, with_respect_to, value_and_grad,
+shared_alloc, shared_bind, barrier, sample) arrive with their
+implementations; this file records the spellings.
+"""
+
+import numpy as np
+import pytest
+from pdum.tl import Tensor, compute, thread_idx
+from pdum.tl.kernel import config
+
+P8 = pytest.mark.skip(reason="specified now; lands at P8 (graphics + the value-tier derivative engine)")
+P9 = pytest.mark.skip(reason="specified now; lands at P9 (the indexing family)")
+L4 = pytest.mark.skip(reason="specified now; lands with the tile tier (L4)")
+
+
+def T(arr, names):
+    return Tensor.from_numpy(np.asarray(arr, dtype=np.float64), names)
+
+
+# --- P8: the ambient generalizes to device functions -------------------------
+
+
+@P8
+def test_global_thread_idx_survives_coordinate_transforms():
+    """Thread identity is AMBIENT everywhere: a device function sees the
+    global thread id even after its coordinates were scaled/translated —
+    transforms change what you SAMPLE, never who you are."""
+    from pdum.dsl import jit
+
+    def probe():
+        @jit()
+        def go(y, x):
+            gy, gx = global_thread_idx("y", "x")  # noqa: F821
+            return (y - gy) + (x - gx)  # zero iff untransformed
+
+        return go
+
+    @compute
+    def k(f, img):
+        y, x = thread_idx("y", "x")
+        img[y, x] = f(y * 2.0, x * 2.0)  # transformed coords; ambient unchanged
+
+    img = T(np.zeros((2, 3)), ("y", "x"))
+    k(probe(), img)
+    Y, X = np.meshgrid(np.arange(2.0), np.arange(3.0), indexing="ij")
+    np.testing.assert_allclose(img.to_numpy(), Y + X)  # (2y - y) + (2x - x)
+
+
+# --- P8: the two derivative operators, one engine ----------------------------
+
+
+@P8
+def test_with_respect_to_a_local_value():
+    """Value-space: d(computed)/d(upstream local). The differentiated value
+    must be castable to real; the result has ITS type."""
+    from pdum.dsl import jit
+
+    @jit()
+    def go(y, x):
+        d = sqrt(y * y + x * x)  # noqa: F821
+        dd_dy = with_respect_to(d, y)  # noqa: F821 — forward seed y=1
+        return dd_dy
+
+    @compute
+    def k(f, img):
+        y, x = thread_idx("y", "x")
+        img[y, x] = f(y, x)
+
+    img = T(np.zeros((3, 3)), ("y", "x"))
+    k(go, img)
+    Y, X = np.meshgrid(np.arange(3.0), np.arange(3.0), indexing="ij")
+    with np.errstate(invalid="ignore"):
+        np.testing.assert_allclose(img.to_numpy()[1:], (Y / np.sqrt(Y * Y + X * X))[1:], rtol=1e-9)
+
+
+@P8
+def test_value_and_grad_wrt_ambient_is_fwidth():
+    """Function-space: value + gradient wrt a declared argument set. With
+    wrt = the ambient thread coordinates this IS dFdx/dFdy — S.4's
+    'fwidth is the wrt-ambient derivative' — and analytic anti-aliasing
+    at the shader's top level is its first consumer."""
+    from pdum.dsl import jit
+
+    def circle(cy, cx, r):
+        @jit()
+        def go(y, x):
+            d = sqrt((y - cy) * (y - cy) + (x - cx) * (x - cx))  # noqa: F821
+            return d - r  # signed distance
+
+        return go
+
+    g = value_and_grad(circle(8.0, 8.0, 5.0), wrt=("y", "x"))  # noqa: F821
+
+    @compute
+    def aa_shader(f, img):
+        y, x = thread_idx("y", "x")
+        v, (dy, dx) = f(y, x)
+        w = sqrt(dy * dy + dx * dx)  # noqa: F821 — fwidth
+        img[y, x] = clamp(v / w + 0.5, 0.0, 1.0)  # noqa: F821 — one-pixel edge
+
+    img = T(np.zeros((16, 16)), ("y", "x"))
+    aa_shader(g, img)
+    assert 0.0 < img.to_numpy().min() < 0.5 < img.to_numpy().max() <= 1.0
+
+
+@P8
+def test_derivative_type_law_records_mirror_their_value():
+    """The differentiated value may be a scalar, a record, or a statically
+    sized float tensor; the RESULT HAS THE SAME TYPE (per-field for
+    records)."""
+    from dataclasses import dataclass
+
+    from pdum.dsl import jit
+    from pdum.dsl.surfaces import record  # noqa: F401
+
+    @dataclass(frozen=True)
+    class RG:
+        r: float
+        g: float
+
+    @jit()
+    def go(y, x):
+        c = RG(y * x, y + x)
+        dc = with_respect_to(c, y)  # noqa: F821 — RG(d r/dy, d g/dy) = RG(x, 1)
+        return dc.r + dc.g
+
+    @compute
+    def k(f, img):
+        y, x = thread_idx("y", "x")
+        img[y, x] = f(y, x)
+
+    img = T(np.zeros((2, 3)), ("y", "x"))
+    k(go, img)
+    Y, X = np.meshgrid(np.arange(2.0), np.arange(3.0), indexing="ij")
+    np.testing.assert_allclose(img.to_numpy(), X + 1.0)
+
+
+# --- P8: buffer reads — the third dialect extension --------------------------
+
+
+@P8
+def test_element_reads_at_computed_indices():
+    """The kernel dialect reads buffers at COMPUTED integer indices —
+    a value-language load, gradient-free through the indices (the carrier
+    discipline). This is the fuzz/texture door."""
+
+    @compute
+    def gather_diag(tex, img):
+        (y,) = thread_idx("y")
+        img[y] = tex[y, y]  # computed index read (not just thread coords)
+
+    tex = T(np.arange(9.0).reshape(3, 3), ("y", "x"))
+    img = T(np.zeros(3), ("y",))
+    gather_diag(tex, img)
+    np.testing.assert_allclose(img.to_numpy(), [0.0, 4.0, 8.0])
+
+
+@P8
+def test_neighborhood_static_loop_unrolls_to_scalar_ops():
+    """A statically-known loop over element loads — 'converted into a
+    series of scalar operations'. (The tensor-tier stencil view is the
+    SAME computation at a different altitude; descent may convert.)"""
+
+    @compute
+    def box3(tex, img):
+        (y,) = thread_idx("y")
+        acc = 0.0
+        for dy in range(3):
+            acc = acc + tex[y + dy]
+        img[y] = acc / 3.0
+
+    tex = T(np.arange(5.0), ("y",))
+    img = T(np.zeros(3), ("y",))
+    box3(tex, img)
+    np.testing.assert_allclose(img.to_numpy(), [1.0, 2.0, 3.0])
+
+
+@P8
+def test_fuzz_as_a_combinator_closes_over_a_buffer():
+    """The combinator FORM of fuzz: a device function closing over a noise
+    texture — buffer closure at the f tier (arg-rooted buffer slots)."""
+    from pdum.dsl import jit
+
+    def fuzz(ny, nx):
+        def apply(f):
+            @jit()
+            def go(y, x):
+                return f(y + ny[y, x], x + nx[y, x])  # closed-over buffers
+
+            return go
+
+        return apply  # Comb(apply) once blessed into the dsl tier
+
+    rng = np.random.default_rng(0)
+    ny = T(rng.standard_normal((8, 8)), ("y", "x"))
+    nx = T(rng.standard_normal((8, 8)), ("y", "x"))
+    assert fuzz(ny, nx) is not None
+
+
+# --- P8: taps inside device-function/combinator bodies -----------------------
+
+
+@P8
+def test_taps_inside_combinator_bodies_with_validity():
+    """A tap site inside a combinator body; applied once it is valid,
+    applied twice its name collides and the site is INVALIDATED —
+    introspection reports both, with reasons."""
+    from pdum.dsl import jit
+    from pdum.tl.kernel import tap
+
+    def scale(s):
+        @jit()
+        def go(y, x):
+            yprime = y * s
+            tap(yprime, "yprime")
+            return yprime + x * s
+
+        return go
+
+    @compute
+    def k(f, img):
+        y, x = thread_idx("y", "x")
+        img[y, x] = f(y, x)
+
+    img = T(np.zeros((2, 2)), ("y", "x"))
+    yp = T(np.zeros((2, 2)), ("y", "x"))
+    k[config(taps={"yprime": yp})](scale(2.0), img)
+    np.testing.assert_allclose(yp.to_numpy(), np.arange(2.0)[:, None] * 2.0 * np.ones((1, 2)))
+
+
+@P8
+def test_record_taps_land_as_struct_tensors():
+    """isBits record taps write struct-element tensors — the structured
+    encoding is the memory shape (200 §4)."""
+
+
+# --- L4: shared memory — both committed forms --------------------------------
+
+
+@L4
+def test_shared_memory_config_linked_and_kernel_side_static():
+    """Two spellings, one mechanism. CONFIG-LINKED: the launch declares the
+    region; the kernel binds it by name. KERNEL-SIDE STATIC: the kernel
+    declares a compile-time-shaped tile inline. Barriers are the token
+    mechanism made explicit."""
+    from pdum.tl.kernel import shared
+
+    @compute
+    def k_linked(img):
+        t1 = shared_bind("t1")  # noqa: F821 — binds config(shared_mem=shared(t1=...))
+        y, x = thread_idx("y", "x")
+        t1[y, x] = img[y, x] * 2.0
+        barrier()  # noqa: F821 — token-threaded synchronization
+        img[y, x] = t1[y, x]
+
+    @compute
+    def k_static(img):
+        tile = shared_alloc(ty=16, tx=16)  # noqa: F821 — statically typed, compile-time known
+        y, x = thread_idx("y", "x")
+        tile[y, x] = img[y, x]
+        barrier()  # noqa: F821
+        img[y, x] = tile[y, x]
+
+    img = T(np.zeros((16, 16)), ("y", "x"))
+    k_linked[config(shared_mem=shared(t1=(("ty", 16), ("tx", 16))))](img)
+    k_static(img)
+
+
+# --- P9: data-dependent indexing joins as take/scatter_add -------------------
+
+
+@P9
+def test_data_dependent_stores_are_scatter_add():
+    """Kernel subscripts at NON-thread indices become the take/scatter_add
+    pair (200 §1.9) — deterministic by addition, first-wins at ties."""

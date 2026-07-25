@@ -910,6 +910,53 @@ my_shader(f, img, launch=grid(blocks=ceil_div(img.shape, 16), threads=(16, 16)))
   the fused and assemblage forms are differential-tested against
   `ir.run`.
 
+**S.3 amendment (P7, owner-ruled): the one-body-language law.** There
+is ONE body language — the value language. A kernel body is the value
+language plus exactly three dialect extensions: the thread **ambient**
+(`thread_idx`, and `global_thread_idx` visible inside device functions
+even after their coordinates were transformed — transforms change what
+you sample, never who you are), token-threaded **stores**, and buffer
+**reads** (`tex[i, j]` at computed integer indices, gradient-free
+through the indices; statically-known loops over element loads unroll
+to scalar operations). The scalar marker subset is the language's
+effect-free straight-line core; device functions ARE value-language
+kernels and inline by capture-and-call. There are never two syntaxes
+and never two derivative pipelines: **one forward-seeding engine over
+the one derivative table** serves every per-element tier, and the
+tensor-lifter path is a vectorizing *execution strategy* for the same
+programs, not a sibling language. The whole-tensor assemblage tier
+remains the separate altitude above.
+
+*The invocation config.* `kernel[config(...)](args)` brackets the
+launch; each component has its own specialization regime, stated
+per component rather than blanket: **blocks/streams** are pure launcher
+data (no key contact); **threads** is the value-specialized carve-out
+(re-render on change, no identity change); **taps** specialize by NAME
+SET only — the tap tensors are invocation data; **shared_mem** is
+structural (the slot is reserved and refuses until the tile tier, L4).
+*Taps:* a site is declared in the body as `tap(v, "name")`; the caller
+passes full-thread-lattice tensors via `config(taps={...})` and the
+kernel writes them alongside its outputs — taps never change the
+return. The naming law never auto-suffixes: a site inlined into more
+than one place makes its name non-unique and the tap is honestly
+INVALIDATED with the reason; `kernel.taps(*args)` introspects sites,
+validity, dims, and reasons. Record values tap as struct-element
+tensors (§4). *Derivatives:* two operators, one engine —
+`with_respect_to(v, u)` is value-space (a local's derivative with
+respect to an upstream local), `value_and_grad(f, wrt=...)` is
+function-space; with `wrt` = the ambient coordinates it IS
+`dFdx`/`dFdy`/`fwidth` (S.4), the analytic-AA door. The type law: the
+differentiated value must be castable to real — a scalar, a record, or
+a statically sized float tensor — and the result has the same type
+(per-field for records). *Shared memory:* two committed spellings, one
+mechanism — config-linked (`config(shared_mem=shared(t1=...))` bound in
+the body by name) and kernel-side statically-typed allocation; barriers
+are the token mechanism made explicit; both land at L4. The committed
+spellings live as SKIPPED tests in
+`packages/tensorlib/tests/test_kernel_spec.py` — each un-skips when its
+milestone (P8, P9, L4) lands; data-dependent indexing joins as the
+take/scatter_add pair (§1.9, P9).
+
 ### S.4 Vertex/fragment [build — P8]
 
 `@vertex`/`@fragment` share the ambient contract. **Varyings are a
