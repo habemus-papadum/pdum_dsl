@@ -19,6 +19,7 @@ nav:
   - Home: index.md
   - "The spec (200)": design/200_the-spec.md
   - "Backend notes (210)": design/210_backend-notes.md
+  - "The principles (220)": design/220_principles.md
   - Design: design/README.md
 
 docs_dir: docs
