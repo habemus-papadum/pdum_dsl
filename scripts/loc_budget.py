@@ -35,7 +35,7 @@ KERNEL_TOTAL_CAP = 2600  # P1 redraw: measured 2253 at the move + headroom for t
 # Per-file caps. Engine files carry their pre-move caps (same code, same
 # discipline); the P1 arrivals were capped at their measured size + slack.
 FILE_CAPS = {
-    "__init__.py": 40,  # batteries-included install + the version anchor
+    "__init__.py": 45,  # install + version anchor (P8: +value_and_grad API + derivative install, was 40)
     "types.py": 115,  # P4: +Literal/LiteralAnnotation — the §1.5 annotation door (was 100)
     "valuekind.py": 95,
     "capture.py": 85,
@@ -58,6 +58,7 @@ FILE_CAPS = {
     "pipe.py": 175,  # the fuse pipe: stages, vocabulary checks, build rule
     "reference.py": 140,  # the oracle: renderer + the spelled door
     "render.py": 90,  # the shared dominator-walking emitter
+    "derivative.py": 235,  # P8: the ONE table at its forced altitude + schema + both engines
 }
 
 _SKIP = {tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER}

@@ -19,6 +19,7 @@ from . import pack as _pack  # noqa: F401 — registers the marshaling aspects o
 # could mint a child table that is permanently unable to marshal.
 from .api import jit  # noqa: E402
 from .cache import no_compile  # noqa: E402
+from .derivative import value_and_grad  # noqa: E402
 from .pipe import op  # noqa: E402
 from .reference import reference  # noqa: E402
 from .registry import DEFAULT, Registry  # noqa: E402
@@ -35,13 +36,14 @@ def install(registry: Registry) -> Registry:
     """Register the batteries into ``registry`` (idempotent): the value
     language's rule pack, the "device" kind + pipe fusion, the reference
     oracle, and the scalar intrinsics."""
-    from . import intrinsics, pipe
+    from . import derivative, intrinsics, pipe
     from .reference import install as _install_reference
     from .rewrite import Pat
     from .value import LOWER_RULES
 
     registry.lower_rules.update(LOWER_RULES)
     pipe.install(registry)  # the materializer kind + the fusion build rule
+    derivative.install(registry)  # with_respect_to (macro) + the value_and_grad build rule
     # extract-of-tuple folds away wherever the target cannot spell tuples —
     # gated on "core.tuple" ∈ code_for_op, the same mechanism as decompositions:
     if not any(op_name == "core.tuple" for op_name, _ in registry.decompositions):
@@ -58,4 +60,15 @@ def install(registry: Registry) -> Registry:
 
 install(DEFAULT)
 
-__all__ = ["DEFAULT", "Registry", "__version__", "install", "Literal", "jit", "no_compile", "op", "reference"]
+__all__ = [
+    "DEFAULT",
+    "Registry",
+    "__version__",
+    "install",
+    "Literal",
+    "jit",
+    "no_compile",
+    "op",
+    "value_and_grad",
+    "reference",
+]  # noqa: E501

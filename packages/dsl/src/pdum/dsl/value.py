@@ -383,6 +383,8 @@ def _call(ctx, node):
     if resolved is not None:  # a local/captured VALUE shadowing a battery name: python would
         raise MissingRule(f"{name!r} is a value here, not callable [{fmt(ctx.loc(node))}]")  # raise; so do we
     impl = registry.overloads.get(name) if registry else None
+    if getattr(impl, "__lower_macro__", False):  # a lowering macro: receives ctx + arg NODES
+        return impl(ctx, args, node)
     if isinstance(impl, str):  # an intrinsic: the name IS an op (spelling per target)
         return ctx.emit(impl, *args, node=node)
     if impl is not None:  # a DSL-written battery: capture-free, inlined like a callee

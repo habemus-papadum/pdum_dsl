@@ -118,15 +118,16 @@ def test_global_thread_idx_survives_coordinate_transforms():
 # --- P8: the two derivative operators, one engine ----------------------------
 
 
-@P8
 def test_with_respect_to_a_local_value():
-    """Value-space: d(computed)/d(upstream local). The differentiated value
-    must be castable to real; the result has ITS type."""
+    """LIVE (P8 first movement): value-space, d(computed)/d(upstream local),
+    forward-seeded over the one table at lower time — inside a kernel's f.
+    (+1.0 under the root keeps the oracle off the 0/0 pole, where Python
+    raises rather than NaN-ing.)"""
     from pdum.dsl import jit
 
     @jit()
     def go(y, x):
-        d = sqrt(y * y + x * x)  # noqa: F821
+        d = sqrt(y * y + x * x + 1.0)  # noqa: F821
         dd_dy = with_respect_to(d, y)  # noqa: F821 — forward seed y=1
         return dd_dy
 
@@ -138,8 +139,7 @@ def test_with_respect_to_a_local_value():
     img = T(np.zeros((3, 3)), ("y", "x"))
     k(go, img)
     Y, X = np.meshgrid(np.arange(3.0), np.arange(3.0), indexing="ij")
-    with np.errstate(invalid="ignore"):
-        np.testing.assert_allclose(img.to_numpy()[1:], (Y / np.sqrt(Y * Y + X * X))[1:], rtol=1e-9)
+    np.testing.assert_allclose(img.to_numpy(), Y / np.sqrt(Y * Y + X * X + 1.0), rtol=1e-12)
 
 
 @P8

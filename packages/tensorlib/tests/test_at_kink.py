@@ -88,3 +88,15 @@ def test_reduce_max_gradient_mass_is_conserved():
     for data in ([3.0, 3.0, 1.0], [1.0, 3.0, 3.0], [3.0, 1.0, 3.0]):
         g = _grad_of(prog, "m", {"x": T(data, ("i",))})
         assert float(np.sum(g["x"])) == 1.0
+
+
+def test_the_one_table_has_one_home():
+    """pdum.tl re-exports the SAME objects as pdum.dsl.derivative — one
+    table, one schema, both tiers (the one-body-language law made literal;
+    the kink rows this file pins are those rows)."""
+    import pdum.dsl.derivative as dsl_d
+    import pdum.tl.derivative as tl_d
+    import pdum.tl.nodes as tl_n
+
+    assert tl_d.TABLE is dsl_d.TABLE and tl_d.diff is dsl_d.diff
+    assert tl_n.Prim is dsl_d.Prim and tl_n.Const is dsl_d.Const and tl_n.Arg is dsl_d.Arg
