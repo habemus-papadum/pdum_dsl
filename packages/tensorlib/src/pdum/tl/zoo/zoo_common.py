@@ -10,9 +10,10 @@ from typing import Callable
 
 import numpy as np
 
+from ..compute import const_like, iota, pointwise
 from ..ir import Program
-from ..lifting import const_like, iota_of
-from ..mdsl import defmarker, exp, tanh, where
+from ..markers import exp, le, sqrt, where
+from ..mdsl import defmarker, tanh
 from ..tensor import Tensor
 
 # composite activations, registered once at zoo import
@@ -55,13 +56,13 @@ def t_in(inputs: dict, name: str, arr, names) -> str:
 def layernorm(x, g, b, *, feat, eps):
     mu = x.mean(feat)
     xc = x - mu.repeat(feat, x.extent(feat))
-    sd = ((xc * xc).mean(feat) + eps).sqrt()
+    sd = pointwise(sqrt, (xc * xc).mean(feat) + eps)
     return xc / sd.repeat(feat, x.extent(feat)) * g.repeat_like(x, but=feat) + b.repeat_like(x, but=feat)
 
 
 def rmsnorm(x, g, *, feat, eps):
     ms = (x * x).mean(feat)
-    sd = (ms + eps).sqrt()
+    sd = pointwise(sqrt, ms + eps)
     return x / sd.repeat(feat, x.extent(feat)) * g.repeat_like(x, but=feat)
 
 
@@ -76,10 +77,10 @@ def np_rmsnorm(x, g, eps, axis=-1):
 
 
 def softmax(sm, *, k):
-    e = exp(sm - sm.max(k).repeat_like(sm, dim=k))
+    e = pointwise(exp, sm - sm.max(k).repeat_like(sm, dim=k))
     return e / e.sum(k).repeat_like(e, dim=k)
 
 
 def causal_softmax(sc, *, q="t", k="s"):
-    mask = iota_of(sc, k) <= iota_of(sc, q)
-    return softmax(where(mask, sc, const_like(sc, -1e9)), k=k)
+    mask = pointwise(le, iota(sc, k), iota(sc, q))
+    return softmax(pointwise(where, mask, sc, const_like(sc, -1e9)), k=k)

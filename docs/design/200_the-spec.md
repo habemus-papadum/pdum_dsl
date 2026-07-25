@@ -789,6 +789,24 @@ two-operand reduce form; `Program`/`Instr` remain public
 hand-constructible data, and hand-emits get names through the same core
 naming contract.
 
+**S.1 amendment (P6, owner-ruled).** The assemblage surface stays an
+echo of the IR's few compute forms, and it is EXECUTABLE: markers are
+the numpy-carrying declarations themselves, applied ALWAYS through the
+compute operators — ``pointwise(cos, t)``, ``reduce(f, x, dims)`` — a
+bare marker call on tensors refuses, pointing at the spelling (bare
+names lower only inside scalar marker bodies). The same library code is
+one definition with two consumers: run eagerly on numpy-backed tensors
+(the naive backend, uncompiled — everything below the scope; the
+binding layer is build-only, its leaves virtual) or lowered by
+inspection into a Program, with the eager-vs-lowered differential
+pinned. Operators (``x * g``, comparisons) are pointwise-with-refusal;
+numbers const-lift (the one implicit lift); ``.mean/.sum/.max/.min``
+are one-line documented sugar over reduce; unary method spellings
+(``.sqrt()``) are withdrawn in favor of ``pointwise(sqrt, …)``;
+``contract`` and ``repeat_like`` are dual-mode VISIBLE sugar
+(repeat + mul + reduce; broadcast by declaration), never an opaque
+method surface.
+
 ### S.2 The shared expression syntax
 
 Type-directed lifting; straight-line enforced at lowering; bounded

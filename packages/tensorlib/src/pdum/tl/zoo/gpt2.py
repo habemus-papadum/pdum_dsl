@@ -16,10 +16,11 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..assemblage import assemblage, unit
+from ..compute import const_like, iota, pointwise
 from ..ir import _dense_like
 from ..layout import Dim
-from ..lifting import const_like, contract, iota_of
-from ..mdsl import exp, where
+from ..lifting import contract
+from ..markers import exp, le, sqrt, where
 from ..scope import scope
 from ..tensor import Tensor
 from .zoo_common import ZooModel, gelu, np_gelu, np_layernorm, np_softmax
@@ -43,14 +44,14 @@ class GPT2Config:
 def layernorm_t(x, g, b, *, feat, eps):
     mu = x.mean(feat)
     xc = x - mu.repeat(feat, x.extent(feat))
-    sd = ((xc * xc).mean(feat) + eps).sqrt()
+    sd = pointwise(sqrt, (xc * xc).mean(feat) + eps)
     return xc / sd.repeat(feat, x.extent(feat)) * g.repeat_like(x, but=feat) + b.repeat_like(x, but=feat)
 
 
 def causal_softmax_t(sc, *, q="t", k="s"):
-    mask = iota_of(sc, k) <= iota_of(sc, q)
-    sm = where(mask, sc, const_like(sc, -1e9))
-    e = exp(sm - sm.max(k).repeat_like(sm, dim=k))
+    mask = pointwise(le, iota(sc, k), iota(sc, q))
+    sm = pointwise(where, mask, sc, const_like(sc, -1e9))
+    e = pointwise(exp, sm - sm.max(k).repeat_like(sm, dim=k))
     return e / e.sum(k).repeat_like(e, dim=k)
 
 
@@ -90,7 +91,7 @@ def make_mlp(s, cfg):
     @unit
     def mlp(h):
         a = layernorm_t(h, ln2g, ln2b, feat="d", eps=cfg.eps)
-        m = gelu(contract(a, w1) + b1.repeat_like(a, dim="t"))
+        m = pointwise(gelu, contract(a, w1) + b1.repeat_like(a, dim="t"))
         return h + contract(m, w2) + b2.repeat_like(h, but="d")
 
     return mlp

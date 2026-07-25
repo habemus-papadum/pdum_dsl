@@ -43,82 +43,19 @@ refuses instead of silently evaluating. Results still carry no value_units
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from fractions import Fraction
 
 import numpy as np
 
 from .buffer import Buffer, FunctionalBuffer, host_view
 from .layout import Dim, Layout
+from .markers import Marker, Reducer, pw, red  # noqa: F401 — the one vocabulary, re-exported
 from .mdsl import CompositeMarker, CompositeReducer
 from .nodes import Arg, Const, Prim
 from .signatures import VInfo, marker_signature
 from .tensor import Tensor, alignment
 from .units import Quantity, Unit, u
-
-
-@dataclass(frozen=True)
-class Marker:
-    """A pointwise primitive: a declared operation, not a callback."""
-
-    name: str
-    fn: object  # numpy callable applied elementwise to aligned arrays
-
-    def __repr__(self) -> str:
-        return self.name
-
-
-@dataclass(frozen=True)
-class Reducer:
-    """A reduction primitive: a declared monoid (plus numpy ufunc for the
-    reference layer). `identity` is None when no dtype-independent identity
-    exists (max/min); pass `zero=` to reduce() in that case if the reduced
-    extent can be empty."""
-
-    name: str
-    fn: object  # numpy ufunc; .reduce(arr, axis=...) is used
-    identity: object = None
-    associative: bool = True
-    commutative: bool = True
-    normalize: bool = False  # divide by the (static) reduced numel
-
-    def __repr__(self) -> str:
-        return self.name
-
-
-class pw:
-    """The initial pointwise marker set."""
-
-    add = Marker("add", np.add)
-    sub = Marker("sub", np.subtract)
-    mul = Marker("mul", np.multiply)
-    div = Marker("div", np.divide)
-    neg = Marker("neg", np.negative)
-    exp = Marker("exp", np.exp)
-    log = Marker("log", np.log)
-    maximum = Marker("maximum", np.maximum)
-    minimum = Marker("minimum", np.minimum)
-    tanh = Marker("tanh", np.tanh)
-    sqrt = Marker("sqrt", np.sqrt)
-    sin = Marker("sin", np.sin)
-    cos = Marker("cos", np.cos)
-    where = Marker("where", np.where)  # ternary select
-    eq = Marker("eq", np.equal)
-    ne = Marker("ne", np.not_equal)
-    le = Marker("le", np.less_equal)
-    lt = Marker("lt", np.less)
-    ge = Marker("ge", np.greater_equal)
-    gt = Marker("gt", np.greater)
-
-
-class red:
-    """The initial reducer set."""
-
-    sum = Reducer("sum", np.add, identity=0)
-    prod = Reducer("prod", np.multiply, identity=1)
-    max = Reducer("max", np.maximum)
-    min = Reducer("min", np.minimum)
-    mean = Reducer("mean", np.add, identity=0, normalize=True)
 
 
 def _tensor_like(arr: np.ndarray, dims: tuple[Dim, ...], value_units=None) -> Tensor:
@@ -182,6 +119,46 @@ def pointwise(f: Marker, *tensors: Tensor) -> Tensor:
     else:
         out = f.fn(*arrays)
     return _tensor_like(np.asarray(out), tensors[0].layout.dims)
+
+
+def shared_axes(a, b, axis=None) -> tuple:
+    """The contraction axes: the UNIQUE shared axis, or the axis/axes named
+    to break a genuine ambiguity. One rule, both modes (eager + lowered)."""
+    da = {d.name for d in a.layout.dims}
+    db = {d.name for d in b.layout.dims}
+    shared = sorted(da & db)
+    if axis is None:
+        if len(shared) != 1:
+            what = "no shared axis" if not shared else f"shared axes {shared}"
+            raise ValueError(
+                f"contract: {what} between operands (a: {sorted(da)}, b: {sorted(db)}) — "
+                f"a unique shared axis contracts implicitly; name the contraction: "
+                f"contract(a, b, axis=...)"
+            )
+        return tuple(shared)
+    axes = (axis,) if isinstance(axis, str) else tuple(axis)
+    for ax in axes:
+        if ax not in shared:
+            raise ValueError(f"contract axis {ax!r} is not shared (a: {sorted(da)}, b: {sorted(db)})")
+    return axes
+
+
+def contract(a: Tensor, b: Tensor, axis=None) -> Tensor:
+    """Matmul as DECLARATION — three lines of visible sugar you can always
+    read: broadcast each operand over the dims only the other carries
+    (repeat_like), multiply pointwise, reduce-sum over the contraction
+    axes. Riding dims ride; misalignment refuses like everything else."""
+    if not (hasattr(a, "layout") and hasattr(b, "layout")):
+        raise TypeError("contract takes two tensors")
+    axes = shared_axes(a, b, axis)
+    return reduce(red.sum, pointwise(pw.mul, a.repeat_like(b), b.repeat_like(a)), axes)
+
+
+def const_like(t: Tensor, value) -> Tensor:
+    """A scalar broadcast over ``t``'s lattice, carrying its charts, labels,
+    and placement — the ONE implicit lift's explicit spelling (S.1)."""
+    arr = np.full(tuple(d.size for d in t.layout.dims), float(value))
+    return _tensor_like(arr, t.layout.dims)
 
 
 def reduce(f: Reducer, a: Tensor, dims, zero=None) -> Tensor:

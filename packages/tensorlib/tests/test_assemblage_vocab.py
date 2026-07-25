@@ -6,9 +6,10 @@ and refuses genuine ambiguity; the two-operand reduce form works."""
 import numpy as np
 import pytest
 from pdum.tl import Tensor
+from pdum.tl.compute import const_like, iota, pointwise, reduce
 from pdum.tl.ir import run
-from pdum.tl.lifting import const_like, contract, iota_of, lift_step, reduce_over
-from pdum.tl.mdsl import exp, where
+from pdum.tl.lifting import contract, lift_step
+from pdum.tl.markers import exp, le, sqrt, where
 
 
 def T(arr, names):
@@ -26,7 +27,7 @@ def _run1(fn, **tensors):
 
 def rmsnorm(x, g, *, feat="e", eps=1e-5):
     ms = (x * x).mean(feat)
-    sd = (ms + eps).sqrt()
+    sd = pointwise(sqrt, ms + eps)
     xn = x / sd.repeat(feat, x.extent(feat))
     return xn * g.repeat_like(x, but=feat)
 
@@ -34,14 +35,14 @@ def rmsnorm(x, g, *, feat="e", eps=1e-5):
 def layernorm(x, g, b, *, feat, eps=1e-5):
     mu = x.mean(feat)
     xc = x - mu.repeat(feat, x.extent(feat))
-    sd = ((xc * xc).mean(feat) + eps).sqrt()
+    sd = pointwise(sqrt, (xc * xc).mean(feat) + eps)
     return xc / sd.repeat(feat, x.extent(feat)) * g.repeat_like(x, but=feat) + b.repeat_like(x, but=feat)
 
 
 def causal_softmax(sc, *, q="t", k="s"):
-    mask = iota_of(sc, k) <= iota_of(sc, q)
-    sm = where(mask, sc, const_like(sc, -1e9))
-    e = exp(sm - sm.max(k).repeat_like(sm, dim=k))
+    mask = pointwise(le, iota(sc, k), iota(sc, q))
+    sm = pointwise(where, mask, sc, const_like(sc, -1e9))
+    e = pointwise(exp, sm - sm.max(k).repeat_like(sm, dim=k))
     return e / e.sum(k).repeat_like(e, dim=k)
 
 
@@ -137,11 +138,11 @@ def test_contract_no_shared_axis_refuses():
 # --- the two-operand reduce form + calling vocabulary outside a body --------
 
 
-def test_reduce_over_the_two_operand_form():
-    def step(se, ve):
-        return reduce_over("zoo.flashsm", (se, ve), "s")
+def test_reduce_the_two_operand_form():
+    from pdum.tl.zoo.attention import flashsm
 
-    import pdum.tl.zoo.attention  # noqa: F401 — registers zoo.flashsm
+    def step(se, ve):
+        return reduce(flashsm, (se, ve), "s")
 
     rng = np.random.default_rng(10)
     s, v = rng.standard_normal(6), rng.standard_normal(6)
@@ -150,9 +151,53 @@ def test_reduce_over_the_two_operand_form():
     np.testing.assert_allclose(got, (e * v).sum() / e.sum(), rtol=1e-9)
 
 
-def test_vocabulary_refuses_being_called_outside_a_body():
-    with pytest.raises(TypeError, match="lowers by inspection"):
+def test_contract_is_one_dual_mode_function():
+    """contract is visible sugar (repeat_like + mul + reduce) — the SAME
+    function runs eagerly on real tensors and emits when lowered."""
+    with pytest.raises(TypeError, match="contract takes two tensors"):
         contract(1, 2)
+    rng = np.random.default_rng(12)
+    a, w = rng.standard_normal((4, 6)), rng.standard_normal((6, 3))
+    eager = contract(T(a, ("t", "d")), T(w, ("d", "m")))  # EXECUTED
+    np.testing.assert_allclose(eager.to_numpy(order=("t", "m")), a @ w, rtol=1e-12)
+
+
+def test_bare_marker_calls_refuse_on_tensors():
+    """The owner ruling (P6): tensor-tier application is ALWAYS
+    pointwise(cos, t) — eagerly AND in lowered bodies."""
+    with pytest.raises(TypeError, match=r"spelled\s+pointwise\(cos"):
+        from pdum.tl.markers import cos
+
+        cos(T(np.zeros(2), ("i",)))
+
+    def step(x):
+        return exp(x)
+
+    with pytest.raises(ValueError, match=r"spelled pointwise\(exp"):
+        lift_step(step, x=T(np.zeros(2), ("i",)).layout)
+
+
+def test_the_library_runs_eagerly_and_lowers_identically():
+    """The naive backend IS the same code: the library executes eagerly on
+    numpy-backed tensors, uncompiled — and the lowered Program agrees."""
+    from pdum.tl.ir import run as _run
+
+    rng = np.random.default_rng(11)
+    x, g = rng.standard_normal((4, 6)), rng.standard_normal(6)
+    xt, gt = T(x, ("t", "e")), T(g, ("e",))
+    eager = rmsnorm(xt, gt, feat="e")  # EXECUTED, no IR anywhere
+    ls = lift_step(lambda x, g: rmsnorm(x, g, feat="e"), x=xt.layout, g=gt.layout)
+    lowered = _run(ls.program, {"x": xt, "g": gt})[ls.outputs[0]]
+    np.testing.assert_allclose(
+        eager.to_numpy(order=("t", "e")), lowered.to_numpy(order=("t", "e")), rtol=1e-12
+    )
+    sc = rng.standard_normal((4, 4))
+    egr = causal_softmax(T(sc, ("t", "s")))
+    ls2 = lift_step(lambda sc: causal_softmax(sc), sc=T(sc, ("t", "s")).layout)
+    low = _run(ls2.program, {"sc": T(sc, ("t", "s"))})[ls2.outputs[0]]
+    np.testing.assert_allclose(
+        egr.to_numpy(order=("t", "s")), low.to_numpy(order=("t", "s")), rtol=1e-12
+    )
 
 
 def test_binding_names_become_ssa_names():

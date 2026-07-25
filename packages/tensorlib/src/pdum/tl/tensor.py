@@ -207,6 +207,97 @@ class Tensor:
     def shift(self, **deltas) -> "Tensor":
         return self._via(self.layout.shift(**deltas))
 
+    # ---- the eager assemblage tier (S.1, amended P6): operators are
+    # pointwise-with-refusal (numbers const-lift — the ONE implicit lift);
+    # .mean/.sum/.max/.min are one-line sugar over reduce; repeat_like is
+    # the explicit broadcast. The SAME spellings lower by inspection inside
+    # unit/step bodies — one library, two consumers. --------------------
+
+    def _pw(self, fname: str, *others) -> "Tensor":
+        from .compute import const_like, pointwise, pw
+
+        ops = [self, *others]
+        ops = [const_like(self, o) if isinstance(o, (int, float)) else o for o in ops]
+        return pointwise(getattr(pw, fname), *ops)
+
+    def __add__(self, o):
+        return self._pw("add", o)
+
+    def __radd__(self, o):
+        return self._pw("add", o)
+
+    def __mul__(self, o):
+        return self._pw("mul", o)
+
+    def __rmul__(self, o):
+        return self._pw("mul", o)
+
+    def __sub__(self, o):
+        return self._pw("sub", o)
+
+    def __rsub__(self, o):
+        from .compute import const_like
+
+        return const_like(self, o)._pw("sub", self) if isinstance(o, (int, float)) else NotImplemented
+
+    def __truediv__(self, o):
+        return self._pw("div", o)
+
+    def __neg__(self):
+        return self._pw("neg")
+
+    def __le__(self, o):
+        return self._pw("le", o)
+
+    def __lt__(self, o):
+        return self._pw("lt", o)
+
+    def __ge__(self, o):
+        return self._pw("ge", o)
+
+    def __gt__(self, o):
+        return self._pw("gt", o)
+
+    def _red(self, fname: str, dims) -> "Tensor":
+        from .compute import red, reduce
+
+        return reduce(getattr(red, fname), self, dims)
+
+    def mean(self, dims) -> "Tensor":
+        return self._red("mean", dims)
+
+    def sum(self, dims) -> "Tensor":
+        return self._red("sum", dims)
+
+    def max(self, dims) -> "Tensor":
+        return self._red("max", dims)
+
+    def min(self, dims) -> "Tensor":
+        return self._red("min", dims)
+
+    def extent(self, name: str) -> tuple[int, int]:
+        d = self.layout.dim(name)
+        return (d.start, d.stop)
+
+    def repeat_like(self, x: "Tensor", but=None, dim=None) -> "Tensor":
+        """Broadcast toward ``x``'s dims: with dim= add exactly those (from
+        x's extents); otherwise every dim of x this tensor lacks, minus
+        ``but``. Explicit — broadcast stays a DECLARATION."""
+        src = {d.name: d for d in x.layout.dims}
+        if dim is not None:
+            names = (dim,) if isinstance(dim, str) else tuple(dim)
+        else:
+            have = {d.name for d in self.layout.dims}
+            excl = {but} if isinstance(but, str) else set(but or ())
+            names = tuple(n for n in src if n not in have and n not in excl)
+        out = self
+        for n in names:
+            d = src[n]
+            out = out.repeat(n, (d.start, d.stop), d.chart, d.labels)
+            if d.level is not None:
+                out = out.bind(**{n: d.level})
+        return out
+
     def rename(self, **mapping: str) -> "Tensor":
         return self._via(self.layout.rename(**mapping))
 

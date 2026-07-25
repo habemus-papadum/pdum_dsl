@@ -15,10 +15,11 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..assemblage import assemblage, unit
+from ..compute import iota, pointwise
 from ..ir import _dense_like
 from ..layout import Dim
-from ..lifting import contract, iota_of
-from ..mdsl import cos, sin
+from ..lifting import contract
+from ..markers import cos, sin
 from ..scope import scope
 from ..tensor import Tensor
 from .zoo_common import ZooModel, causal_softmax, np_rmsnorm, np_sigmoid, np_softmax, rmsnorm, silu
@@ -64,8 +65,8 @@ def make_llama_block(s, cfg):
         a = rmsnorm(x, rms1g, feat="d", eps=cfg.eps)
         # RoPE angles: theta[t, c] = t * omega_c — positions from iota, exactly
         ot = omega.repeat_like(x, dim="t")
-        th = iota_of(ot, "t") * ot
-        cs, sn = cos(th), sin(th)
+        th = iota(ot, "t") * ot
+        cs, sn = pointwise(cos, th), pointwise(sin, th)
         q = contract(a, wq)  # unique shared axis: "d"
         kk = contract(a.rename(t="s"), wk)
         q0, q1 = _rope(q, cs, sn)
@@ -77,7 +78,7 @@ def make_llama_block(s, cfg):
         o = contract(ctx, wo, axis=("g", "r", "kv"))
         h = x + o
         a2 = rmsnorm(h, rms2g, feat="d", eps=cfg.eps)
-        hh = silu(contract(a2, w1)) * contract(a2, w3)
+        hh = pointwise(silu, contract(a2, w1)) * contract(a2, w3)
         return h + contract(hh, w2)
 
     return block

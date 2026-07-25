@@ -22,6 +22,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..assemblage import assemblage, unit
+from ..compute import pointwise
 from ..ir import _dense_like
 from ..layout import Dim
 from ..lifting import contract
@@ -69,7 +70,7 @@ def make_megatron_block(s, cfg, level):
         h = x + o
         a2 = layernorm(h, ln2g, ln2b, feat="d", eps=cfg.eps)
         a1 = contract(a2, w1)
-        gg = gelu(a1 + b1.repeat_like(a1, dim="t"))
+        gg = pointwise(gelu, a1 + b1.repeat_like(a1, dim="t"))
         m2 = contract(gg, w2, axis=("g", "ml"))  # all-reduce #2
         return h + m2 + b2.repeat_like(h, but="d")
 

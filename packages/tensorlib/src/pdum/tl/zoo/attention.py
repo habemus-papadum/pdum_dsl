@@ -15,10 +15,12 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..assemblage import assemblage, unit
+from ..compute import const_like, iota, pointwise, reduce
 from ..ir import _dense_like
 from ..layout import Dim
-from ..lifting import const_like, contract, iota_of, reduce_over
-from ..mdsl import defreducer, exp, maximum, where
+from ..lifting import contract
+from ..markers import le, lt, where
+from ..mdsl import defreducer, exp, maximum
 from ..scope import scope
 from ..tensor import Tensor
 from .zoo_common import ZooModel, causal_softmax, np_sigmoid, np_softmax, rmsnorm, sigmoid, softmax
@@ -91,10 +93,10 @@ def sliding_attention(T=5, E=3, OD=2, W=2, seed=3) -> ZooModel:
     @unit
     def attend(q):
         sc = contract(q, k)  # unique shared axis: "e"
-        causal = iota_of(sc, "s") <= iota_of(sc, "t")
-        inwin = (iota_of(sc, "t") - iota_of(sc, "s")) < W
+        causal = pointwise(le, iota(sc, "s"), iota(sc, "t"))
+        inwin = pointwise(lt, iota(sc, "t") - iota(sc, "s"), const_like(sc, W))
         m = causal * inwin  # bool AND
-        pr = softmax(where(m, sc, const_like(sc, -1e9)), k="s")
+        pr = softmax(pointwise(where, m, sc, const_like(sc, -1e9)), k="s")
         return contract(pr, v, axis="s")
 
     model = assemblage(attend, scope=root, q=_qlay(T, E))
@@ -120,7 +122,7 @@ def gated_attention(T=5, E=3, OD=2, seed=4) -> ZooModel:
     def attend(q):
         pr = causal_softmax(contract(q, k))
         ctx = contract(pr, v, axis="s")
-        gate = sigmoid(contract(q, wg))
+        gate = pointwise(sigmoid, contract(q, wg))
         return gate * ctx
 
     model = assemblage(attend, scope=root, q=_qlay(T, E))
@@ -180,11 +182,11 @@ def flash_attention(T=5, E=3, OD=2, seed=6, naive=False) -> ZooModel:
     @unit
     def attend_flash(q):
         sc = contract(q, k)
-        m = iota_of(sc, "s") <= iota_of(sc, "t")
-        sm = where(m, sc, const_like(sc, -1e9))
+        m = pointwise(le, iota(sc, "s"), iota(sc, "t"))
+        sm = pointwise(where, m, sc, const_like(sc, -1e9))
         se = sm.repeat_like(v, dim="o")
         ve = v.repeat_like(sm, dim="t")
-        return reduce_over("zoo.flashsm", (se, ve), "s")
+        return reduce(flashsm, (se, ve), "s")
 
     model = assemblage(attend_naive if naive else attend_flash, scope=root, q=_qlay(T, E))
 

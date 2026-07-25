@@ -30,44 +30,25 @@ from dataclasses import dataclass
 
 from . import producer
 from .derivative import TABLE, diff  # noqa: F401 — diff re-exported for consumers
+from .markers import (  # noqa: F401 — the one vocabulary; scalar bodies reference these names
+    cos,
+    eq,
+    exp,
+    ge,
+    gt,
+    le,
+    log,
+    lt,
+    maximum,
+    minimum,
+    ne,
+    sin,
+    sqrt,
+    tanh,
+    where,
+)
 from .nodes import Arg, Const, Node, Prim  # noqa: F401 — re-exported for consumers
 from .registry import MARKERS, REDUCERS
-
-# ----------------------------------------------------------------------
-# the primitive sentinels — resolved by NAME/attribute in lowered bodies
-# ----------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class Primitive:
-    """A marker-body primitive: it lowers by inspection, it is never called."""
-
-    op: str
-    arity: int
-
-    def __call__(self, *args):
-        raise TypeError(
-            f"{self.op} is a marker-body primitive — bodies lower by AST "
-            f"inspection (defmarker/defreducer/lift_step); there is nothing to call"
-        )
-
-
-exp = Primitive("exp", 1)
-log = Primitive("log", 1)
-tanh = Primitive("tanh", 1)
-sqrt = Primitive("sqrt", 1)
-sin = Primitive("sin", 1)
-cos = Primitive("cos", 1)
-maximum = Primitive("maximum", 2)
-minimum = Primitive("minimum", 2)
-where = Primitive("where", 3)
-eq = Primitive("eq", 2)
-ne = Primitive("ne", 2)
-le = Primitive("le", 2)
-lt = Primitive("lt", 2)
-ge = Primitive("ge", 2)
-gt = Primitive("gt", 2)
-
 
 # ----------------------------------------------------------------------
 # composite markers and reducers (registered: programs stay data)

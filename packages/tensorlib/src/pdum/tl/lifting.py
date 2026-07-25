@@ -110,10 +110,7 @@ class _Intrinsic:
         )
 
 
-contract = _Intrinsic("contract")
-iota_of = _Intrinsic("iota_of")
-const_like = _Intrinsic("const_like")
-reduce_over = _Intrinsic("reduce_over")
+
 
 
 def _holds_tensor(v) -> bool:
@@ -124,6 +121,14 @@ def _holds_tensor(v) -> bool:
     if isinstance(v, dict):
         return any(_holds_tensor(x) for x in v.values())
     return False
+
+
+def __getattr__(name):  # lifting.contract stays importable — ONE function
+    if name == "contract":
+        from .compute import contract as c
+
+        return c
+    raise AttributeError(name)
 
 
 @dataclass(frozen=True)
@@ -344,17 +349,9 @@ class _Lifter:
         kwargs = self.kwargs_of(node)
         if isinstance(target, _Intrinsic):
             return getattr(self, f"_i_{target.name}")(*args, **kwargs)
-        from .mdsl import CompositeMarker
-
-        if isinstance(target, CompositeMarker):  # ONE named instr — granularity kept
-            return self.pointwise(target.name, *args, hint=target.name.rsplit(".", 1)[-1])
-        prim = getattr(target, "op", None)
-        if prim is not None:  # a primitive over tensors -> pointwise; over hosts -> refuse
-            if not any(isinstance(a, _T) for a in args):
-                raise ValueError(f"{prim}() over build-time values is host arithmetic — spell it plainly")
-            if kwargs:
-                raise ValueError(f"{prim} takes positional arguments")
-            return self.pointwise(prim, *args)
+        made = self.compute_call(target, args, kwargs)
+        if made is not None:
+            return made
         if callable(target):
             if any(isinstance(a, _T) for a in args) or any(isinstance(v, _T) for v in kwargs.values()):
                 return self.inline(target, args, kwargs)
@@ -364,12 +361,10 @@ class _Lifter:
     # ---- the S.1 method vocabulary --------------------------------------
 
     def tensor_method(self, base: _T, name: str, args: list, kwargs: dict):
-        if name in ("mean", "sum", "max", "min"):  # reduce by dim name(s)
+        if name in ("mean", "sum", "max", "min"):  # one-line sugar over reduce
             dims = args[0] if args else kwargs.get("dims")
             names = (dims,) if isinstance(dims, str) else tuple(dims)
             return self.emit("reduce", (base.var,), name, f=name, dims=names)
-        if name in ("sqrt", "exp", "log", "tanh"):
-            return self.pointwise(name, base, hint=name)
         if name == "extent":  # a STRUCTURAL read: the dim's (start, stop)
             d = base.shadow.dim(args[0])
             return (d.start, d.stop)
@@ -410,15 +405,46 @@ class _Lifter:
             out = self.rep_dim(out, src[n])
         return out
 
-    # ---- the S.1 function vocabulary (intrinsics) -----------------------
+    # ---- the S.1 function vocabulary: THE compute operators -------------
 
-    def _i_iota_of(self, t, dim):
-        if not isinstance(t, _T):
-            raise ValueError("iota_of takes a tensor and a dim name")
-        return self.emit("iota", (t.var,), "iota", name=dim)
+    def compute_call(self, target, args, kwargs):
+        """Recognize the real compute-layer functions by identity — the
+        assemblage surface IS the user-level API (owner ruling, P6):
+        pointwise/reduce/scan/iota/const_like emit here and run eagerly
+        outside. A bare marker call on tensors refuses, pointing at
+        pointwise. Returns None when target is not compute vocabulary."""
+        from . import compute
+        from .markers import Marker
+        from .mdsl import CompositeMarker
 
-    def _i_const_like(self, t, value):
-        return self.const_like(value, t)
+        if target is compute.pointwise:
+            f, *ops = args
+            fname = f.name if isinstance(f, (Marker, CompositeMarker)) else f
+            return self.pointwise(fname, *ops, hint=str(fname).rsplit(".", 1)[-1])
+        if target is compute.reduce or target is compute.scan:
+            f, a, dims = args[0], args[1], args[2] if len(args) > 2 else kwargs.get(
+                "dims" if target is compute.reduce else "dim"
+            )
+            fname = f if isinstance(f, str) else f.name
+            ops = tuple(t.var for t in (a if isinstance(a, tuple) else (a,)))
+            if target is compute.reduce:
+                names = (dims,) if isinstance(dims, str) else tuple(dims)
+                return self.emit("reduce", ops, "red", f=fname, dims=names)
+            return self.emit("scan", ops, "scan", f=fname, dim=dims)
+        if target is compute.contract:
+            return self._i_contract(*args, **kwargs)
+        if target is compute.iota:
+            t, dim = args[0], args[1]
+            return self.emit("iota", (t.var,), "iota", name=dim)
+        if target is compute.const_like:
+            return self.const_like(args[1], args[0])
+        if isinstance(target, (Marker, CompositeMarker)):
+            raise ValueError(
+                f"{target.name} is a marker — tensor-tier application is "
+                f"spelled pointwise({target.name}, ...) (bare names lower "
+                f"only inside scalar marker bodies)"
+            )
+        return None
 
     def _i_contract(self, a, b_, axis=None):
         """Named-axis contraction: sum over the UNIQUE shared axis, or the
