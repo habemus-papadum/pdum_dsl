@@ -140,7 +140,45 @@ descriptors and at L2's assignment, nowhere else.
 terms with trainable masters; byte-blind capacity mistakes impossible.
 **Pinned:** test_precision.
 
-## 11. The seam — observability without instrumentation
+## 11. Named axes, exactly labeled
+
+Axes are NAMES, not positions: alignment is by name, presentation order
+is never semantics, and weights are born structured (wq is (d, nh, hk) —
+heads are dims, never splits). Dims carry exact metadata as first-class
+layout content: coordinate charts with exact rational origins and steps
+(a Yee grid's half-integer stagger is Fraction(1, 2), not a comment),
+categorical labels, value units, and machine levels — physics and
+placement ride the same lattice machinery as everything else.
+**Enables:** staggered-grid PDEs where recharting is the discretization's
+honesty made syntax; unit checking that refuses exp-of-micrometers;
+gradients carrying their primal's charts and placement by construction;
+einsum-class contractions with zero index bookkeeping.
+**Pinned:** test_lifting (FDTD charts survive the fold), test_charts,
+test_signatures, test_placement (gradients carry placement).
+
+## 12. The layout/compute split — free views, few costly primitives
+
+A hard line runs through the IR. On one side: the layout algebra —
+affine maps + box domains + guards, deliberately NOT piecewise — where
+every operation is a zero-cost view requiring ZERO intelligence, and
+every layout op's adjoint is again a layout op. On the other: the few
+primitives that actually incur compute — pointwise, reduce, scan, fold,
+materialize (the one copy; `take` joins at P9) — and everything else is
+built from them. The assumed program form is STRAIGHT-LINE; branching is
+the host-level doctrine over cached segments (recorded in 200 §1.3,
+honestly not yet vetted by use). The pragmatic bet, stated plainly:
+high performance over maximal flexibility — a small primitive set is the
+leverage, because differentiation, cost oracles, signatures, alignment,
+and eventually descent each reason over a handful of cases instead of an
+open op zoo.
+**Enables:** exact op counts and peak-memory from layouts alone; the one
+derivative table staying one page; the BPTT engine deriving flash's
+backward because the case analysis is finite; a reference interpreter
+small enough to be an oracle.
+**Pinned:** test_opcount (exact tallies), test_memory, the COMPUTE.md
+adjoint table realized in autodiff, test_at_kink.
+
+## 13. The seam — observability without instrumentation
 
 Compile-ish acts announce themselves (spec/artifact misses, Program
 builds, adjoint derivations, registrations) on one event seam that costs
