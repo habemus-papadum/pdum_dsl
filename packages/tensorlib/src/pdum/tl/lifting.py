@@ -66,8 +66,8 @@ _METHODS = {
 
 class _Emit:
     """The internal instr accumulator: core naming (claim/derive), nothing
-    more — the machinery that outlived the public Build (deleted at P5;
-    makers and Program/Instr literals are the authoring surfaces)."""
+    more — makers and Program/Instr literals are the public authoring
+    surfaces; this stays private."""
 
     def __init__(self) -> None:
         from pdum.dsl.naming import Namer
@@ -108,9 +108,6 @@ class _Intrinsic:
             f"{self.name} is assemblage vocabulary — it lowers by inspection "
             f"inside a unit or step body; there is nothing to call"
         )
-
-
-
 
 
 def _holds_tensor(v) -> bool:
@@ -448,9 +445,7 @@ class _Lifter:
             raise ValueError(f"{fn.__name__}(...): {exc}") from None
         inner.env.update(ba.arguments)
         outs = inner.run_body(tree)
-        return _T(outs[0], self.shadows[outs[0]]) if len(outs) == 1 else tuple(
-            _T(o, self.shadows[o]) for o in outs
-        )
+        return _T(outs[0], self.shadows[outs[0]]) if len(outs) == 1 else tuple(_T(o, self.shadows[o]) for o in outs)
 
 
 _HOST_BIN = {

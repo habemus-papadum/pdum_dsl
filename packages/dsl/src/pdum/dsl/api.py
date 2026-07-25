@@ -7,11 +7,11 @@ dependence — with a lazy registry import so capture stays reflection-only.
 
 Batteries note: the kernel registers nothing into DEFAULT itself — but
 importing ANY ``pdum.dsl.*`` module executes the package ``__init__``, which
-wires the base dialect and the Python backend (Python import semantics: there
-is no "bare" kernel import from outside). ``NoBackend`` and an empty rule
-table are therefore the experience of a hand-built ``Registry()``, which is
-exactly the object the chapters use to show each seam; populate one
-explicitly via ``stdlib.install(reg)`` / ``backends.python.install(reg)``.
+wires the base dialect and the reference oracle (Python import semantics:
+there is no "bare" kernel import from outside). ``NoBackend`` and an empty
+rule table are therefore the experience of a hand-built ``Registry()``,
+which is exactly the object the chapters use to show each seam; populate
+one explicitly via ``pdum.dsl.install(reg)``.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from .capture import Handle, make_handle
 
 def jit(kind: str = "device") -> Callable[[Callable], Handle]:
     """Decorator: phase-A capture, compile-free. ``@jit(kind="fragment")``
-    returns a :class:`~pdum.dsl.kernel.capture.Handle`; calling the Handle
+    returns a :class:`~pdum.dsl.capture.Handle`; calling the Handle
     enters the two-tier dispatch.
 
     No ``table=`` parameter by design: dispatch fingerprints through the

@@ -1,4 +1,4 @@
-"""Cache-backed registries — the process dicts died at P3 (200 §1.5, §3.2).
+"""Cache-backed registries (200 §1.5, §3.2) — never plain process dicts.
 
 A registry here is a name-keyed cache on the core's ``Memo`` — instrumented
 by construction (``<kind>.miss`` events, compile spans, per-key futures) —

@@ -7,8 +7,8 @@ body is lowered by inspection, which is exactly what the marker-granularity
 gate demands: one marker is one named, inspectable body tree over
 primitives, never an opaque call.
 
-Straight-line is enforced AT LOWERING (the tracer refused at trace time via
-``__bool__``): assignments and a final return, no control flow — ``where``
+Straight-line is enforced AT LOWERING: assignments and a final return,
+no control flow — ``where``
 is the branch, data flow. Comparisons lower directly (``L.m >= R.m`` is
 ``ge``); records construct, destructure by attribute, and return
 (record-typed reducer state); tuples subscript by constant and destructure.
@@ -26,8 +26,7 @@ from functools import lru_cache
 from .nodes import Arg, Const, Node, Prim
 
 _STRAIGHT_LINE = (
-    "marker bodies are straight-line: {what} cannot be lowered — "
-    "use where(cond, a, b); the branch is data flow here"
+    "marker bodies are straight-line: {what} cannot be lowered — use where(cond, a, b); the branch is data flow here"
 )
 
 _CMP = {ast.Eq: "eq", ast.NotEq: "ne", ast.LtE: "le", ast.Lt: "lt", ast.GtE: "ge", ast.Gt: "gt"}
@@ -92,7 +91,7 @@ def _fn_ast(fn) -> ast.FunctionDef | ast.Lambda:
         lambdas = [n for n in ast.walk(tree) if isinstance(n, ast.Lambda)]
         if len(lambdas) == 1:
             return lambdas[0]
-    except (OSError, SyntaxError):
+    except OSError, SyntaxError:
         pass
     try:  # a lambda inside a larger statement: find it by line in the file's AST
         lambdas = [
@@ -100,7 +99,7 @@ def _fn_ast(fn) -> ast.FunctionDef | ast.Lambda:
             for n in ast.walk(_file_ast(code.co_filename))
             if isinstance(n, ast.Lambda) and n.lineno == code.co_firstlineno
         ]
-    except (OSError, SyntaxError):
+    except OSError, SyntaxError:
         lambdas = []
     if len(lambdas) == 1:
         return lambdas[0]

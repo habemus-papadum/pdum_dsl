@@ -151,7 +151,7 @@ def compile_source(source: str, name: str = "kernel"):
 
 
 CODE_FOR_OP: dict = {
-    "core.tuple": None,  # native tuple spelling; intrinsics add math.* templates
+    "core.tuple": None,  # native tuple spelling; intrinsics add np.* templates
 }
 
 REFERENCE = Backend(

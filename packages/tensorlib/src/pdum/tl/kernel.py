@@ -1,12 +1,17 @@
 """@compute kernels on the reference evaluator (200 §S.3, P7).
 
-A kernel body speaks the shared expression syntax with two additions:
-``thread_idx("y", "x")`` — the AMBIENT intrinsic (thread coordinates are
-never positional parameters) — and explicit STORES into writable
-arguments (``img[y, x] = v``). Writability is inferred from the body: an
-argument is writable iff it is stored to. Ordering is TOKEN THREADING:
-one implicit token threads through all stores in statement order (the
-frontend policy); tokens never appear in user syntax.
+A kernel body IS the value language plus the dialect extensions (the
+one-body-language law, 200 §S.3 amendment): the thread AMBIENT
+(``thread_idx("y", "x")`` — coordinates are never positional
+parameters), explicit token-threaded STORES into writable arguments
+(``img[y, x] = v``), and — arriving P8/P9 — buffer READS at computed
+indices. Function-valued arguments apply at the thread coordinates,
+including tuple-returning ones (``v, (dy, dx) = f(y, x)`` — the
+destructuring pattern declares the structure). Writability is inferred
+from the body: an argument is writable iff it is stored to. Ordering is
+TOKEN THREADING: one implicit token threads through all stores in
+statement order (the frontend policy); tokens never appear in user
+syntax.
 
 Claiming is TAGLESS (S.4 amendment): every uniquely-named binding is a
 claimable site — ``config(taps={"dist": t})`` binds the binding named
@@ -29,9 +34,11 @@ recorded: identity rides the FnType fp in the key; values rebind at every
 launch; cell guards are not needed at the reference tier (the device tier
 revisits when argument handles bake into artifacts).
 
-**Launch config is invocation-only** — it rides the launcher and never
-enters any key; threads-per-block becomes a value-specialized bracket
-when device backends exist.
+**Invocation is the bracket** — ``kernel[config(blocks, threads,
+taps={...})](args)``; geometry is invocation-only and never enters any
+key (threads-per-block becomes the value-specialized carve-out when
+device backends exist); the tap NAME SET specializes, tap tensors are
+invocation data.
 
 Day-one contract (210): a writable argument overlapping any READABLE
 argument refuses at dispatch with the ping-pong message; in-place returns
@@ -48,7 +55,6 @@ import numpy as np
 from pdum.dsl import events
 from pdum.dsl.cache import Memo
 
-from .compute import _tensor_like
 from .ir import Program, run
 from .lifting import _T, _Intrinsic, _Lifter
 from .markers import Marker
@@ -60,11 +66,6 @@ KERNELS = Memo("kernel", capacity=1 << 30)
 _ARG_BINDINGS: dict[str, object] = {}  # marker name -> the CURRENT handle (per launch)
 
 thread_idx = _Intrinsic("thread_idx")
-
-
-def grid(blocks=None, threads=None) -> dict:
-    """Launch config: pure invocation data — never part of any key."""
-    return {"blocks": blocks, "threads": threads}
 
 
 @dataclass(frozen=True)
@@ -108,7 +109,7 @@ def config(blocks=None, threads=None, taps=None, shared_mem=None) -> Config:
 class ComputeKernel:
     fn: object
 
-    def __call__(self, *args, launch: dict | None = None):
+    def __call__(self, *args):
         return self._invoke(Config(), args)
 
     def __getitem__(self, cfg: Config) -> "_Bound":
@@ -462,6 +463,4 @@ def _compile(fn, args, tap_names=()) -> _Artifact:
     )
 
 
-__all__ = ["ComputeKernel", "Config", "compute", "config", "grid", "shared", "thread_idx"]
-
-_ = _tensor_like  # noqa: F841 — keep the import surface stable for kernels
+__all__ = ["ComputeKernel", "Config", "compute", "config", "shared", "thread_idx"]

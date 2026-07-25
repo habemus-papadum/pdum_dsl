@@ -12,7 +12,7 @@ from pdum.dsl import events, jit, op
 from pdum.dsl.reference import reference
 from pdum.tl import Tensor
 from pdum.tl.compute import iota, pointwise
-from pdum.tl.kernel import KERNELS, compute, grid, thread_idx
+from pdum.tl.kernel import KERNELS, compute, config, thread_idx
 from pdum.tl.zoo.zoo_common import GELU_C, np_gelu
 from pdum.tl.zoo.zoo_common import gelu as gelu_marker
 
@@ -57,7 +57,7 @@ def _expected(f, shape):
 def test_the_s3_example_runs_on_the_reference_evaluator():
     f = twill(4.0, 3.0) | zoom(0.5)
     img = T(np.zeros((3, 4)), ("y", "x"))
-    shader(f, img, launch=grid(blocks=(1, 1), threads=(16, 16)))
+    shader[config(blocks=(1, 1), threads=(16, 16))](f, img)
     np.testing.assert_allclose(img.to_numpy(), _expected(f, (3, 4)), rtol=1e-12)
 
 
@@ -127,7 +127,7 @@ def test_key_discipline_shape_miss_value_hit_launch_never_keys_fn_swap_miss():
         # VALUE HIT: new captured values, same pipeline shape
         shader(twill(9.0, -2.0) | zoom(3.0), img)
         # LAUNCH NEVER KEYS: any launch config, same entry
-        shader(twill(1.0, 0.0) | zoom(1.0), img, launch=grid(blocks=(9, 9), threads=(2, 2)))
+        shader[config(blocks=(9, 9), threads=(2, 2))](twill(1.0, 0.0) | zoom(1.0), img)
     with pytest.raises(events.EventForbidden):
         with events.forbid("kernel.miss"):  # SHAPE MISS: a new lattice is a new artifact
             shader(twill(1.0, 0.0) | zoom(1.0), T(np.zeros((5, 5)), ("y", "x")))
@@ -254,7 +254,7 @@ def test_fn_arg_with_loops_and_module_global_name():
 # tap() call — every uniquely-named binding IS a site.
 
 
-from pdum.tl.kernel import config, shared  # noqa: E402
+from pdum.tl.kernel import shared  # noqa: E402
 
 
 @compute

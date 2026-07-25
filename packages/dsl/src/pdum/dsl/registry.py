@@ -27,8 +27,9 @@ predecessors via the cache's code map.
 ``Backend`` carries name/render/compile/fp plus the step-9 columns
 (``plan``, ``param_types``, ``make_launcher``). Still deferred from §2.10:
 ``code_for_op``-gated decompositions and a real ``params_key`` column —
-type_map was absorbed into the wgsl renderer's tables, and the fragment
-target format rides ``fp`` (coarse but sound) until multiple formats exist.
+per-target type maps belong to each device renderer's tables, and the
+fragment target format rides ``fp`` (coarse but sound) until multiple
+formats exist.
 
 Book: ``docs/book/ch09-end-to-end-on-cpu.ipynb``.
 """
@@ -56,7 +57,7 @@ class Backend:
     """A capability record (§2.10; the step-9 columns arrive with the second
     backend). The three optional callables let a backend own its layout, its
     parameter convention, and its launcher without the kernel knowing any
-    target's shape — the python backend takes every default."""
+    target's shape — the reference backend takes every default."""
 
     name: str
     render: Callable  # (region, plan, backend) -> source text; backend = THIS record (spelling table)

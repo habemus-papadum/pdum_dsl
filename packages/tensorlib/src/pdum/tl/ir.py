@@ -67,7 +67,15 @@ def reducer(name: str):
 
 _LEAF_OPS = ("input", "const", "iota", "random", "token")
 _COMPUTE_OPS = (
-    "pointwise", "reduce", "scan", "materialize", "with_value_units", "fold", "round_to", "repeat_like", "store"
+    "pointwise",
+    "reduce",
+    "scan",
+    "materialize",
+    "with_value_units",
+    "fold",
+    "round_to",
+    "repeat_like",
+    "store",
 )
 
 

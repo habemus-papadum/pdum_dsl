@@ -109,6 +109,19 @@ def test_value_and_grad_refuses_an_unknown_wrt_name():
         reference(value_and_grad(go, wrt=("z",)))(1.0, 2.0)
 
 
+def test_bare_marker_calls_and_operators_share_one_op():
+    """The clarity-review catch: value_op sends core-owned arithmetic to
+    core.* — a bare ``mul(y, x)`` and ``y * x`` are the SAME op, so the
+    tangent engine differentiates both (one vocabulary, one table)."""
+
+    @jit()
+    def go(y, x):
+        s = mul(y, x)  # noqa: F821 — the marker call IS core.mul
+        return with_respect_to(s, y)  # noqa: F821
+
+    assert reference(go)(2.0, 3.0) == 3.0
+
+
 # --- the numpy-authority amendment (200 §S.2) --------------------------------
 
 

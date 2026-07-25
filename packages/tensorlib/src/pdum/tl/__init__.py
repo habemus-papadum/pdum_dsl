@@ -20,7 +20,7 @@ from .chart import Chart, characteristic, chart
 from .compute import Marker, Reducer, iota, pointwise, pw, red, reduce, scan
 from .dtypes import CARRIERS, as_dtype, bfloat16, carrier_of
 from .guarded import Guard, GuardedLayout, pad_layout, stencil_layout
-from .kernel import compute, grid, thread_idx
+from .kernel import Config, compute, config, thread_idx
 from .layout import Dim, Injectivity, Layout, as_range
 from .mdsl import CompositeMarker, CompositeReducer, defmarker, defreducer, node_digest
 from .memory import MemoryReport, peak_memory
@@ -56,7 +56,8 @@ __all__ = [
     "defreducer",
     "compute",
     "fold_in",
-    "grid",
+    "config",
+    "Config",
     "thread_idx",
     "infer_signatures",
     "marker_signature",

@@ -12,8 +12,9 @@ dialect's, chosen deliberately:
   auto-insert casts in ITS pack; this one does not.
 - ``float(x)`` / ``int(x)`` / ``bool(x)`` are the base cast vocabulary,
   lowering to explicit ``core.cast`` (visible in IR, inside the content key).
-- Calls resolve: cast builtins -> captured-Handle inlining -> loud
-  MissingRule (the overload surface arrives with the Registry, step 8).
+- Calls resolve, in order: cast builtins -> Record methods -> captured-
+  Handle inlining -> lowering macros -> Marker overloads (the vocabulary)
+  -> string intrinsics -> DSL-written batteries -> loud MissingRule.
 """
 
 from __future__ import annotations

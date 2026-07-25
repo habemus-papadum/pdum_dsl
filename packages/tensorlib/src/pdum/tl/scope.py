@@ -14,7 +14,9 @@ prefix view, and ``s.param("wq", ...)`` declares the leaf ``h.3.wq``.
   with @compute.)
 - **taps**: ``tap(x, s / "k")`` marks a potential output under its site
   path and returns x unchanged; unrequested taps are pruned and cost
-  nothing.
+  nothing. (This is the ASSEMBLAGE-tier mechanism — scope paths, build
+  time. Kernel taps are different: tagless claim sites bound via
+  ``config(taps={...})``, kernel.py.)
 - **policies**: an open string-keyed set (``s.with_(mode="eval")``) the
   scope never interprets — and they are IDENTITY-BEARING: the policy map
   folds into build identity, so a train build and an eval build can never

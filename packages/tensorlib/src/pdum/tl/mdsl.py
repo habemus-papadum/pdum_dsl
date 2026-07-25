@@ -3,7 +3,7 @@
 The Node schema (Arg / Const / Prim) lives in nodes.py — the declared
 stability boundary. Bodies lower through the AST PRODUCER (producer.py):
 one named, inspectable tree over primitives per marker — by inspection,
-never execution (the Sym tracer died at P4). Declarations register into
+never execution. Declarations register into
 the cache-backed registries (registry.py — idempotent,
 derivation-under-cache, conflict-refusing); partial derivatives are
 DERIVED by tree rewriting over the one derivative table (derivative.py),

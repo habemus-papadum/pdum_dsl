@@ -1,4 +1,5 @@
-"""The two computational primitives + iota — reference (numpy) semantics.
+"""The computational primitives — pointwise/reduce/scan + iota, repeat_like
+(THE alignment primitive), contract, const_like — reference (numpy) semantics.
 
 This is the deliberately inefficient correctness layer from COMPUTE.md §3:
 check alignment, export operands to numpy, apply the marker's numpy

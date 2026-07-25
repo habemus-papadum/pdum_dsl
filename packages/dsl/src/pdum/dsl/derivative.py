@@ -131,18 +131,12 @@ def diff(node: Node, i: int) -> Node:
 
 
 # --- the value-tier engine: forward seeding over core IR ---------------------
-# The op<->base-name maps are GENERATED from the table (never hand-kept):
-# operators and structure stay core-owned; every other row is a pw.* op.
+# The op<->base-name maps derive from the vocabulary's ONE core-owned map
+# (markers.CORE_OWNED) plus the table's row set — never a second hand copy.
 
-_PRED_SET = {"lt", "gt", "le", "ge", "eq", "ne"}
-_CORE_OWNED = {
-    "add": "core.add",
-    "sub": "core.sub",
-    "neg": "core.neg",
-    "mul": "core.mul",
-    "div": "core.div",
-    "where": "core.select",
-}  # noqa: E501
+from .markers import CORE_OWNED as _CORE_OWNED  # noqa: E402 — after TABLE (markers reads it lazily)
+from .markers import PREDS as _PRED_SET  # noqa: E402
+
 _TABLE_KEY = {op: base for base, op in _CORE_OWNED.items()} | {
     f"pw.{n}": n for n in TABLE if n not in _CORE_OWNED and n not in _PRED_SET
 }

@@ -27,8 +27,7 @@ Nothing here touches the kernel; ``install(registry)`` is the whole API.
 
 from __future__ import annotations
 
-from .derivative import TABLE
-from .markers import Marker, floor, maximum, minimum, pw, value_op
+from .markers import CORE_OWNED, PREDS, Marker, floor, maximum, minimum, pw, value_op
 from .surfaces import defop, overload, spell
 
 _REF = "reference"
@@ -50,7 +49,6 @@ def _binary_same(args, attrs, regions):
 
 
 _TYPE_RULES = {1: _unary_float, 2: _binary_same}
-_PREDS = {"eq", "ne", "le", "lt", "ge", "gt"}  # comparisons ride core.cmp
 
 
 def _pw_markers() -> list[Marker]:
@@ -58,7 +56,7 @@ def _pw_markers() -> list[Marker]:
     (operators and where stay core-owned; predicates ride core.cmp)."""
     out = []
     for m in vars(pw).values():
-        if isinstance(m, Marker) and value_op(m).startswith("pw.") and m.name not in _PREDS:
+        if isinstance(m, Marker) and value_op(m).startswith("pw.") and m.name not in PREDS:
             out.append(m)
     return out
 
@@ -95,12 +93,13 @@ _DSL_BATTERIES = (clamp, mix, step, smoothstep, fract)
 
 def install(registry) -> None:
     for m in _pw_markers():
-        op, arity = value_op(m), len(TABLE[m.name])
+        op, arity = value_op(m), m.arity
         defop(registry, op, _TYPE_RULES[arity])
         registry.overloads[m.name] = m  # the MARKER is the overload value
         if _REF in registry.backends:
             args = ", ".join("{%d}" % i for i in range(arity))
             spell(registry, _REF, op, f"np.{m.fn.__name__}({args})")
-    registry.overloads["where"] = pw.where  # op = core.select (structure stays core)
+    for name in CORE_OWNED:  # core-owned markers: call names only — ops are native
+        registry.overloads[name] = getattr(pw, name)
     for fn in _DSL_BATTERIES:
         overload(registry, fn.__name__)(fn)

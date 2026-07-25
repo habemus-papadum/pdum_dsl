@@ -5,8 +5,8 @@ in the DEEPEST region that dominates all its uses, so branch-exclusive work
 stays lazy inside its `if`/`else` while anything shared hoists to the join
 point (where some live path needs it anyway — the guard-then-divide fix,
 step-8 review). The owner computation is the part most likely to drift
-silently if duplicated; the house rule said extract at the third copy, and
-the WGSL renderer was the third copy.
+silently if duplicated; the house rule says extract at the third copy —
+the reference renderer consumes it today, device renderers will be next.
 
 Contract: ``emit_dominated(region, statement, branch_join)`` returns
 ``(lines, names, result_node)``. The backend supplies only spelling:

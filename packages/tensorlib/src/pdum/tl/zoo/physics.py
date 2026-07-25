@@ -35,8 +35,8 @@ def _ghost(u, dim, extent, delta):
 
 
 def _heat_step(u, n: Literal[int], m: Literal[int], alpha: Literal[float]):
-    nsum = _ghost(u, "x", (0, n), 1) + _ghost(u, "x", (0, n), -1) + _ghost(u, "y", (0, m), 1) + _ghost(
-        u, "y", (0, m), -1
+    nsum = (
+        _ghost(u, "x", (0, n), 1) + _ghost(u, "x", (0, n), -1) + _ghost(u, "y", (0, m), 1) + _ghost(u, "y", (0, m), -1)
     )
     lap = nsum - 4.0 * u
     return u + alpha * lap

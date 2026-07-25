@@ -66,10 +66,24 @@ class Marker:
         return self.name
 
 
+# THE core-owned map and the predicate set — one home; the tangent engine's
+# op<->name tables and intrinsics' registration walk both derive from these.
+CORE_OWNED = {  # operators and structure the value language spells itself
+    "add": "core.add",
+    "sub": "core.sub",
+    "neg": "core.neg",
+    "mul": "core.mul",
+    "div": "core.div",
+    "where": "core.select",
+}
+PREDS = frozenset({"eq", "ne", "le", "lt", "ge", "gt"})  # comparisons ride core.cmp
+
+
 def value_op(marker: Marker) -> str:
-    """The value-tier IR op this marker names. Structure stays core-owned
-    (``where`` IS core.select); function primitives are the pw dialect."""
-    return "core.select" if marker.name == "where" else f"pw.{marker.name}"
+    """The value-tier IR op this marker names: core-owned for operators and
+    structure, the pw dialect for function primitives — so a bare
+    ``add(x, y)`` and ``x + y`` are the SAME op, one derivative row."""
+    return CORE_OWNED.get(marker.name, f"pw.{marker.name}")
 
 
 class pw:

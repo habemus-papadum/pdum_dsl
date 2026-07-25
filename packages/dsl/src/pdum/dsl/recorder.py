@@ -185,16 +185,6 @@ class Recording:
             )
         return "\n".join(rows)
 
-    def timeline(self, title: str = "events"):
-        from .bench import Timeline
-
-        tl, cursor = Timeline(title=title), 0.0
-        for b in sorted(self._buckets.values(), key=lambda b: -b.total_ns):
-            if b.total_ns:
-                tl.add(b.name, cursor, b.total_ns / 1e9, "host")
-                cursor += b.total_ns / 1e9
-        return tl
-
 
 def _fmt(ns: float) -> str:
     for scale, unit in ((1e9, "s"), (1e6, "ms"), (1e3, "µs")):
