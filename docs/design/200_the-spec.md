@@ -913,12 +913,27 @@ my_shader(f, img, launch=grid(blocks=ceil_div(img.shape, 16), threads=(16, 16)))
 **S.3 amendment (P7, owner-ruled): the one-body-language law.** There
 is ONE body language — the value language. A kernel body is the value
 language plus exactly three dialect extensions: the thread **ambient**
-(`thread_idx`, and `global_thread_idx` visible inside device functions
-even after their coordinates were transformed — transforms change what
-you sample, never who you are), token-threaded **stores**, and buffer
-**reads** (`tex[i, j]` at computed integer indices, gradient-free
-through the indices; statically-known loops over element loads unroll
-to scalar operations). The scalar marker subset is the language's
+(the RAW lattice pair `block_idx`/`thread_idx`; visible inside device
+functions even after their coordinates were transformed — transforms
+change what you sample, never who you are), token-threaded **stores**,
+and buffer **reads** (`tex[i, j]` at computed integer indices,
+gradient-free through the indices; statically-known loops over element
+loads unroll to scalar operations). *The ambient's primitives are the
+raws* — the direction is FORCED by the affine-only layout algebra:
+raw→global is affine (`by·T + ty`) while global→raw is div/mod,
+piecewise, banned — so a tensor already split to the (block, thread)
+lattice is indexed by the raw pair directly, respecting the split.
+`global_thread_idx` is NOT an intrinsic: it is a stdlib device
+function over the raws — the dialect defining its own convenience,
+the law applied to itself — and being a NAMED declaration with a
+reference body, a backend may bind the name to a hardware built-in
+(Metal's `thread_position_in_grid`) or take the computed floor (CUDA):
+declarations over recognition, with named axes (220 §11) making the
+vendors' index-component conventions a binding detail, never
+author-visible. Under the default geometry — one block spanning the
+writable lattice — `thread_idx` coincides with the global coordinate,
+which is why every kernel above reads unchanged. The scalar marker
+subset is the language's
 effect-free straight-line core; device functions ARE value-language
 kernels and inline by capture-and-call. There are never two syntaxes
 and never two derivative pipelines: **one forward-seeding engine over

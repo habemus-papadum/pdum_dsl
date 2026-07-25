@@ -12,9 +12,11 @@ ratified spelling (owner-ruled). The governing law (200 §S.3 amendment,
     (forward seeding over the one derivative table) serves every
     per-element tier.
 
-Names used below (global_thread_idx, with_respect_to, value_and_grad,
-shared_alloc, shared_bind, barrier, sample) arrive with their
-implementations; this file records the spellings.
+Names used below (block_idx, global_thread_idx, with_respect_to,
+value_and_grad, shared_alloc, shared_bind, barrier, sample) arrive with
+their implementations; this file records the spellings. The ambient's
+primitives are the RAW block/thread pair — global_thread_idx is a
+stdlib device function over them, not an intrinsic.
 """
 
 import numpy as np
@@ -31,7 +33,51 @@ def T(arr, names):
     return Tensor.from_numpy(np.asarray(arr, dtype=np.float64), names)
 
 
-# --- P8: the ambient generalizes to device functions -------------------------
+# --- P8: the ambient is the RAW lattice; global is a device function ---------
+
+
+@P8
+def test_raw_block_thread_ambient_and_derived_global():
+    """The ambient PRIMITIVES are the raw lattice pair — block_idx and
+    thread_idx (within block; under the default one-block-spans-the-
+    lattice geometry the two coordinates coincide, which is why every
+    existing kernel reads unchanged). global_thread_idx is NOT an
+    intrinsic: it is a stdlib DEVICE FUNCTION over the raws (by·T + ty)
+    — the dialect defining its own convenience, the law applied to
+    itself. A backend may bind the NAME to a hardware built-in (Metal's
+    thread_position_in_grid) or take the computed floor (CUDA) —
+    declarations over recognition; named axes make the vendors'
+    index-component conventions a binding detail."""
+
+    @compute
+    def k(img):
+        by, bx = block_idx("y", "x")  # noqa: F821 — raw
+        ty, tx = thread_idx("y", "x")  # raw: within block under explicit geometry
+        gy, gx = global_thread_idx("y", "x")  # noqa: F821 — derived
+        img[gy, gx] = (gy - (by * 8.0 + ty)) + (gx - (bx * 8.0 + tx))  # identity → 0
+
+    img = T(np.ones((16, 16)), ("y", "x"))
+    k[config(blocks=(2, 2), threads=(8, 8))](img)
+    np.testing.assert_allclose(img.to_numpy(), 0.0)
+
+
+@P8
+def test_split_aligned_tensors_index_by_raw_coordinates():
+    """A tensor already split to the (block, thread) lattice is indexed
+    by the RAW pair directly — respecting the split, no global round
+    trip. The direction is FORCED by the affine-only layout algebra:
+    raw→global is affine (by·T + ty); global→raw is div/mod — piecewise,
+    banned. So the raws are the primitives and global is sugar."""
+
+    @compute
+    def k(tiled):
+        (by,) = block_idx("y")  # noqa: F821
+        (ty,) = thread_idx("y")
+        tiled[by, ty] = by * 8.0 + ty  # the global coordinate, via raws alone
+
+    base = T(np.zeros(16), ("y",))
+    k[config(blocks=(2,), threads=(8,))](base.split("y", by=2, ty=8))
+    np.testing.assert_allclose(base.to_numpy(), np.arange(16.0))
 
 
 @P8
