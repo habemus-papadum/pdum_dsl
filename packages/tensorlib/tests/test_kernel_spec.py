@@ -12,11 +12,13 @@ ratified spelling (owner-ruled). The governing law (200 §S.3 amendment,
     (forward seeding over the one derivative table) serves every
     per-element tier.
 
-Names used below (block_idx, global_thread_idx, with_respect_to,
-value_and_grad, shared_alloc, shared_bind, barrier, sample) arrive with
-their implementations; this file records the spellings. The ambient's
-primitives are the RAW block/thread pair — global_thread_idx is a
-stdlib device function over them, not an intrinsic.
+Names used below (block_idx, grid_layout, global_thread_idx,
+with_respect_to, value_and_grad, shared_alloc, shared_bind, barrier,
+sample) arrive with their implementations; this file records the
+spellings. The ambient's primitives are the RAW block/thread pair plus
+the launch grid reified as a LAYOUT; global_thread_idx is a stdlib
+device function over the full triple (block, thread, grid) — layout
+evaluation, not an intrinsic.
 """
 
 import numpy as np
@@ -38,22 +40,28 @@ def T(arr, names):
 
 @P8
 def test_raw_block_thread_ambient_and_derived_global():
-    """The ambient PRIMITIVES are the raw lattice pair — block_idx and
+    """The ambient PRIMITIVES: the raw lattice pair — block_idx and
     thread_idx (within block; under the default one-block-spans-the-
-    lattice geometry the two coordinates coincide, which is why every
-    existing kernel reads unchanged). global_thread_idx is NOT an
-    intrinsic: it is a stdlib DEVICE FUNCTION over the raws (by·T + ty)
-    — the dialect defining its own convenience, the law applied to
-    itself. A backend may bind the NAME to a hardware built-in (Metal's
+    lattice geometry the two coincide, which is why every existing
+    kernel reads unchanged) — plus grid_layout(), the launch geometry
+    reified as a LAYOUT with block and thread levels per axis
+    (config(blocks, threads) is its constructor sugar; the same
+    split+bind object as the tile tier and placement's machine-bound
+    dims). global_thread_idx is NOT an intrinsic: it is a stdlib
+    DEVICE FUNCTION taking the full triple — (block, thread, grid) —
+    and it IS layout evaluation: the grid's affine map applied at the
+    raw pair. Nothing ambient hides inside it. A backend may bind the
+    NAME to a hardware built-in when g is the launch grid (Metal's
     thread_position_in_grid) or take the computed floor (CUDA) —
     declarations over recognition; named axes make the vendors'
     index-component conventions a binding detail."""
 
     @compute
     def k(img):
+        g = grid_layout()  # noqa: F821 — ambient: the launch grid AS A LAYOUT
         by, bx = block_idx("y", "x")  # noqa: F821 — raw
         ty, tx = thread_idx("y", "x")  # raw: within block under explicit geometry
-        gy, gx = global_thread_idx("y", "x")  # noqa: F821 — derived
+        gy, gx = global_thread_idx((by, bx), (ty, tx), g)  # noqa: F821 — the triple
         img[gy, gx] = (gy - (by * 8.0 + ty)) + (gx - (bx * 8.0 + tx))  # identity → 0
 
     img = T(np.ones((16, 16)), ("y", "x"))
@@ -90,7 +98,8 @@ def test_global_thread_idx_survives_coordinate_transforms():
     def probe():
         @jit()
         def go(y, x):
-            gy, gx = global_thread_idx("y", "x")  # noqa: F821
+            g = grid_layout()  # noqa: F821 — the ambient reaches device functions too
+            gy, gx = global_thread_idx(block_idx("y", "x"), thread_idx("y", "x"), g)  # noqa: F821
             return (y - gy) + (x - gx)  # zero iff untransformed
 
         return go

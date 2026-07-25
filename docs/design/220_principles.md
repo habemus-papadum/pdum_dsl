@@ -201,9 +201,11 @@ seeding over the one table) serves autodiff at the tensor tier,
 `with_respect_to` in a local scope, and `fwidth`-style ambient
 derivatives in a fragment shader — three features, one mechanism.
 The ambient itself obeys the law: its primitives are the raw
-block/thread pair (forced by the affine-only algebra — global→raw is
-div/mod, banned), and `global_thread_idx` is a stdlib device function
-over them, name-bindable to a vendor built-in.
+block/thread pair plus the launch grid reified as a layout (forced by
+the affine-only algebra — global→raw is div/mod, banned), and
+`global_thread_idx(block, thread, g)` is a stdlib device function —
+layout evaluation at the scalar tier, name-bindable to a vendor
+built-in.
 Invocation stays out of identity by law, stated per config component:
 launch geometry is launcher data (threads the one value-specialized
 carve-out), tap NAMES specialize while tap tensors are invocation data,
