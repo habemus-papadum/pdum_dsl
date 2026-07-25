@@ -66,7 +66,7 @@ def reducer(name: str):
 
 
 _LEAF_OPS = ("input", "const", "iota", "random")
-_COMPUTE_OPS = ("pointwise", "reduce", "scan", "materialize", "with_value_units", "fold")
+_COMPUTE_OPS = ("pointwise", "reduce", "scan", "materialize", "with_value_units", "fold", "round_to")
 
 
 @dataclass(frozen=True, eq=False)
@@ -280,6 +280,18 @@ def _run_fold(ins: Instr, env: dict) -> Tensor:
     return _tensor_like(arr, shadow.dims)
 
 
+def _round_to(t: Tensor, encoding) -> Tensor:
+    """The ONE sanctioned precision op (200 §4): encode∘decode over the
+    interior value — exact, explicit, boundary-shaped. The value stays
+    carrier-valued; the encoding is the op's parameter, never the type."""
+    from .compute import _tensor_like
+
+    order = t.names
+    arr = encoding.round_trip(t.to_numpy(order=order) if order else t.to_numpy())
+    dims = tuple(t.layout.dim(n) for n in order)
+    return _tensor_like(np.asarray(arr, dtype=np.float64), dims, value_units=t.value_units)
+
+
 def _materialize(t: Tensor, p) -> Tensor:
     from .compute import _tensor_like
 
@@ -331,6 +343,8 @@ def run(prog: Program, inputs: dict[str, Tensor]) -> dict[str, Tensor]:
             )
         elif ins.op == "materialize":
             env[ins.var] = _materialize(env[ins.operands[0]], ins.params)
+        elif ins.op == "round_to":
+            env[ins.var] = _round_to(env[ins.operands[0]], ins.params["encoding"])
         elif ins.op == "fold":
             env[ins.var] = _run_fold(ins, env)
         elif ins.op == "with_value_units":
@@ -398,6 +412,8 @@ def infer_instr(ins: Instr, shadows: dict, input_layouts: dict | None = None):
         src = shadows[ins.operands[0]]
         dims = tuple(replace(src.dim(n), chart=None, labels=None) for n in order)
         return _dense_like(dims)
+    if ins.op == "round_to":
+        return _dense_like(shadows[ins.operands[0]].dims)
     if ins.op == "fold":
         return _fold_infer(ins, shadows)
     if ins.op == "pad":

@@ -66,6 +66,12 @@ class Tensor:
         arr = np.asarray(arr)
         if arr.ndim != len(names):
             raise ValueError(f"{len(names)} names for {arr.ndim}-d array")
+        if np.issubdtype(arr.dtype, np.floating) and not np.isfinite(arr).all():
+            raise ValueError(
+                "inf/nan bit patterns refuse at decode (200 §4) — from_numpy is "
+                "the degenerate boundary act; mask with finite sentinels instead "
+                "(an extended-real carrier is a recorded future opt-in)"
+            )
         carr = np.ascontiguousarray(arr)
         buf = Buffer(nbytes=carr.nbytes, data=host_view(carr))
         dims = tuple(Dim(n, stride=s, start=0, stop=e) for n, s, e in zip(names, carr.strides, carr.shape))

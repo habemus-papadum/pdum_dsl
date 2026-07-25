@@ -60,6 +60,7 @@ _METHODS = {
     "bind": ("bind", lambda a, kw: {"levels": kw}),
     "simplify": ("simplify", lambda a, kw: {}),
     "with_value_units": ("with_value_units", lambda a, kw: {"value_units": a[0]}),
+    "round_to": ("round_to", lambda a, kw: {"encoding": a[0], **kw}),
 }
 
 

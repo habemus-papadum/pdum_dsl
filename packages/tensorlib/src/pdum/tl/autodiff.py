@@ -878,7 +878,12 @@ def _grad(
         if ins.op in ("input", "const", "iota", "random"):
             continue  # leaves: gradient stops (iota/const/random are gradient-free —
             # a mask field acts as a constant; AD through dropout needs no rule)
-        if ins.op == "pointwise":
+        if ins.op == "round_to":
+            # STRAIGHT-THROUGH by default (200 §4): a zero derivative would
+            # make every quantized parameter untrainable; zero by declaration
+            if ins.params.get("grad", "straight_through") != "zero":
+                contribute(ins.operands[0], c)
+        elif ins.op == "pointwise":
             pw_rule(ins, c)
         elif ins.op == "reduce":
             reduce_rule(ins, c)
