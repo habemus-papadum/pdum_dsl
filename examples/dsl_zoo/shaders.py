@@ -97,3 +97,57 @@ if __name__ == "__main__":
 
     pgm(img, "/tmp/claude-501/zoo_scaled_circle.pgm")
     print("wrote /tmp/claude-501/zoo_scaled_circle.pgm")
+
+
+########### Notes
+# (owner markup preserved verbatim below; commented so the file runs —
+#  the living version of this sketch is combinators.py)
+# My mistake around the piping syntax. This is an instance where we actually need
+# the execution operator (>>) that was in the original piping reference library
+# that we used (pdum_plumbum).
+
+# Let me explain by working backwards.
+
+# scale (and rotate and translate) are factories that create shader combinators.
+# That is they take in data, and then return a function that takes in a shader and returns a shader.  Ignore texture for now -- i think that was a mistake
+
+# def scale(s):
+#     def comb(f):
+#         def go(y, x):
+#             yprime = y*s
+#             xprime = x*s
+#             return f(yprime, xprime)
+#         return go
+#     return comb
+
+
+# def translate(dy, dx):
+#     def comb(f):
+#         def go(y, x):
+#             return f(y - dy, x - dx)
+
+#         return go
+
+#     return comb
+
+
+# f = circle(12.0, 20.0, 8.0) >> scale(0.5) | translate(2.0, 3.0)
+
+##or
+
+# op = scale(0.5) | translate(2.0, 3.0)
+
+# f = circle(12.0, 20.0, 8.0) >> op
+
+# The next question, has to do with how tapping would work in this environment.
+# For instance, if I wanted to tap the value of y prime in the scale function
+
+# The idea is that TAPs wouldn't create output values. You wouldn't have the function return a value when you use TAPs. Instead, you would pass the name and the tensor to write the TAP into. kernel[taps={'yprime': yprime_tensor}, block, thread].
+
+# Taps would have to be isBits values that would create a tensor with the layout of the block and block the grid, basically not the blocks and the threads all together.
+
+# And in our examples right now, we don't have any notion of creating grid configurations. When we invoke, we kind of directly call without creating the grid parameters, but in this case we should try to do that.
+
+# And then I still think there's a question of, when we integrate this in the assemblage layer, how would we specify things like grid parameters?
+
+# And ideally, this should be flexible enough to have things like shared memory configuration and barriers, synchronizations, and other kinds of things that let you write high-performance compute kernels, whether they're going to be in WebGPU or CUDA.
