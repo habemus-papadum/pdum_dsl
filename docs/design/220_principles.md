@@ -209,8 +209,12 @@ built-in.
 Invocation stays out of identity by law, stated per config component:
 launch geometry is launcher data (threads the one value-specialized
 carve-out), tap NAMES specialize while tap tensors are invocation data,
-shared memory is structural. And observability is honest: a tap site
-whose name goes non-unique under inlining is INVALIDATED with the
+shared memory is structural. Claiming itself is TAGLESS — the naming
+law is the one claiming mechanism: a uniquely-named binding IS the
+site, whether its sink is a tap buffer, the varying interpolator, or a
+render target (`tap()` retired; `flat(...)` the sole site-side
+annotation, for interpolation). And observability is honest: a claimed
+site whose name goes non-unique under inlining is INVALIDATED with the
 reason, never silently renamed.
 **Enables:** shader combinators as ordinary function composition; the
 AA circle whose edge is analytic; kernels gaining derivatives, records,

@@ -961,7 +961,9 @@ data (no key contact); **threads** is the value-specialized carve-out
 (re-render on change, no identity change); **taps** specialize by NAME
 SET only — the tap tensors are invocation data; **shared_mem** is
 structural (the slot is reserved and refuses until the tile tier, L4).
-*Taps:* a site is declared in the body as `tap(v, "name")`; the caller
+*Taps:* a site is any uniquely-named BINDING — the naming law is the
+claiming mechanism (the P7 `tap(v, "name")` spelling landed first and
+is retired by the S.4 amendment: claiming is tagless); the caller
 passes full-thread-lattice tensors via `config(taps={...})` and the
 kernel writes them alongside its outputs — taps never change the
 return. The naming law never auto-suffixes: a site inlined into more
@@ -997,6 +999,111 @@ pass, the submit, and the swap chain. FnType carries an optional
 result-type slot (reserved at extraction). Semantics land against
 golden artifacts plus a minimal reference interpolator; the GPU
 rasterization path arrives with the L4-era backends.
+
+**S.4 amendment (P8 design, owner-ruled): the one claiming law,
+textures v1, and the proving ground.**
+
+*The one claiming law — tagless.* Claiming is the NAMING LAW; there is
+no tagging call. `tap()` is retired from the compute dialect (one
+commit old — two claiming laws never ship): every uniquely-named
+binding in a kernel body IS a claimable site, viability derived
+(isBits, storable), the honest-invalidation law unchanged (a binding
+inlined into more than one place has a non-unique name → INVALID with
+the reason, never auto-suffixed). Requesting is the only act:
+`config(taps={"dist": t})` binds the binding named `dist`;
+introspection lists all uniquely-named bindings with viability and
+reasons. Binding names in kernel bodies are thereby interface —
+names-as-contract applied consistently; the failure mode is a loud
+request/pairing refusal, never a silent rebind.
+
+*Varyings and fragment taps — one mechanism, two sinks.* A varying is
+a claimed site whose sink is the interpolator (consumed by the paired
+fragment); a fragment tap is a claimed site whose sink is a render
+buffer bound at the pass — which IS multiple render targets; G-buffers
+fall out. The kind rule: **return is mandatory, claims are optional**
+— a vertex kernel returns exactly `position`, a fragment kernel
+returns exactly color₀, everything else is claimed by naming it.
+Interpolation is declared at the vertex site — perspective-correct by
+default, `flat(...)` the sole site-side annotation — and is a
+production detail EXCLUDED from the interface type. The
+vertex→fragment boundary is a record TYPE and strings never cross it:
+the fragment consumes by attribute access; its required record is
+INFERRED from the fields its body touches (declaring a named record
+type is also honored — inference is the floor); pairing checks
+produced ⊇ required (width subtyping, per-level on nested records).
+So adding a varying breaks no existing pairing, and one fragment
+artifact serves every vertex shader producing a superset of its
+interface. The PAIR is the artifact unit (real APIs compile PSOs
+whole): dead-varying elimination against the consumed subset is honest
+pair-time specialization; the pair key is (vertex fp, fragment fp,
+requested tap names). Uniforms are closure captures riding the
+existing uniform channel, both kinds. Ambients per kind, raws first:
+vertex = `vertex_index`/`instance_index`; fragment = the framebuffer
+position — precisely the wrt of `fwidth`.
+
+*Textures, v1.* A texture is a tensor + descriptor with a **sampler**
+— the interpolation object: filter (nearest | linear), address mode
+(clamp | wrap), mip policy. `sample(tex, smp, (y, x))` is a dialect
+READ at continuous coordinates. Linear filtering is piecewise-affine
+in the coordinates, so coordinate gradients exist under the first-wins
+at-kink law (the differentiable-rendering door); the texel-side
+adjoint is a scatter of filter weights and joins with the P9 family.
+Exactly ONE format at v1: rgba8unorm-srgb over the EXISTING
+FormatEncoding (§4 — the descriptor path is already built; decode
+refusals already live there); the format REGISTRY is the later work,
+never the sampling semantics. Mip chains are dubbed in as types with
+EXPLICIT-LOD sampling first (`sample(..., lod=k)`); automatic LOD is
+ANALYTIC once the derivative engine lands — log2 of the screen-space
+footprint from the wrt-ambient gradient, no 2×2-quad finite
+differences. Cube textures: the type is dubbed (six faces + direction
+lookup); execution rides the conformance executor.
+
+*The proving ground — how this tier is tested.* The failure modes this
+doctrine exists to prevent, named: ad-hoc host invocation semantics
+baked into examples, and dummy backends that duplicate semantics until
+nobody remembers they are dummies. Five rules. (1) **One semantics, N
+executors**: the reference evaluator — plus the minimal reference
+interpolator, which DEFINES varying interpolation — is the only place
+semantics lives. A device executor is a CONFORMANCE TARGET: it
+translates artifacts and runs the same battery differentially against
+reference; it never interprets with rules of its own. If a backend
+"needs" host logic the reference lacks, that logic is a missing clause
+of the launcher contract — specified here first, landed once at the
+seam, never inlined into an example. (2) **Examples never touch device
+APIs.** Examples produce kernels, pairs, encodables, config brackets;
+the runner owns device, queue, passes, submits, swap chain, readback
+(210: encode and submit are separate acts, one shared encode path so
+timed and untimed cannot drift; the artifact carries its contract and
+the launcher enforces it). (3) **A conformance executor is not a
+backend.** What stays out until L4 is PERFORMANCE machinery — descent,
+tiling, fusion. P8 ends with a translation-only WebGPU conformance
+executor on the development Mac (wgpu → Metal), living under
+`conformance/`, never `backends/`, with zero scheduling intelligence;
+the CUDA twin joins when that hardware is in reach and divergences
+(index conventions, timers, narrowing) are reconciled immediately at
+the named-axes and numeric-policy layers — 210's numeric policy is
+enforced on BOTH sides of every differential. (4) **The battery is
+executor-parameterized**: one corpus, fixtures select the executor,
+absent hardware skips honestly with a reason; bit-exactness where
+promised (Philox, integer paths), stated tolerance elsewhere (f32
+narrowing is declared per 210, never silent). (5) **Instrumentation is
+the existing seam** — events + recorder (exact counts, span tree,
+`expect()` budgets); GPU time via timestamp queries, never wall-clock
+through a sync readback (210: readback is a ~1.6 ms fixed-latency
+protocol act); the 210 bench methodology (minimum-as-headline,
+seam-wrapping shims, retry-once CI gates) is the recipe when timing
+gates arrive; NVTX ranges, when CUDA-era profiling wants them, are a
+BINDING of the same span seam, not a new mechanism. The tile tier
+inherits this doctrine unchanged — that is why it is settled now.
+
+*The zoo.* examples/dsl_zoo grows the graphics set, one entry per
+behavior: the quad-from-`vertex_index` vertex shader (no vertex
+buffers — corners computed from the raw ambient) paired with a
+fragment shader that normalizes into `f`'s space and calls the SAME
+`f` as the compute zoo; incremental varying addition; subset pairing
+(two vertex shaders, one shared fragment artifact); MRT via
+fragment-tap binding to a second render buffer; the textured shader
+(sampler + explicit-LOD mip). Every S.4 behavior has a zoo spelling.
 
 ### S.5 Tile and warp [reserved — the L4 brief governs, §8]
 
@@ -1410,13 +1517,22 @@ refusals; the compile-once thesis test for function-valued arguments; a
 struct-element kernel round-trips through a structured encoding.
 
 **P8 — Graphics (M).** The `@vertex`/`@fragment` kinds in the validated
-vocabulary; varyings-as-records with per-field interpolation
-declarations; PSO pairing as its own composition semantics; the
-encodable deliverable (render bundle / draw-into-pass); `fwidth` as the
-wrt-ambient derivative. Semantics against golden artifacts + the
-minimal reference interpolator. GATE: a vertex+fragment pair lowers,
-pairs, and encodes; the varyings record round-trips; goldens pinned;
-D + Z green.
+vocabulary; the one claiming law per the S.4 amendment (tagless — the
+naming law is the mechanism; `tap()` retired from compute in the same
+march); varyings as claimed sites with interpolation at the vertex
+site (`flat` the sole annotation) and subset pairing over record
+types; PSO pairing as its own composition semantics; the encodable
+deliverable; `fwidth` as the wrt-ambient derivative; textures v1 (one
+format — rgba8unorm-srgb over the existing FormatEncoding — sampler
+object, explicit-LOD mips, cube dubbed). Semantics against golden
+artifacts + the minimal reference interpolator; the march ends with
+the translation-only WebGPU conformance executor (S.4 amendment rule
+3). GATE: a vertex+fragment pair lowers, pairs, and encodes; subset
+pairing shares one fragment artifact across two vertex shaders; MRT
+tap binding writes a second target; the textured-quad golden matches
+reference; the quad+`f` golden runs on the WebGPU conformance
+executor differentially against reference on the development Mac;
+the graphics zoo entries run; D + Z green.
 
 **P9 — The indexing family; runway handoff (S).** The §1.9 family
 lands: `take` + `scatter_add` (the adjoint pair) + `argtopk`/`argsort`
@@ -1435,8 +1551,11 @@ unrolled trainer; §8 handed to the L4/L2 work as its brief.
 dialect, translation frontend, or second AD. `out=`. A global "current
 scope" stack. An incremental-compilation mechanism (§1.5: the caches
 are the mechanism). Archives, shims, frozen-fixture museums, or
-dual-running dead code beyond within-step scaffolding. Device backends
-before the L4 era. Publishing as a side effect of migration.
+dual-running dead code beyond within-step scaffolding. PERFORMANCE
+backends (descent, tiling, fusion) before the L4 era — the P8
+conformance executor is translation-only and lives under
+`conformance/`, never `backends/`. Publishing as a side effect of
+migration.
 
 ---
 
