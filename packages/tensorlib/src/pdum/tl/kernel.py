@@ -177,7 +177,7 @@ class _Artifact:
     program: Program
     params: tuple  # kernel parameter names, in order
     writable: tuple  # parameter names that are stored to
-    fn_markers: dict  # parameter name -> marker name (launch rebind slots)
+    fn_markers: dict  # parameter name -> marker names (launch rebind slots; one per flat output)
     tap_sites: dict  # site name -> lattice dim names (valid sites)
     invalid_taps: dict  # site name -> reason (the naming law met inlining)
     requested_taps: tuple = ()  # the name set this artifact was built for
@@ -196,8 +196,9 @@ class _Artifact:
                         f"in-place returns exist only as an L2-certified rewrite; "
                         f"ping-pong between two buffers instead"
                     )
-        for name, mname in self.fn_markers.items():  # values ride the rebind channel
-            _ARG_BINDINGS[mname] = bound[name]
+        for name, mnames in self.fn_markers.items():  # values ride the rebind channel
+            for mname in mnames:
+                _ARG_BINDINGS[mname] = bound[name]
         inputs = {name: a for name, a in bound.items() if isinstance(a, Tensor)}
         run(self.program, inputs)
         return None  # stores are the effect; kernels return nothing (taps included)
@@ -213,7 +214,7 @@ class _KernelLowerer(_Lifter):
         self.target: _T | None = None  # the lattice source (first writable use)
         self.token: str | None = None
         self.stored: list[str] = []  # parameter names stored to, in order
-        self.fn_markers: dict[str, str] = {}
+        self.fn_markers: dict[str, list] = {}  # param -> marker names (one per flat output)
         self.param_names: tuple = ()  # kernel parameters — fn-arg slots live here ONLY
         self.tap_vars: dict[str, str] = {}  # site name -> SSA var
         self.invalid_taps: dict[str, str] = {}  # site name -> reason
@@ -259,6 +260,14 @@ class _KernelLowerer(_Lifter):
         return tuple(out)
 
     def statement(self, stmt) -> None:
+        if (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Tuple)
+            and isinstance(stmt.value, ast.Call)
+            and self._fn_arg_destructure(stmt)
+        ):
+            return
         if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Subscript):
             target = self.value(stmt.targets[0].value)
             if not isinstance(target, _T):
@@ -316,13 +325,46 @@ class _KernelLowerer(_Lifter):
             return self._fn_arg_call(target, args)
         return None
 
-    def _fn_arg_call(self, handle, args):
+    def _fn_arg_destructure(self, stmt) -> bool:
+        """``v, (dy, dx) = f(y, x)`` — a tuple-returning function argument.
+        The DESTRUCTURING PATTERN declares the output structure (the same
+        spec discipline as tuple arguments): one pointwise per flat output,
+        each a component of the same per-element oracle call. Every bound
+        name claims (the naming law)."""
+        call = stmt.value
+        if not isinstance(call.func, ast.Name) or call.keywords:
+            return False
+        handle = self.env.get(call.func.id)
+        if getattr(handle, "fp", None) is None:
+            return False
+        args = tuple(self.value(a) for a in call.args)
+        if not all(isinstance(a, _T) or (isinstance(a, tuple) and all(isinstance(x, _T) for x in a)) for a in args):
+            return False
+        out_spec, groups = [], []
+        for e in stmt.targets[0].elts:
+            if isinstance(e, ast.Name):
+                out_spec.append(None)
+                groups.append((e.id,))
+            elif isinstance(e, ast.Tuple) and all(isinstance(x, ast.Name) for x in e.elts):
+                out_spec.append(len(e.elts))
+                groups.append(tuple(x.id for x in e.elts))
+            else:
+                raise ValueError("destructure a function result into names or name-tuples")
+        outs = iter(self._fn_arg_call(handle, args, out_spec=tuple(out_spec)))
+        for group in groups:
+            for n in group:
+                v = self.rebind(next(outs), n)
+                self.env[n] = v
+                self.claim(n, v)
+        return True
+
+    def _fn_arg_call(self, handle, args, out_spec=None):
         """A function-valued argument applied at the thread coordinates:
-        ONE pointwise instr over a launch-rebindable marker — per-element
+        pointwise instrs over launch-rebindable markers — per-element
         dispatch through the spelled oracle (oracle-grade by doctrine).
         A tuple argument (``f((y, x))``) flattens into the operands and
-        regroups per element — the pipe threads one value, so coordinate
-        PAIRS ride as tuples through pipelines."""
+        regroups per element; a tuple RESULT flattens per ``out_spec``
+        (from the destructuring pattern), one instr per flat component."""
         pname = next((n for n in self.param_names if self.env.get(n) is handle), None)
         flat, spec = [], []
         for a in args:
@@ -332,27 +374,40 @@ class _KernelLowerer(_Lifter):
             else:
                 spec.append(len(a))
                 flat.extend(a)
-        mname = f"kernel.fn.{hashlib.sha256(repr((handle.fp, tuple(spec))).encode()).hexdigest()[:10]}"
+        n_out = 1 if out_spec is None else sum(1 if s is None else s for s in out_spec)
+        outs = []
+        for k in range(n_out):
+            fp_key = (handle.fp, tuple(spec), out_spec, k)
+            mname = f"kernel.fn.{hashlib.sha256(repr(fp_key).encode()).hexdigest()[:10]}"
 
-        def _make(mname=mname, spec=tuple(spec)):
-            def apply(*coords):
-                from pdum.dsl.reference import reference
+            def _make(mname=mname, spec=tuple(spec), out_spec=out_spec, k=k):
+                def apply(*coords):
+                    from pdum.dsl.reference import reference
 
-                f = _ARG_BINDINGS[mname]
+                    f = _ARG_BINDINGS[mname]
 
-                def call(*cs):
-                    it = iter(cs)
-                    rebuilt = [float(next(it)) if k is None else tuple(float(next(it)) for _ in range(k)) for k in spec]
-                    return reference(f)(*rebuilt)
+                    def call(*cs):
+                        it = iter(cs)
+                        rebuilt = [
+                            float(next(it)) if s is None else tuple(float(next(it)) for _ in range(s)) for s in spec
+                        ]
+                        res = reference(f)(*rebuilt)
+                        if out_spec is None:
+                            return res
+                        flat_res = []
+                        for s, part in zip(out_spec, res):
+                            flat_res.append(part) if s is None else flat_res.extend(part)
+                        return flat_res[k]
 
-                return np.vectorize(call)(*coords)
+                    return np.vectorize(call)(*coords)
 
-            return Marker(mname, apply)
+                return Marker(mname, apply)
 
-        MARKERS.derive(mname, _make)
-        if pname is not None:
-            self.fn_markers[pname] = mname
-        return self.pointwise(mname, *flat, hint="fx")
+            MARKERS.derive(mname, _make)
+            if pname is not None:
+                self.fn_markers.setdefault(pname, []).append(mname)
+            outs.append(self.pointwise(mname, *flat, hint="fx"))
+        return outs[0] if out_spec is None else tuple(outs)
 
 
 def _compile(fn, args, tap_names=()) -> _Artifact:

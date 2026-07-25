@@ -23,6 +23,8 @@ evaluation, not an intrinsic.
 
 import numpy as np
 import pytest
+from pdum.dsl.intrinsics import clamp
+from pdum.dsl.markers import sqrt
 from pdum.tl import Tensor, compute, thread_idx
 from pdum.tl.kernel import config
 
@@ -145,34 +147,39 @@ def test_with_respect_to_a_local_value():
         np.testing.assert_allclose(img.to_numpy()[1:], (Y / np.sqrt(Y * Y + X * X))[1:], rtol=1e-9)
 
 
-@P8
 def test_value_and_grad_wrt_ambient_is_fwidth():
-    """Function-space: value + gradient wrt a declared argument set. With
-    wrt = the ambient thread coordinates this IS dFdx/dFdy — S.4's
-    'fwidth is the wrt-ambient derivative' — and analytic anti-aliasing
-    at the shader's top level is its first consumer."""
-    from pdum.dsl import jit
+    """LIVE (P8): function-space value + gradient wrt a declared argument
+    set. With wrt = the ambient thread coordinates this IS dFdx/dFdy —
+    S.4's 'fwidth is the wrt-ambient derivative' — and analytic AA at the
+    shader's top level is its first consumer. The kernel destructures the
+    tuple result (the pattern declares the structure); clamp inlines into
+    the kernel by ordinary capture-and-call (one body language). The
+    center sits at 7.5 — pixel centers off the signed-distance pole, as
+    in real rasterization."""
+    from pdum.dsl import jit, value_and_grad
 
     def circle(cy, cx, r):
         @jit()
         def go(y, x):
-            d = sqrt((y - cy) * (y - cy) + (x - cx) * (x - cx))  # noqa: F821
+            d = sqrt((y - cy) * (y - cy) + (x - cx) * (x - cx))
             return d - r  # signed distance
 
         return go
 
-    g = value_and_grad(circle(8.0, 8.0, 5.0), wrt=("y", "x"))  # noqa: F821
+    g = value_and_grad(circle(7.5, 7.5, 5.0), wrt=("y", "x"))
 
     @compute
     def aa_shader(f, img):
         y, x = thread_idx("y", "x")
         v, (dy, dx) = f(y, x)
-        w = sqrt(dy * dy + dx * dx)  # noqa: F821 — fwidth
-        img[y, x] = clamp(v / w + 0.5, 0.0, 1.0)  # noqa: F821 — one-pixel edge
+        w = sqrt(dy * dy + dx * dx)  # fwidth — analytic, no 2x2 quad
+        img[y, x] = clamp(v / w + 0.5, 0.0, 1.0)  # one-pixel edge
 
     img = T(np.zeros((16, 16)), ("y", "x"))
     aa_shader(g, img)
-    assert 0.0 < img.to_numpy().min() < 0.5 < img.to_numpy().max() <= 1.0
+    a = img.to_numpy()
+    assert a.min() == 0.0 and a.max() == 1.0  # interior black, exterior white
+    assert ((a > 0.0) & (a < 1.0)).any()  # ...and the analytic AA band between
 
 
 @P8

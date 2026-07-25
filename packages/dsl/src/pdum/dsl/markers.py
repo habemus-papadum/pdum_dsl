@@ -100,7 +100,9 @@ class pw:
 
 
 # module-level names: what scalar bodies reference and everyone imports
+# (pw.abs stays class-only — shadowing the abs builtin at module level would
+# surprise; the "abs" CALL name still resolves through the overload table)
 add, sub, mul, div, neg = pw.add, pw.sub, pw.mul, pw.div, pw.neg
 exp, log, tanh, sqrt, sin, cos = pw.exp, pw.log, pw.tanh, pw.sqrt, pw.sin, pw.cos
-maximum, minimum, where = pw.maximum, pw.minimum, pw.where
+maximum, minimum, where, floor = pw.maximum, pw.minimum, pw.where, pw.floor
 eq, ne, le, lt, ge, gt = pw.eq, pw.ne, pw.le, pw.lt, pw.ge, pw.gt

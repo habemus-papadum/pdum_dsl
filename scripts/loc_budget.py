@@ -28,9 +28,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 KERNEL = ROOT / "packages" / "dsl" / "src" / "pdum" / "dsl"
 
-KERNEL_TOTAL_CAP = 2600  # P1 redraw: measured 2253 at the move + headroom for the
+KERNEL_TOTAL_CAP = 3000  # P1 redraw: measured 2253 at the move + headroom for the
 # P4-P7 installments (random fields, scope, stores); each future raise is a
 # conscious act with the reason recorded here.
+# P8 raise (owner-ruled, 2026-07-25): 2600 -> 3000 after the derivative engine
+# + numpy-authority vocabulary landed at 2594 — "the cap must not drive design
+# too hard here"; the tripwire stays, the headroom funds the P8 installments.
 
 # Per-file caps. Engine files carry their pre-move caps (same code, same
 # discipline); the P1 arrivals were capped at their measured size + slack.

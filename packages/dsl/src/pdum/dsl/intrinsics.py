@@ -28,7 +28,7 @@ Nothing here touches the kernel; ``install(registry)`` is the whole API.
 from __future__ import annotations
 
 from .derivative import TABLE
-from .markers import Marker, pw, value_op
+from .markers import Marker, floor, maximum, minimum, pw, value_op
 from .surfaces import defop, overload, spell
 
 _REF = "reference"
@@ -68,7 +68,9 @@ def _pw_markers() -> list[Marker]:
 
 
 def clamp(x, lo, hi):
-    return minimum(maximum(x, lo), hi)  # noqa: F821 — the numpy-named kinks
+    # the marker globals make batteries REAL functions: host-callable on
+    # scalars, dsl-lowered via the overload table, tl-inlined into kernels
+    return minimum(maximum(x, lo), hi)
 
 
 def mix(a, b, t):
@@ -85,7 +87,7 @@ def smoothstep(e0, e1, x):
 
 
 def fract(x):
-    return x - floor(x)  # noqa: F821
+    return x - floor(x)
 
 
 _DSL_BATTERIES = (clamp, mix, step, smoothstep, fract)
