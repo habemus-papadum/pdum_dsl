@@ -106,6 +106,11 @@ class _TierCache:
         with self._lock:
             return self._ready.get(key)
 
+    def keys(self) -> tuple:
+        """A snapshot of the ready keys (registries enumerate through this)."""
+        with self._lock:
+            return tuple(self._ready)
+
     def _explain(self, key: tuple) -> str:
         return ""
 

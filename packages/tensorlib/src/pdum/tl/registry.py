@@ -42,6 +42,9 @@ class CacheRegistry:
             raise KeyError(name)
         return entry
 
+    def __iter__(self):
+        return iter(self._memo.keys())
+
     def get(self, name: str, default=None):
         entry = self._memo.peek(name)
         return default if entry is None else entry
