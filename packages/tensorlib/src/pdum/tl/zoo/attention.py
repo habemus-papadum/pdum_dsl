@@ -1,4 +1,6 @@
-"""Attention variants — each isolating one mechanism, single-head sized.
+"""Attention variants — each isolating one mechanism, single-head sized,
+authored as MAKERS over the S.1 vocabulary (the binding layer owns names;
+q flows, k/v and gains are declared leaves at the root scope).
 
 The flagship is `flash_attention`: the online-softmax accumulator
 (running max, running denominator, running weighted sum) as a composite
@@ -12,9 +14,14 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..build import Build
-from ..mdsl import defreducer, exp, maximum
-from .zoo_common import ZooModel, causal_softmax, contract, np_sigmoid, np_softmax, rmsnorm, softmax, t_in
+from ..assemblage import assemblage, unit
+from ..ir import _dense_like
+from ..layout import Dim
+from ..lifting import const_like, contract, iota_of, reduce_over
+from ..mdsl import defreducer, exp, maximum, where
+from ..scope import scope
+from ..tensor import Tensor
+from .zoo_common import ZooModel, causal_softmax, np_sigmoid, np_softmax, rmsnorm, sigmoid, softmax
 
 
 @dataclass(frozen=True)
@@ -55,34 +62,42 @@ flashsm = defreducer(
 )
 
 
-def _qkv(rng, inputs, b, T, E, OD):
-    names = []
-    for nm, shape, nn in (("q", (T, E), ("t", "e")), ("k", (T, E), ("s", "e")), ("v", (T, OD), ("s", "o"))):
-        names.append(t_in(inputs, nm, rng.standard_normal(shape), nn))
-    for nm in names:
-        b.input(nm)
-    return names
+def _t(arr, names):
+    return Tensor.from_numpy(np.asarray(arr, dtype=np.float64), names)
+
+
+def _qkv_scope(rng, root, T, E, OD):
+    k = root.param("k", s=T, e=E)
+    v = root.param("v", s=T, o=OD)
+    inputs = {
+        "q": _t(rng.standard_normal((T, E)), ("t", "e")),
+        "k": _t(rng.standard_normal((T, E)), ("s", "e")),
+        "v": _t(rng.standard_normal((T, OD)), ("s", "o")),
+    }
+    return k, v, inputs
+
+
+def _qlay(T, E):
+    return _dense_like((Dim("t", 0, 0, T), Dim("e", 0, 0, E)))
 
 
 def sliding_attention(T=5, E=3, OD=2, W=2, seed=3) -> ZooModel:
     """Causal AND within-window: s <= t and t - s < W. Both masks are iota
     comparisons — closed forms, zero bytes."""
     rng = np.random.default_rng(seed)
-    b = Build()
-    inputs: dict = {}
-    q, k, v = _qkv(rng, inputs, b, T, E, OD)
-    ts = [("t", (0, T)), ("s", (0, T))]
-    sc = contract(b, q, k, [("s", (0, T))], [("t", (0, T))], ("e",), hint="sc")
-    it = b.emit("iota", (sc,), hint="it", name="t")
-    isv = b.emit("iota", (sc,), hint="is", name="s")
-    causal = b.pw("le", isv, it, hint="mc")
-    dist = b.pw("sub", it, isv, hint="dist")
-    wc = b.const(W, ts, hint="w", dtype="int64")
-    inwin = b.pw("lt", dist, wc, hint="mw")
-    m = b.pw("mul", causal, inwin, hint="mask")  # bool AND
-    sm = b.pw("where", m, sc, b.const(-1e9, ts, hint="ninf"), hint="scm")
-    pr = softmax(b, sm, "s", (0, T), ts)
-    ctx = contract(b, pr, v, [("o", (0, OD))], [("t", (0, T))], ("s",), hint="ctx")
+    root = scope()
+    k, v, inputs = _qkv_scope(rng, root, T, E, OD)
+
+    @unit
+    def attend(q):
+        sc = contract(q, k)  # unique shared axis: "e"
+        causal = iota_of(sc, "s") <= iota_of(sc, "t")
+        inwin = (iota_of(sc, "t") - iota_of(sc, "s")) < W
+        m = causal * inwin  # bool AND
+        pr = softmax(where(m, sc, const_like(sc, -1e9)), k="s")
+        return contract(pr, v, axis="s")
+
+    model = assemblage(attend, scope=root, q=_qlay(T, E))
 
     def ref(inp):
         sc = inp["q"] @ inp["k"].T
@@ -90,22 +105,25 @@ def sliding_attention(T=5, E=3, OD=2, W=2, seed=3) -> ZooModel:
         mask = (s <= t) & (t - s < W)
         return np_softmax(np.where(mask, sc, -1e9), axis=1) @ inp["v"]
 
-    return ZooModel(b.program(), inputs, ctx, ref, ("t", "o"))
+    return ZooModel(model.program, inputs, model.output, ref, ("t", "o"))
 
 
 def gated_attention(T=5, E=3, OD=2, seed=4) -> ZooModel:
-    """Output gating (Qwen3-Next style): out = sigmoid(q @ wg) ⊙ attention."""
+    """Output gating (Qwen3-Next style): out = sigmoid(q @ wg) x attention."""
     rng = np.random.default_rng(seed)
-    b = Build()
-    inputs: dict = {}
-    q, k, v = _qkv(rng, inputs, b, T, E, OD)
-    b.input(t_in(inputs, "wg", 0.5 * rng.standard_normal((E, OD)), ("e", "o")))
-    ts = [("t", (0, T)), ("s", (0, T))]
-    sc = contract(b, q, k, [("s", (0, T))], [("t", (0, T))], ("e",), hint="sc")
-    pr = causal_softmax(b, sc, "t", "s", ts)
-    ctx = contract(b, pr, v, [("o", (0, OD))], [("t", (0, T))], ("s",), hint="ctx")
-    gate = b.pw("zoo.sigmoid", contract(b, q, "wg", [("o", (0, OD))], [("t", (0, T))], ("e",), hint="gz"), hint="gate")
-    out = b.pw("mul", gate, ctx, hint="out")
+    root = scope()
+    k, v, inputs = _qkv_scope(rng, root, T, E, OD)
+    wg = root.param("wg", e=E, o=OD)
+    inputs["wg"] = _t(0.5 * rng.standard_normal((E, OD)), ("e", "o"))
+
+    @unit
+    def attend(q):
+        pr = causal_softmax(contract(q, k))
+        ctx = contract(pr, v, axis="s")
+        gate = sigmoid(contract(q, wg))
+        return gate * ctx
+
+    model = assemblage(attend, scope=root, q=_qlay(T, E))
 
     def ref(inp):
         sc = inp["q"] @ inp["k"].T
@@ -113,23 +131,27 @@ def gated_attention(T=5, E=3, OD=2, seed=4) -> ZooModel:
         ctx = np_softmax(np.where(mask, sc, -1e9), axis=1) @ inp["v"]
         return np_sigmoid(inp["q"] @ inp["wg"]) * ctx
 
-    return ZooModel(b.program(), inputs, out, ref, ("t", "o"))
+    return ZooModel(model.program, inputs, model.output, ref, ("t", "o"))
 
 
 def qknorm_attention(T=5, E=3, OD=2, eps=1e-6, seed=5) -> ZooModel:
     """RMS-normalize q and k (with learned gains) before the scores."""
     rng = np.random.default_rng(seed)
-    b = Build()
-    inputs: dict = {}
-    q, k, v = _qkv(rng, inputs, b, T, E, OD)
+    root = scope()
+    k, v, inputs = _qkv_scope(rng, root, T, E, OD)
+    gq = root.param("gq", e=E)
+    gk = root.param("gk", e=E)
     for nm in ("gq", "gk"):
-        b.input(t_in(inputs, nm, 1 + 0.1 * rng.standard_normal(E), ("e",)))
-    qn = rmsnorm(b, q, "e", (0, E), [("t", (0, T)), ("e", (0, E))], "gq", eps)
-    kn = rmsnorm(b, k, "e", (0, E), [("s", (0, T)), ("e", (0, E))], "gk", eps)
-    ts = [("t", (0, T)), ("s", (0, T))]
-    sc = contract(b, qn, kn, [("s", (0, T))], [("t", (0, T))], ("e",), hint="sc")
-    pr = causal_softmax(b, sc, "t", "s", ts)
-    ctx = contract(b, pr, v, [("o", (0, OD))], [("t", (0, T))], ("s",), hint="ctx")
+        inputs[nm] = _t(1 + 0.1 * rng.standard_normal(E), ("e",))
+
+    @unit
+    def attend(q):
+        qn = rmsnorm(q, gq, feat="e", eps=eps)
+        kn = rmsnorm(k, gk, feat="e", eps=eps)
+        pr = causal_softmax(contract(qn, kn))
+        return contract(pr, v, axis="s")
+
+    model = assemblage(attend, scope=root, q=_qlay(T, E))
 
     def ref(inp):
         def rms(x, g):
@@ -139,7 +161,7 @@ def qknorm_attention(T=5, E=3, OD=2, eps=1e-6, seed=5) -> ZooModel:
         mask = np.tril(np.ones((T, T), dtype=bool))
         return np_softmax(np.where(mask, sc, -1e9), axis=1) @ inp["v"]
 
-    return ZooModel(b.program(), inputs, ctx, ref, ("t", "o"))
+    return ZooModel(model.program, inputs, model.output, ref, ("t", "o"))
 
 
 def flash_attention(T=5, E=3, OD=2, seed=6, naive=False) -> ZooModel:
@@ -147,26 +169,28 @@ def flash_attention(T=5, E=3, OD=2, seed=6, naive=False) -> ZooModel:
     naive=True, to materialized softmax — same denotation, different
     program; the pair is the fusion story's before/after)."""
     rng = np.random.default_rng(seed)
-    b = Build()
-    inputs: dict = {}
-    q, k, v = _qkv(rng, inputs, b, T, E, OD)
-    ts = [("t", (0, T)), ("s", (0, T))]
-    sc = contract(b, q, k, [("s", (0, T))], [("t", (0, T))], ("e",), hint="sc")
-    it = b.emit("iota", (sc,), hint="it", name="t")
-    isv = b.emit("iota", (sc,), hint="is", name="s")
-    m = b.pw("le", isv, it, hint="mask")
-    sm = b.pw("where", m, sc, b.const(-1e9, ts, hint="ninf"), hint="scm")
-    if naive:
-        pr = softmax(b, sm, "s", (0, T), ts)
-        out = contract(b, pr, v, [("o", (0, OD))], [("t", (0, T))], ("s",), hint="ctx")
-    else:
-        se = b.bcast(sm, [("o", (0, OD))], hint="se")
-        ve = b.bcast(v, [("t", (0, T))], hint="ve")
-        out = b.emit("reduce", (se, ve), hint="flash", f="zoo.flashsm", dims=("s",))
+    root = scope()
+    k, v, inputs = _qkv_scope(rng, root, T, E, OD)
+
+    @unit
+    def attend_naive(q):
+        pr = causal_softmax(contract(q, k))
+        return contract(pr, v, axis="s")
+
+    @unit
+    def attend_flash(q):
+        sc = contract(q, k)
+        m = iota_of(sc, "s") <= iota_of(sc, "t")
+        sm = where(m, sc, const_like(sc, -1e9))
+        se = sm.repeat_like(v, dim="o")
+        ve = v.repeat_like(sm, dim="t")
+        return reduce_over("zoo.flashsm", (se, ve), "s")
+
+    model = assemblage(attend_naive if naive else attend_flash, scope=root, q=_qlay(T, E))
 
     def ref(inp):
         sc = inp["q"] @ inp["k"].T
         mask = np.tril(np.ones((T, T), dtype=bool))
         return np_softmax(np.where(mask, sc, -1e9), axis=1) @ inp["v"]
 
-    return ZooModel(b.program(), inputs, out, ref, ("t", "o"))
+    return ZooModel(model.program, inputs, model.output, ref, ("t", "o"))

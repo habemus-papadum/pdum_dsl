@@ -1,12 +1,12 @@
-"""A Llama-style block: RMSNorm, RoPE, GQA, SwiGLU.
+"""A Llama-style block as a MAKER: RMSNorm, RoPE, GQA, SwiGLU.
 
 RoPE without splits: the rotary pair structure is BORN in the weights —
 wq is (d, g, r, c, u) with c the pair index and u the {re, im} slot — so
 rotation is selects + pointwise trig, and the score contraction runs over
 the structured feature dims directly (sum of the two u-slot contractions;
 no concat, no interleave). GQA the same way: query heads are (g, r) —
-kv-group × query-within-group — and K/V are simply repeated over r by
-declaration."""
+kv-group x query-within-group — and K/V are simply repeated over r by
+declaration (contract's broadcast)."""
 
 from __future__ import annotations
 
@@ -14,8 +14,14 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..build import Build
-from .zoo_common import ZooModel, causal_softmax, contract, np_rmsnorm, np_sigmoid, np_softmax, rmsnorm, t_in
+from ..assemblage import assemblage, unit
+from ..ir import _dense_like
+from ..layout import Dim
+from ..lifting import contract, iota_of
+from ..mdsl import cos, sin
+from ..scope import scope
+from ..tensor import Tensor
+from .zoo_common import ZooModel, causal_softmax, np_rmsnorm, np_sigmoid, np_softmax, rmsnorm, silu
 
 
 @dataclass(frozen=True)
@@ -31,74 +37,68 @@ class LlamaConfig:
     base: float = 100.0  # rotary base (small: visible angles at toy sizes)
 
 
+def _rope(qv, cos_v, sin_v):
+    # qv: (..., c, u); rotate each pair by theta — selects + pointwise trig
+    q0, q1 = qv.select(u=0), qv.select(u=1)
+    cb = cos_v.repeat_like(q0)
+    sb = sin_v.repeat_like(q0)
+    return q0 * cb - q1 * sb, q0 * sb + q1 * cb
+
+
+def make_llama_block(s, cfg):
+    D, G, R, C, KV, M = cfg.d, cfg.g, cfg.r, cfg.c, cfg.kv, cfg.m
+    omega = s.param("omega", c=C)
+    rms1g = s.param("rms1g", d=D)
+    wq = s.param("wq", d=D, g=G, r=R, c=C, u=2)
+    wk = s.param("wk", d=D, g=G, c=C, u=2)
+    wv = s.param("wv", d=D, g=G, kv=KV)
+    wo = s.param("wo", g=G, r=R, kv=KV, d=D)
+    rms2g = s.param("rms2g", d=D)
+    w1 = s.param("w1", d=D, m=M)
+    w3 = s.param("w3", d=D, m=M)
+    w2 = s.param("w2", m=M, d=D)
+    scale = 1.0 / np.sqrt(2 * C)
+
+    @unit
+    def block(x):
+        a = rmsnorm(x, rms1g, feat="d", eps=cfg.eps)
+        # RoPE angles: theta[t, c] = t * omega_c — positions from iota, exactly
+        ot = omega.repeat_like(x, dim="t")
+        th = iota_of(ot, "t") * ot
+        cs, sn = cos(th), sin(th)
+        q = contract(a, wq)  # unique shared axis: "d"
+        kk = contract(a.rename(t="s"), wk)
+        q0, q1 = _rope(q, cs, sn)
+        k0, k1 = _rope(kk, cs.rename(t="s"), sn.rename(t="s"))
+        sc = (contract(q0, k0, axis="c") + contract(q1, k1, axis="c")) * scale
+        pr = causal_softmax(sc)
+        vv = contract(a.rename(t="s"), wv)
+        ctx = contract(pr, vv, axis="s")
+        o = contract(ctx, wo, axis=("g", "r", "kv"))
+        h = x + o
+        a2 = rmsnorm(h, rms2g, feat="d", eps=cfg.eps)
+        hh = silu(contract(a2, w1)) * contract(a2, w3)
+        return h + contract(hh, w2)
+
+    return block
+
+
 def llama_block(cfg: LlamaConfig = LlamaConfig(), seed: int = 11) -> ZooModel:
     rng = np.random.default_rng(seed)
-    T, D, G, R, C, KV, M = cfg.t, cfg.d, cfg.g, cfg.r, cfg.c, cfg.kv, cfg.m
-    b = Build()
-    inputs: dict = {}
-
-    def w(name, *shape, names):
-        return t_in(inputs, name, 0.4 * rng.standard_normal(shape), names)
-
-    x = t_in(inputs, "x", rng.standard_normal((T, D)), ("t", "d"))
-    omega = t_in(inputs, "omega", cfg.base ** (-np.arange(C) / C), ("c",))
-    for name in (x, omega):
-        b.input(name)
-    for nm, shape, names in (
-        ("rms1g", (D,), ("d",)),
-        ("wq", (D, G, R, C, 2), ("d", "g", "r", "c", "u")),
-        ("wk", (D, G, C, 2), ("d", "g", "c", "u")),
-        ("wv", (D, G, KV), ("d", "g", "kv")),
-        ("wo", (G, R, KV, D), ("g", "r", "kv", "d")),
-        ("rms2g", (D,), ("d",)),
-        ("w1", (D, M), ("d", "m")),
-        ("w3", (D, M), ("d", "m")),
-        ("w2", (M, D), ("m", "d")),
-    ):
-        b.input(w(nm, *shape, names=names))
-
-    td = [("t", (0, T)), ("d", (0, D))]
-    a = rmsnorm(b, x, "d", (0, D), td, "rms1g", cfg.eps)
-    a_s = b.emit("rename", (a,), hint="as", mapping={"t": "s"})
-    # RoPE angles: theta[c, t] = t * omega_c — positions from iota, exactly
-    ot = b.bcast(omega, [("t", (0, T))], hint="ot")
-    pos = b.emit("iota", (ot,), hint="pos", name="t")
-    th = b.pw("mul", pos, ot, hint="theta")
-    cs, sn = b.pw("cos", th), b.pw("sin", th)
-    cs_s = b.emit("rename", (cs,), hint="css", mapping={"t": "s"})
-    sn_s = b.emit("rename", (sn,), hint="sns", mapping={"t": "s"})
-
-    def rope(qv, reps, cos_v, sin_v):
-        # qv: (..., c, u); rotate each pair by theta
-        q0 = b.emit("select", (qv,), hint="q0", coords={"u": 0})
-        q1 = b.emit("select", (qv,), hint="q1", coords={"u": 1})
-        cb = b.bcast(cos_v, reps)
-        sb = b.bcast(sin_v, reps)
-        r0 = b.pw("sub", b.pw("mul", q0, cb), b.pw("mul", q1, sb), hint="rot0")
-        r1 = b.pw("add", b.pw("mul", q0, sb), b.pw("mul", q1, cb), hint="rot1")
-        return r0, r1
-
-    q = contract(
-        b, a, "wq", [("g", (0, G)), ("r", (0, R)), ("c", (0, C)), ("u", (0, 2))], [("t", (0, T))], ("d",), hint="q"
+    T, C = cfg.t, cfg.c
+    root = scope()
+    model = assemblage(
+        make_llama_block(root, cfg),
+        scope=root,
+        x=_dense_like((Dim("t", 0, 0, T), Dim("d", 0, 0, cfg.d))),
     )
-    kk = contract(b, a_s, "wk", [("g", (0, G)), ("c", (0, C)), ("u", (0, 2))], [("s", (0, T))], ("d",), hint="k")
-    q0, q1 = rope(q, [("g", (0, G)), ("r", (0, R))], cs, sn)
-    k0, k1 = rope(kk, [("g", (0, G))], cs_s, sn_s)
-    sc0 = contract(b, q0, k0, [("s", (0, T))], [("t", (0, T)), ("r", (0, R))], ("c",), hint="sc0")
-    sc1 = contract(b, q1, k1, [("s", (0, T))], [("t", (0, T)), ("r", (0, R))], ("c",), hint="sc1")
-    tsgr = [("t", (0, T)), ("s", (0, T)), ("g", (0, G)), ("r", (0, R))]
-    sc = b.pw("mul", b.pw("add", sc0, sc1), b.const(1.0 / np.sqrt(2 * C), tsgr, hint="scale"), hint="sc")
-    pr = causal_softmax(b, sc, "t", "s", tsgr)
-    vv = contract(b, a_s, "wv", [("g", (0, G)), ("kv", (0, KV))], [("s", (0, T))], ("d",), hint="v")
-    ctx = contract(b, pr, vv, [("kv", (0, KV))], [("t", (0, T)), ("r", (0, R))], ("s",), hint="ctx")
-    o = contract(b, ctx, "wo", [("d", (0, D))], [("t", (0, T))], ("g", "r", "kv"), hint="o")
-    h = b.pw("add", x, o, hint="hres")
-    a2 = rmsnorm(b, h, "d", (0, D), td, "rms2g", cfg.eps)
-    u1 = contract(b, a2, "w1", [("m", (0, M))], [("t", (0, T))], ("d",), hint="u1")
-    u3 = contract(b, a2, "w3", [("m", (0, M))], [("t", (0, T))], ("d",), hint="u3")
-    hh = b.pw("mul", b.pw("zoo.silu", u1, hint="silu"), u3, hint="gated")
-    dn = contract(b, hh, "w2", [("d", (0, D))], [("t", (0, T))], ("m",), hint="down")
-    out = b.pw("add", h, dn, hint="out")
+    inputs = {"x": _t(rng.standard_normal((T, cfg.d)), ("t", "d"))}
+    inputs["omega"] = _t(cfg.base ** (-np.arange(C) / C), ("c",))
+    for name, p in root.coll.leaves.items():
+        if name == "omega":
+            continue
+        shape = tuple(e for _, e in p.dims)
+        inputs[name] = _t(0.4 * rng.standard_normal(shape), tuple(n for n, _ in p.dims))
 
     def ref(inp):
         x, om = inp["x"], inp["omega"]
@@ -123,4 +123,8 @@ def llama_block(cfg: LlamaConfig = LlamaConfig(), seed: int = 11) -> ZooModel:
         z1 = a2 @ inp["w1"]
         return h + (z1 * np_sigmoid(z1) * (a2 @ inp["w3"])) @ inp["w2"]
 
-    return ZooModel(b.program(), inputs, out, ref, ("t", "d"))
+    return ZooModel(model.program, inputs, model.output, ref, ("t", "d"))
+
+
+def _t(arr, names):
+    return Tensor.from_numpy(np.asarray(arr, dtype=np.float64), names)

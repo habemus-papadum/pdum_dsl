@@ -42,14 +42,18 @@ dropout = _Intrinsic("dropout")
 class Param:
     """A declared leaf: a VIRTUAL tensor — layout and carrier, no buffer.
     Makers capture these; capture identity decides leaf identity (the tie:
-    one object captured twice is ONE input leaf)."""
+    one object captured twice is ONE input leaf). ``levels`` is declared
+    placement (PLACEMENT.md): it rides the layout, so broadcasts and
+    constants introduced against this leaf bind automatically."""
 
     name: str  # the flat contract name, e.g. "h.3.attn.wq"
     dims: tuple  # ((dim, extent), ...) in declaration order
+    levels: tuple = ()  # ((dim, level), ...) — declared placement, or ()
 
     @property
     def layout(self):
-        return _dense_like(tuple(Dim(n, 0, 0, e) for n, e in self.dims))
+        lv = dict(self.levels)
+        return _dense_like(tuple(Dim(n, 0, 0, e, level=lv.get(n)) for n, e in self.dims))
 
 
 @dataclass
@@ -73,19 +77,20 @@ class Scope:
     def name(self) -> str:
         return ".".join(self.path)
 
-    def param(self, name: str, **dims: int) -> Param:
+    def param(self, name: str, *, bind: dict | None = None, **dims: int) -> Param:
         full = ".".join(self.path + (name,))
         spec = tuple(dims.items())
+        levels = tuple(sorted((bind or {}).items()))
         existing = self.coll.leaves.get(full)
         if existing is not None:
-            if existing.dims == spec:
+            if existing.dims == spec and existing.levels == levels:
                 return existing  # idempotent: the SAME object (capture identity)
             raise NameCollision(
                 f"leaf {full!r} is already declared with dims {dict(existing.dims)} — "
                 f"contract names are never auto-suffixed; declare it once, or "
                 f"address a different path"
             )
-        p = Param(full, spec)
+        p = Param(full, spec, levels)
         self.coll.leaves[full] = p
         return p
 

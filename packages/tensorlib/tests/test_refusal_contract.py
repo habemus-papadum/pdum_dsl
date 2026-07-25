@@ -8,7 +8,7 @@ literal expectation; a drifted message is an API break, not a cleanup.
 import numpy as np
 import pytest
 from pdum.dsl.naming import NameCollision, Namer
-from pdum.tl import Build, Tensor, defmarker, pointwise, pw
+from pdum.tl import Tensor, defmarker, pointwise, pw
 from pdum.tl.ir import Instr, Program, run
 from pdum.tl.mdsl import exp
 from pdum.tl.registry import RegistryConflict
@@ -54,10 +54,12 @@ def test_explicit_name_collision_refuses_never_suffixes():
         r"auto-suffixed; declare it once, or address a different path",
     ):
         n.claim("wq")
-    b = Build()
-    b.input("x")
+    from pdum.tl.scope import scope
+
+    root = scope()
+    root.param("x", d=2)
     with pytest.raises(NameCollision):
-        b.input("x")
+        root.param("x", d=3)
 
 
 def test_unknown_marker_and_reducer_refuse_by_name():

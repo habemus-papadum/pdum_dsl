@@ -1,17 +1,19 @@
-"""Megatron-style tensor parallelism as PLACEMENT metadata (L3-lite).
+"""Megatron-style tensor parallelism as PLACEMENT metadata (L3-lite),
+authored as a MAKER — placement declared AT THE LEAF.
 
-One transformer block, hand-lowered the global-view way (PLACEMENT.md):
-attention heads carry a mesh dim `g` (column-parallel QKV, heads sharded),
-the MLP width carries the same `g` (column-parallel up, row-parallel down)
-— and `g` is BOUND to the machine level. No collective ops appear anywhere:
+One transformer block, the global-view way (PLACEMENT.md): attention heads
+carry a mesh dim `g` (column-parallel QKV, heads sharded), the MLP width
+carries the same `g` (column-parallel up, row-parallel down) — and `g` is
+BOUND via ``s.param(..., bind={"g": level})``, so every broadcast or
+constant introduced against a placed leaf binds automatically (rep_dim /
+const_like copy the source dim's level). No collective ops appear anywhere:
 the two per-block all-reduces Megatron's paper prescribes are simply the
 two reduce-over-`g` contractions (attention output projection, MLP down
 projection), which the traffic pass reads off the algebra.
 
 `level=None` builds the ERASURE — the identical program minus bindings —
 for the denotation-preservation check: placed and erased runs must agree
-bit-for-bit, because placement is cost-bearing metadata, never meaning.
-"""
+bit-for-bit, because placement is cost-bearing metadata, never meaning."""
 
 from __future__ import annotations
 
@@ -19,8 +21,13 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..build import Build
-from .zoo_common import ZooModel, layernorm, np_gelu, np_layernorm, np_softmax, t_in
+from ..assemblage import assemblage, unit
+from ..ir import _dense_like
+from ..layout import Dim
+from ..lifting import contract
+from ..scope import scope
+from ..tensor import Tensor
+from .zoo_common import ZooModel, causal_softmax, gelu, layernorm, np_gelu, np_layernorm, np_softmax
 
 
 @dataclass(frozen=True)
@@ -34,84 +41,59 @@ class MegatronConfig:
     eps: float = 1e-5
 
 
+def make_megatron_block(s, cfg, level):
+    D, G, HL, HK, ML = cfg.d, cfg.g, cfg.hl, cfg.hk, cfg.ml
+    gbind = {"g": level} if level is not None else None
+    ln1g, ln1b = s.param("ln1g", d=D), s.param("ln1b", d=D)
+    wq = s.param("wq", bind=gbind, d=D, g=G, hl=HL, hk=HK)
+    wk = s.param("wk", bind=gbind, d=D, g=G, hl=HL, hk=HK)
+    wv = s.param("wv", bind=gbind, d=D, g=G, hl=HL, hk=HK)
+    wo = s.param("wo", bind=gbind, g=G, hl=HL, hk=HK, d=D)
+    ln2g, ln2b = s.param("ln2g", d=D), s.param("ln2b", d=D)
+    w1 = s.param("w1", bind=gbind, d=D, g=G, ml=ML)
+    b1 = s.param("b1", bind=gbind, g=G, ml=ML)
+    w2 = s.param("w2", bind=gbind, g=G, ml=ML, d=D)
+    b2 = s.param("b2", d=D)
+    scale = 1.0 / np.sqrt(HK)
+
+    @unit
+    def block(x):
+        a = layernorm(x, ln1g, ln1b, feat="d", eps=cfg.eps)
+        q = contract(a, wq)  # placement rides: broadcasts against wq bind g
+        kk = contract(a.rename(t="s"), wk)
+        vv = contract(a.rename(t="s"), wv)
+        sc = contract(q * scale, kk, axis="hk")
+        pr = causal_softmax(sc)
+        ctx = contract(pr, vv, axis="s")
+        o = contract(ctx, wo, axis=("g", "hl", "hk"))  # all-reduce #1
+        h = x + o
+        a2 = layernorm(h, ln2g, ln2b, feat="d", eps=cfg.eps)
+        a1 = contract(a2, w1)
+        gg = gelu(a1 + b1.repeat_like(a1, dim="t"))
+        m2 = contract(gg, w2, axis=("g", "ml"))  # all-reduce #2
+        return h + m2 + b2.repeat_like(h, but="d")
+
+    return block
+
+
 def megatron_block(cfg: MegatronConfig = MegatronConfig(), level: str | None = "gpu", seed: int = 29) -> ZooModel:
     rng = np.random.default_rng(seed)
-    T, D, G, HL, HK, ML = cfg.t, cfg.d, cfg.g, cfg.hl, cfg.hk, cfg.ml
-    b = Build()
-    inputs: dict = {}
+    T = cfg.t
+    root = scope()
+    model = assemblage(
+        make_megatron_block(root, cfg, level),
+        scope=root,
+        x=_dense_like((Dim("t", 0, 0, T), Dim("d", 0, 0, cfg.d))),
+    )
+    inputs = {"x": _t(rng.standard_normal((T, cfg.d)), ("t", "d"))}
+    for name, p in root.coll.leaves.items():
+        shape = tuple(e for _, e in p.dims)
+        tensor = _t(0.4 * rng.standard_normal(shape), tuple(n for n, _ in p.dims))
+        if p.levels:
+            tensor = tensor.bind(**dict(p.levels))
+        inputs[name] = tensor
 
-    def w(name, *shape, names, bound=False):
-        v = t_in(inputs, name, 0.4 * rng.standard_normal(shape), names)
-        if bound and level is not None:
-            inputs[name] = inputs[name].bind(g=level)
-        return v
-
-    x = t_in(inputs, "x", rng.standard_normal((T, D)), ("t", "d"))
-    b.input(x)
-    for nm, shape, names, bound in (
-        ("ln1g", (D,), ("d",), False),
-        ("ln1b", (D,), ("d",), False),
-        ("wq", (D, G, HL, HK), ("d", "g", "hl", "hk"), True),
-        ("wk", (D, G, HL, HK), ("d", "g", "hl", "hk"), True),
-        ("wv", (D, G, HL, HK), ("d", "g", "hl", "hk"), True),
-        ("wo", (G, HL, HK, D), ("g", "hl", "hk", "d"), True),
-        ("ln2g", (D,), ("d",), False),
-        ("ln2b", (D,), ("d",), False),
-        ("w1", (D, G, ML), ("d", "g", "ml"), True),
-        ("b1", (G, ML), ("g", "ml"), True),
-        ("w2", (G, ML, D), ("g", "ml", "d"), True),
-        ("b2", (D,), ("d",), False),
-    ):
-        b.input(w(nm, *shape, names=names, bound=bound))
-
-    def bindg(v: str) -> str:
-        # broadcasts that INTRODUCE the mesh dim must declare its placement
-        return b.emit("bind", (v,), levels={"g": level}) if level is not None else v
-
-    def bcast_g(v: str, reps) -> str:
-        out = b.bcast(v, reps)
-        if any(n == "g" for n, _ in reps):
-            out = bindg(out)
-        return out
-
-    def contract(xv, yv, x_missing, y_missing, over, hint):
-        xb = bcast_g(xv, x_missing) if x_missing else xv
-        yb = bcast_g(yv, y_missing) if y_missing else yv
-        return b.red("sum", b.pw("mul", xb, yb), over, hint=hint)
-
-    def const_g(value, dims, hint):
-        return bindg(b.const(value, dims, hint=hint))
-
-    td = [("t", (0, T)), ("d", (0, D))]
-    heads = [("g", (0, G)), ("hl", (0, HL)), ("hk", (0, HK))]
-    tsgh = [("t", (0, T)), ("s", (0, T)), ("g", (0, G)), ("hl", (0, HL))]
-    a = layernorm(b, x, "d", (0, D), td, "ln1g", "ln1b", cfg.eps)
-    a_s = b.emit("rename", (a,), hint="as", mapping={"t": "s"})
-    q = contract(a, "wq", heads, [("t", (0, T))], ("d",), hint="q")
-    kk = contract(a_s, "wk", heads, [("s", (0, T))], ("d",), hint="k")
-    vv = contract(a_s, "wv", heads, [("s", (0, T))], ("d",), hint="v")
-    thgk = [("t", (0, T)), ("g", (0, G)), ("hl", (0, HL)), ("hk", (0, HK))]
-    qs = b.pw("mul", q, const_g(1.0 / np.sqrt(HK), thgk, hint="scale"), hint="qs")
-    sc = contract(qs, kk, [("s", (0, T))], [("t", (0, T))], ("hk",), hint="sc")
-    # causal mask + softmax over s, with placement-declared constants
-    it = b.emit("iota", (sc,), hint="it", name="t")
-    isv = b.emit("iota", (sc,), hint="is", name="s")
-    m = b.pw("le", isv, it, hint="mask")
-    sm = b.pw("where", m, sc, const_g(-1e9, tsgh, hint="ninf"), hint="scm")
-    mx = b.red("max", sm, ("s",), hint="mx")
-    e = b.pw("exp", b.pw("sub", sm, b.bcast(mx, [("s", (0, T))])), hint="e")
-    z = b.red("sum", e, ("s",), hint="z")
-    pr = b.pw("div", e, b.bcast(z, [("s", (0, T))]), hint="p")
-    ctx = contract(pr, vv, [("hk", (0, HK))], [("t", (0, T))], ("s",), hint="ctx")
-    o = contract(ctx, "wo", [("d", (0, D))], [("t", (0, T))], ("g", "hl", "hk"), hint="o")  # all-reduce #1
-    h = b.pw("add", x, o, hint="hres")
-    a2 = layernorm(b, h, "d", (0, D), td, "ln2g", "ln2b", cfg.eps)
-    a1 = contract(a2, "w1", [("g", (0, G)), ("ml", (0, ML))], [("t", (0, T))], ("d",), hint="a1")
-    a1b = b.pw("add", a1, b.bcast("b1", [("t", (0, T))]), hint="a1b")
-    gg = b.pw("zoo.gelu", a1b, hint="gelu")
-    m2 = contract(gg, "w2", [("d", (0, D))], [("t", (0, T))], ("g", "ml"), hint="m2")  # all-reduce #2
-    m2b = b.pw("add", m2, b.bcast("b2", [("t", (0, T))]), hint="m2b")
-    out = b.pw("add", h, m2b, hint="out")
+    HK = cfg.hk
 
     def ref(inp):
         xx = inp["x"]
@@ -129,4 +111,8 @@ def megatron_block(cfg: MegatronConfig = MegatronConfig(), level: str | None = "
         mm = np_gelu(np.einsum("td,dgm->tgm", a2, inp["w1"]) + inp["b1"])
         return h + np.einsum("tgm,gmd->td", mm, inp["w2"]) + inp["b2"]
 
-    return ZooModel(b.program(), inputs, out, ref, ("t", "d"))
+    return ZooModel(model.program, inputs, model.output, ref, ("t", "d"))
+
+
+def _t(arr, names):
+    return Tensor.from_numpy(np.asarray(arr, dtype=np.float64), names)

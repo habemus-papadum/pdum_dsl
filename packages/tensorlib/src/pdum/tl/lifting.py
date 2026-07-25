@@ -25,7 +25,6 @@ from dataclasses import dataclass
 
 from pdum.dsl.types import LiteralAnnotation
 
-from .build import Build
 from .ir import Instr, Program, infer_instr
 from .layout import Layout
 from .producer import _captured, _fn_ast
@@ -62,6 +61,31 @@ _METHODS = {
     "simplify": ("simplify", lambda a, kw: {}),
     "with_value_units": ("with_value_units", lambda a, kw: {"value_units": a[0]}),
 }
+
+
+class _Emit:
+    """The internal instr accumulator: core naming (claim/derive), nothing
+    more — the machinery that outlived the public Build (deleted at P5;
+    makers and Program/Instr literals are the authoring surfaces)."""
+
+    def __init__(self) -> None:
+        from pdum.dsl.naming import Namer
+
+        self.instrs: list[Instr] = []
+        self.names = Namer()
+
+    def input(self, name: str) -> str:
+        self.names.claim(name)
+        self.instrs.append(Instr(name, "input", (), {}))
+        return name
+
+    def emit(self, op: str, operands=(), hint: str | None = None, **params) -> str:
+        var = self.names.derive(hint or op)
+        self.instrs.append(Instr(var, op, tuple(operands), params))
+        return var
+
+    def program(self) -> Program:
+        return Program(tuple(self.instrs))
 
 
 @dataclass(frozen=True)
@@ -149,7 +173,7 @@ def lift_step(fn, **bindings) -> LiftedStep:
 class _Lifter:
     def __init__(self, env: dict):
         self.env = env
-        self.b = Build()
+        self.b = _Emit()
         self.shadows: dict[str, object] = {}
 
     # ---- emission --------------------------------------------------------

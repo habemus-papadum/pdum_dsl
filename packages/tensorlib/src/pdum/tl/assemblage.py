@@ -51,11 +51,35 @@ class Unit:
         return Unit(self.fns + other.fns)
 
     def fingerprint(self) -> tuple:
+        """Build identity: each unit's code AND its captured values — a
+        different cfg knob, Param set, or placement is a different build
+        (captured values are all structural at the assemblage tier)."""
         out = []
         for fn in self.fns:
             code = fn.__code__
-            out.append((code.co_qualname, hashlib.sha256(code.co_code).hexdigest()[:16]))
+            cells = []
+            for name, cell in zip(code.co_freevars, fn.__closure__ or ()):
+                try:
+                    cells.append((name, _canon(cell.cell_contents)))
+                except ValueError:
+                    cells.append((name, "<empty>"))
+            out.append((code.co_qualname, hashlib.sha256(code.co_code).hexdigest()[:16], tuple(cells)))
         return tuple(out)
+
+
+def _canon(v) -> object:
+    """A hashable identity for a captured value."""
+    if isinstance(v, Param):
+        return ("param", v.name, v.dims, v.levels)
+    if isinstance(v, (int, float, str, bool, type(None), bytes)):
+        return v
+    if isinstance(v, tuple):
+        return tuple(_canon(x) for x in v)
+    if isinstance(v, dict):
+        return tuple(sorted((k, _canon(x)) for k, x in v.items()))
+    if callable(v) and hasattr(v, "__code__"):
+        return ("fn", v.__code__.co_qualname, hashlib.sha256(v.__code__.co_code).hexdigest()[:16])
+    return repr(v)  # frozen dataclasses (cfg), markers, scopes: deterministic reprs
 
 
 def unit(fn) -> Unit:

@@ -20,8 +20,8 @@ from fractions import Fraction
 import numpy as np
 from pdum.dsl.types import Literal
 
-from ..build import Build
 from ..chart import chart
+from ..ir import Instr, Program
 from ..lifting import lift_step
 from .zoo_common import ZooModel, t_in
 
@@ -44,22 +44,19 @@ def _heat_step(u, n: Literal[int], m: Literal[int], alpha: Literal[float]):
 
 def heat2d(N=5, M=5, T=3, alpha=0.1, seed=13) -> ZooModel:
     rng = np.random.default_rng(seed)
-    b = Build()
     inputs: dict = {}
-    b.input(t_in(inputs, "u0", rng.standard_normal((N, M)), ("x", "y")))
+    t_in(inputs, "u0", rng.standard_normal((N, M)), ("x", "y"))
     ls = lift_step(_heat_step, u=inputs["u0"].layout, n=N, m=M, alpha=alpha)
-    uf = b.emit(
-        "fold",
-        ("u0",),
-        hint="uf",
-        step=ls.program,
-        dim="tm",
-        state=("u",),
-        element=(),
-        carry={"u": ls.outputs[0]},
-        out=("final", ls.outputs[0]),
-        extent=(0, T),
-    )
+    fold_params = {
+        "step": ls.program,
+        "dim": "tm",
+        "state": ("u",),
+        "element": (),
+        "carry": {"u": ls.outputs[0]},
+        "out": ("final", ls.outputs[0]),
+        "extent": (0, T),
+    }
+    prog = Program((Instr("u0", "input"), Instr("uf", "fold", ("u0",), fold_params)))
 
     def ref(inp):
         u = inp["u0"].copy()
@@ -70,7 +67,7 @@ def heat2d(N=5, M=5, T=3, alpha=0.1, seed=13) -> ZooModel:
             u = u + alpha * lap
         return u
 
-    return ZooModel(b.program(), inputs, uf, ref, ("x", "y"))
+    return ZooModel(prog, inputs, "uf", ref, ("x", "y"))
 
 
 def fdtd1d_staggered(N=6, T=3, c=0.4, seed=17) -> ZooModel:
@@ -85,9 +82,6 @@ def fdtd1d_staggered(N=6, T=3, c=0.4, seed=17) -> ZooModel:
         "E0": Tensor_from(E0, e_chart),
         "H0": Tensor_from(H0, h_chart),
     }
-    b = Build()
-    b.input("E0")
-    b.input("H0")
 
     def step(E, H, n: Literal[int]):
         # dE_i = E_{i+1} - E_i lives at i + 1/2 — each operand SAYS so,
@@ -102,18 +96,16 @@ def fdtd1d_staggered(N=6, T=3, c=0.4, seed=17) -> ZooModel:
         return E1, H1
 
     ls = lift_step(step, E=inputs["E0"].layout, H=inputs["H0"].layout, n=N)
-    ef = b.emit(
-        "fold",
-        ("E0", "H0"),
-        hint="Ef",
-        step=ls.program,
-        dim="tm",
-        state=("E", "H"),
-        element=(),
-        carry={"E": ls.outputs[0], "H": ls.outputs[1]},
-        out=("final", ls.outputs[0]),
-        extent=(0, T),
-    )
+    fold_params = {
+        "step": ls.program,
+        "dim": "tm",
+        "state": ("E", "H"),
+        "element": (),
+        "carry": {"E": ls.outputs[0], "H": ls.outputs[1]},
+        "out": ("final", ls.outputs[0]),
+        "extent": (0, T),
+    }
+    prog = Program((Instr("E0", "input"), Instr("H0", "input"), Instr("Ef", "fold", ("E0", "H0"), fold_params)))
 
     def ref(inp):
         E, H = inp["E0"].copy(), inp["H0"].copy()
@@ -124,7 +116,7 @@ def fdtd1d_staggered(N=6, T=3, c=0.4, seed=17) -> ZooModel:
             E = E + c * dH
         return E
 
-    return ZooModel(b.program(), inputs, ef, ref, ("x",))
+    return ZooModel(prog, inputs, "Ef", ref, ("x",))
 
 
 def Tensor_from(arr, ch):

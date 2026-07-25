@@ -99,6 +99,13 @@ class CompositeMarker:
     arity: int
     body: Node
 
+    def __call__(self, *args):
+        raise TypeError(
+            f"{self.name} is a composite marker — bodies lower by AST inspection "
+            f"(it appears as ONE named instr in a unit or step body); there is "
+            f"nothing to call on the host"
+        )
+
     def partial(self, i: int) -> "CompositeMarker":
         """The i-th partial derivative — a cache entry computed on demand
         from a cache entry: the tree rewrite runs once per name, ever."""

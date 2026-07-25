@@ -16,7 +16,6 @@ Version of record: this distribution is version-locked with
 """
 
 from .buffer import Buffer, FunctionalBuffer
-from .build import Build
 from .chart import Chart, characteristic, chart
 from .compute import Marker, Reducer, iota, pointwise, pw, red, reduce, scan
 from .dtypes import CARRIERS, as_dtype, bfloat16, carrier_of
@@ -35,7 +34,6 @@ from .units import Quantity, Unit, UnitRegistry, q, u
 __all__ = [
     "Buffer",
     "CARRIERS",
-    "Build",
     "CheckpointReport",
     "checkpoint",
     "dce",
