@@ -1041,10 +1041,17 @@ existing uniform channel, both kinds. Ambients per kind, raws first:
 vertex = `vertex_index`/`instance_index`; fragment = the framebuffer
 position — precisely the wrt of `fwidth`.
 
-*Textures, v1.* A texture is a tensor + descriptor with a **sampler**
-— the interpolation object: filter (nearest | linear), address mode
-(clamp | wrap), mip policy. `sample(tex, smp, (y, x))` is a dialect
-READ at continuous coordinates. Linear filtering is piecewise-affine
+*Textures, v1.* A texture is NOT a tensor: it is a proper RUNTIME
+object (the wgpu-py texture, owned by the WebGPU runtime) that our
+type system RECOGNIZES as its own leaf kind — we never dress our own
+tensors up as textures. A texture may be BUILT from a tensor (the
+upload path), and the compute-kernel→texture hop is a short, deliberate
+door (a store target whose descriptor is the texture's — workable
+whenever wanted, resolved by the integration layer, which is wgpu-py by
+decision). Sampling takes a **sampler** — the interpolation object:
+filter (nearest | linear), address mode (clamp | wrap), mip policy.
+`sample(tex, smp, (y, x))` is a dialect READ at continuous
+coordinates. Linear filtering is piecewise-affine
 in the coordinates, so coordinate gradients exist under the first-wins
 at-kink law (the differentiable-rendering door); the texel-side
 adjoint is a scatter of filter weights and joins with the P9 family.
