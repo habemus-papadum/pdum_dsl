@@ -182,6 +182,42 @@ def test_value_and_grad_wrt_ambient_is_fwidth():
     assert ((a > 0.0) & (a < 1.0)).any()  # ...and the analytic AA band between
 
 
+def test_value_and_grad_stages_inside_the_kernel_body():
+    """LIVE (P8, owner question answered): pass f DIRECTLY and compute
+    value_and_grad INSIDE the kernel — f is compile-time (a handle, not a
+    tensor), so the host-evaluation rule stages the transform at lower
+    time. The BASE parameter rides the rebind channel and the transform
+    re-applies per launch: a warm hit (same fp, new captured values)
+    computes with the NEW circle, never a stale one."""
+    from pdum.dsl import events, jit, value_and_grad
+
+    def circle(cy, cx, r):
+        @jit()
+        def go(y, x):
+            d = sqrt((y - cy) * (y - cy) + (x - cx) * (x - cx))
+            return d - r
+
+        return go
+
+    @compute
+    def aa_shader(f, img):
+        y, x = thread_idx("y", "x")
+        g = value_and_grad(f, wrt=("y", "x"))  # staged: f's identity is compile-time
+        v, (dy, dx) = g(y, x)
+        w = sqrt(dy * dy + dx * dx)
+        img[y, x] = clamp(v / w + 0.5, 0.0, 1.0)
+
+    img = T(np.zeros((16, 16)), ("y", "x"))
+    aa_shader(circle(7.5, 7.5, 5.0), img)
+    big = img.to_numpy().copy()
+    with events.forbid("kernel.miss"):  # warm hit: new values, same shape...
+        aa_shader(circle(7.5, 7.5, 2.0), img)
+    small = img.to_numpy()
+    assert small.sum() > big.sum()  # ...and the SMALLER circle rendered (no stale capture)
+    for a in (big, small):
+        assert a.min() == 0.0 and a.max() == 1.0 and ((a > 0.0) & (a < 1.0)).any()
+
+
 @P8
 def test_derivative_type_law_records_mirror_their_value():
     """The differentiated value may be a scalar, a record, or a statically

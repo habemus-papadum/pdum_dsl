@@ -365,8 +365,24 @@ class _KernelLowerer(_Lifter):
         dispatch through the spelled oracle (oracle-grade by doctrine).
         A tuple argument (``f((y, x))``) flattens into the operands and
         regroups per element; a tuple RESULT flattens per ``out_spec``
-        (from the destructuring pattern), one instr per flat component."""
+        (from the destructuring pattern), one instr per flat component.
+
+        A handle may also be a host-STAGED transform of a parameter —
+        ``g = value_and_grad(f, wrt=...)`` written INSIDE the body, where
+        f is a parameter (the host-evaluation rule stages it at lower
+        time). Then the BASE parameter rides the rebind channel and the
+        transform re-applies per launch — a warm hit never serves stale
+        captured values."""
         pname = next((n for n in self.param_names if self.env.get(n) is handle), None)
+        wrap = None
+        if pname is None:
+            from pdum.dsl.derivative import _ValueAndGrad
+
+            if isinstance(handle, _ValueAndGrad):
+                base = handle.captures[0]
+                pname = next((n for n in self.param_names if self.env.get(n) is base), None)
+                if pname is not None:
+                    (wrap,) = [v for k, v in handle.fntype.template.static_params if k == "wrt"]
         flat, spec = [], []
         for a in args:
             if isinstance(a, _T):
@@ -381,11 +397,15 @@ class _KernelLowerer(_Lifter):
             fp_key = (handle.fp, tuple(spec), out_spec, k)
             mname = f"kernel.fn.{hashlib.sha256(repr(fp_key).encode()).hexdigest()[:10]}"
 
-            def _make(mname=mname, spec=tuple(spec), out_spec=out_spec, k=k):
+            def _make(mname=mname, spec=tuple(spec), out_spec=out_spec, k=k, wrap=wrap):
                 def apply(*coords):
                     from pdum.dsl.reference import reference
 
                     f = _ARG_BINDINGS[mname]
+                    if wrap is not None:  # re-stage the transform on the CURRENT binding
+                        from pdum.dsl import value_and_grad
+
+                        f = value_and_grad(f, wrt=wrap)
 
                     def call(*cs):
                         it = iter(cs)
