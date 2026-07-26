@@ -413,6 +413,15 @@ the same two regions (step + vjp) — store-all and revolve share all
 IR; nothing pushed the schedule into the IR. Evidence for
 schedule-as-execution-column; baking a schedule into IR remains
 available to the L4 certified-descent era without conflict.
+*Owner guidance appended (post-C4.3b):* the fold boundary IS the
+natural checkpointing/activation-recompute site — its region
+structure already declares everything a future engine needs (step
+boundary, carried state, elements re-derivable at absolute
+coordinates), and buffer reuse/ping-pong reasoning hangs off the
+token/store ordering and the overlap contract. WHETHER to checkpoint
+is a machine-characteristics decision (L4); at most, HINT helpers
+(config-tier data, never identity) may be added WHEN such an engine
+exists to read them — none before.
 *A dialect-hierarchy finding:* the single-source step exposed that
 STEP bodies (S.1 tier: `pointwise(where, ...)` spelled) and KERNEL
 bodies (scalar tier: bare markers) are DIFFERENT dialect leaves
