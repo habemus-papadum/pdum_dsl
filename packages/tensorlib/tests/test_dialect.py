@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from pdum.dsl.ir import Builder, Region
 from pdum.tl import Tensor, compute, thread_idx  # noqa: F401 — thread_idx: bodies' global
-from pdum.tl.compute import const_like, pointwise  # noqa: F401 — S.1 spellings in bodies
+from pdum.tl.compute import const_like, pointwise, reduce  # noqa: F401 — S.1 spellings in bodies
 from pdum.tl.dialect import (
     CORE_OPS,
     TL_OPS,
@@ -24,7 +24,7 @@ from pdum.tl.dialect import (
     run_region,
     tensor_type,
 )
-from pdum.tl.markers import maximum, tanh, where  # noqa: F401 — bare in bodies, BOTH engines
+from pdum.tl.markers import maximum, red, tanh, where  # noqa: F401 — bare in bodies, BOTH engines
 
 
 @compute
@@ -238,3 +238,59 @@ def test_structural_slots_refuse_tensors_with_the_annotation_fix():
     E = Tensor.from_numpy(np.zeros(4), ("x",))
     with pytest.raises(ValueError, match="STRUCTURAL slot"):
         lower_body(bad, (tensor_type(E),), kind="step")
+
+
+# --- C4.3b: the general region VJP -------------------------------------------
+
+
+def test_step_layernorm_grad_differential():
+    """THE C4.3b flagship: the GENERAL region VJP (pointwise via the one
+    table + reduce sum/mean + repeat_like adjoints) differentiates the
+    zoo's layernorm — gradients wrt x, g, AND b match the incumbent
+    autodiff engine to 1e-12 (cross-engine summation order)."""
+    from pdum.tl.autodiff import grad
+    from pdum.tl.dialect import derive_vjp
+    from pdum.tl.ir import Instr, Program, run
+    from pdum.tl.lifting import lift_step
+    from pdum.tl.zoo.zoo_common import layernorm
+
+    def ln(x, g, b):
+        return layernorm(x, g, b, feat="d", eps=1e-5)
+
+    rng = np.random.default_rng(11)
+    x = Tensor.from_numpy(rng.standard_normal((5, 8)), ("t", "d"))
+    g = Tensor.from_numpy(rng.standard_normal(8), ("d",))
+    b = Tensor.from_numpy(rng.standard_normal(8), ("d",))
+    # the incumbent: lift + autodiff over the Program world
+    ls = lift_step(ln, x=x.layout, g=g.layout, b=b.layout)
+    prog = Program((*ls.program.instrs, Instr("zloss", "reduce", (ls.outputs[0],), {"f": "sum", "dims": ("t", "d")})))
+    joint, grads = grad(prog, "zloss", {"x": x, "g": g, "b": b})
+    env = run(joint, {"x": x, "g": g, "b": b})
+    # the dialect: the same function, the general VJP, a ones seed
+    region = lower_body(
+        layernorm,
+        (tensor_type(x), tensor_type(g), tensor_type(b)),
+        kind="step",
+        host={"feat": "d", "eps": 1e-5},
+    )
+    vjp = derive_vjp(region)
+    ones = Tensor.from_numpy(np.ones((5, 8)), ("t", "d"))
+    dx, dg, db = run_region(vjp, [x, g, b, ones])
+    for got, name in ((dx, "x"), (dg, "g"), (db, "b")):
+        want = env[grads[name]]
+        order = tuple(d.name for d in want.layout.dims)
+        np.testing.assert_allclose(got.to_numpy(order=order), want.to_numpy(order=order), rtol=1e-12)
+
+
+def test_vjp_pass1_refuses_unsupported_reducers():
+    """The engine grows per-op, by declaration: a max-reduce refuses with
+    the arriving-slice reason, never a silent wrong gradient."""
+    from pdum.tl.dialect import check_vjp_supported
+
+    def peak(x):
+        return reduce(red.max, x, "d")
+
+    x = Tensor.from_numpy(np.zeros((3, 4)), ("t", "d"))
+    region = lower_body(peak, (tensor_type(x),), kind="step")
+    with pytest.raises(TypeError, match=r"reducer 'max' adjoint arrives.*sum/mean today"):
+        check_vjp_supported(region)

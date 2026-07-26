@@ -204,10 +204,20 @@ C1–C2 are worth doing even if C3 fails its gate.
   path proper: coherence check, guards, two-tier caches, backend
   column — every "no" in the I.1 table becomes "yes". fn-arg inlining
   replaces per-element oracle dispatch here (it was already a P8 rung;
-  it lands where it belongs).
+  it lands where it belongs). **DO-NOT-FORGET (owner-acked):**
+  (B) `tl.uniform` unifies into the `abi.*` dialect here — it is
+  `abi.slot`'s kernel-tier cousin, same concept, two tiers; merge at
+  C5, do not let them coexist past it.
 - **C6 — Graduate.** Fold the surviving content of this document into
   200 (S.2/S.3 amendments), 220 (a principle entry if one crystallized),
-  210; retire the file to `history/`.
+  210; retire the file to `history/`. **DO-NOT-FORGET (owner-acked):**
+  (A) the token/store ORDERING mechanism is a promotion candidate out
+  of tl — tile barriers (L4 brief) and any effectful dialect consume
+  the same tokens; promote to a shared/core dialect WHEN L4 asks, and
+  record the pointer in §8's brief at graduation so L4 cannot miss it.
+  Organizing principle (owner-acked): op DEFINITION SITES own all
+  their columns — type rule, evaluator row, adjoint row, spelling
+  rows.
 
 **Owner rulings** (received; supersede the open questions):
 
@@ -513,3 +523,24 @@ eager execution bit-for-bit; plus a shift/slice/pad chain
 differential and the structural-slot refusal. NOT yet switched: every
 consumer (lift_step, assemblage, autodiff, the zoo) still runs the
 incumbent Program world — C4.3b+ moves them. 606 passed at land.
+
+**C4.3b — the general region VJP (landed).** The adjoint walker
+factored out of the fold-specific derivation into ONE engine
+(`_substitute` + `_pullback`), and grew two op families: **reduce**
+(sum: repeat back; mean: repeat back over the static reduced numel)
+and **repeat_like** (reduce-sum over the added dims; the like operand
+is layout-reference only, per doctrine — it receives no adjoint).
+`derive_vjp(region)` is the general form — params + upstream seed in,
+a tuple of per-param adjoints out, exact zeros materialized aligned
+to their params; `derive_step_vjp` became a thin role assignment over
+the same walker (element-gradient-free still checked). Pass 1
+(`check_vjp_supported`) refuses per-op with the arriving-slice reason
+— a max-reduce refuses toward the first-occurrence-mask slice, never
+a silent wrong gradient (pinned). **Flagship pin:** the zoo's
+layernorm differentiated through the dialect — gradients wrt x, g,
+AND b match the incumbent autodiff engine to 1e-12. `run_region`
+gained core.tuple/extract. DO-NOT-FORGET items (A: token promotion at
+L4; B: tl.uniform→abi at C5) recorded on their steps above,
+owner-acked. 608 passed at land. *Next slices:* first-occurrence-mask
+reducers + scan + layout-op adjoints, then the lift_step/assemblage
+switch (deleting the incumbent lowering as superseded).

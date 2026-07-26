@@ -400,16 +400,9 @@ def _splice_tl(b, tree):
     return tree
 
 
-def derive_step_vjp(step: Region, ops=None) -> Region:
-    """The adjoint of a fold step, AS A REGION: params (state, element,
-    upstream state-adjoint); recomputes the forward inside itself and
-    yields d(state). The element's adjoint must be gradient-free (the
-    dropout-mask discipline) — asserted."""
-    check_fold_step_supported(step)  # pass 1, always
-    b = Builder(ops or {**CORE_OPS, **TL_OPS})
-    s_t, m_t = (p.type for p in step.params)
-    p_s, p_m, p_ds = b.param(("v", 0), s_t), b.param(("v", 1), m_t), b.param(("v", 2), s_t)
-    sub_env = {id(step.params[0]): p_s, id(step.params[1]): p_m}
+def _substitute(b, region: Region, param_map: dict):
+    """Rebuild the region's DAG over new params; return (out, order)."""
+    sub_env = dict(param_map)
     order: list = []
 
     def sub(n):
@@ -423,19 +416,106 @@ def derive_step_vjp(step: Region, ops=None) -> Region:
         order.append(made)
         return made
 
-    out = sub(step.body[-1].args[0])
-    adj: dict[int, object] = {id(out): p_ds}
+    return sub(region.body[-1].args[0]), order
+
+
+def _pullback(b, order: list, out, seed) -> dict:
+    """Reverse accumulation over a substituted DAG — the ONE region adjoint
+    walker (240 C4.3b). Per-op rules: pointwise slopes spliced from THE
+    table; reduce sum/mean (repeat back, mean divides by the static reduced
+    numel); repeat_like (reduce-sum over the added dims — the like operand
+    is layout-reference only, per doctrine). Returns id(node) -> adjoint;
+    absence is an exact zero."""
+    adj: dict[int, object] = {id(out): seed}
+
+    def acc(operand, term):
+        prev = adj.get(id(operand))
+        adj[id(operand)] = term if prev is None else b.emit("tl.pointwise", prev, term, f="add")
+
     for node in reversed(order):
         a = adj.get(id(node))
-        if a is None or node.op != "tl.pointwise":
+        if a is None:
             continue
-        rules = TABLE[dict(node.attrs)["f"]]
-        for rule, operand in zip(rules, node.args):
-            if rule is None or operand.op == "core.const":
-                continue
-            term = b.emit("tl.pointwise", _splice_tl(b, rule(*node.args)), a, f="mul")
-            prev = adj.get(id(operand))
-            adj[id(operand)] = term if prev is None else b.emit("tl.pointwise", prev, term, f="add")
+        if node.op == "tl.pointwise":
+            rules = TABLE[dict(node.attrs)["f"]]
+            for rule, operand in zip(rules, node.args):
+                if rule is None or operand.op == "core.const":
+                    continue
+                acc(operand, b.emit("tl.pointwise", _splice_tl(b, rule(*node.args)), a, f="mul"))
+        elif node.op == "tl.reduce":
+            f = dict(node.attrs)["f"]
+            (operand,) = node.args
+            rep = b.emit("tl.repeat_like", a, operand)
+            if f == "mean":
+                red = {d[0] for d in operand.type.dims} - {d[0] for d in node.type.dims}
+                n_red = 1
+                for name, lo, hi in operand.type.dims:
+                    if name in red:
+                        n_red *= hi - lo
+                rep = b.emit("tl.pointwise", rep, b.emit("core.const", type=f64, value=float(n_red)), f="div")
+            acc(operand, rep)
+        elif node.op == "tl.repeat_like":
+            x = node.args[0]
+            added = tuple(d[0] for d in node.type.dims if d[0] not in {q[0] for q in x.type.dims})
+            acc(x, b.emit("tl.reduce", a, f="sum", dims=added))
+    return adj
+
+
+_VJP_SUPPORTED = {"tl.pointwise", "tl.reduce", "tl.repeat_like", "core.const", "core.param", "core.yield"}
+_VJP_REDUCERS = {"sum", "mean"}
+
+
+def check_vjp_supported(region: Region) -> None:
+    """PASS 1 for the general VJP: refuse — with the reason — anything the
+    adjoint walker cannot derive through yet. The engine grows per-op, by
+    declaration, never by silent guessing."""
+    for n in walk_region(region):
+        if n.op not in _VJP_SUPPORTED:
+            raise TypeError(
+                f"derive_vjp: {n.op!r} has no region-adjoint rule yet (supported: {', '.join(sorted(_VJP_SUPPORTED))})"
+            )
+        if n.op == "tl.pointwise" and dict(n.attrs)["f"] not in TABLE:
+            raise TypeError(f"derive_vjp: marker {dict(n.attrs)['f']!r} has no row in the derivative table")
+        if n.op == "tl.reduce" and dict(n.attrs)["f"] not in _VJP_REDUCERS:
+            raise TypeError(
+                f"derive_vjp: reducer {dict(n.attrs)['f']!r} adjoint arrives with the "
+                f"first-occurrence-mask slice — sum/mean today"
+            )
+
+
+def derive_vjp(region: Region, ops=None) -> Region:
+    """The GENERAL straight-line region VJP (240 C4.3b), region-in/
+    region-out: params are the originals plus the upstream adjoint of the
+    yield; yields a core.tuple of adjoints, one per original param (an
+    exact-zero adjoint materializes as a zero field aligned to its param).
+    Two-pass: check first, derive second."""
+    check_vjp_supported(region)
+    b = Builder(ops or {**CORE_OPS, **TL_OPS})
+    new_params = tuple(b.param(("v", i), p.type) for i, p in enumerate(region.params))
+    p_seed = b.param(("v", len(new_params)), region.body[-1].args[0].type)
+    out, order = _substitute(b, region, {id(p): q for p, q in zip(region.params, new_params)})
+    adj = _pullback(b, order, out, p_seed)
+    outs = []
+    for p in new_params:
+        a = adj.get(id(p))
+        if a is None:  # exact zero, aligned to the param
+            a = b.emit("tl.pointwise", p, b.emit("core.const", type=f64, value=0.0), f="mul")
+        outs.append(a)
+    result = outs[0] if len(outs) == 1 else b.emit("core.tuple", *outs)
+    return Region(params=(*new_params, p_seed), body=(b.emit("core.yield", result),))
+
+
+def derive_step_vjp(step: Region, ops=None) -> Region:
+    """The fold step's adjoint, AS A REGION: params (state, element,
+    upstream state-adjoint); yields d(state). The element's adjoint must
+    be gradient-free (the dropout-mask discipline) — checked. A thin role
+    assignment over the ONE walker."""
+    check_fold_step_supported(step)  # pass 1, always
+    b = Builder(ops or {**CORE_OPS, **TL_OPS})
+    s_t, m_t = (p.type for p in step.params)
+    p_s, p_m, p_ds = b.param(("v", 0), s_t), b.param(("v", 1), m_t), b.param(("v", 2), s_t)
+    out, order = _substitute(b, step, {id(step.params[0]): p_s, id(step.params[1]): p_m})
+    adj = _pullback(b, order, out, p_ds)
     if adj.get(id(p_m)) is not None:
         raise TypeError("derive_step_vjp: the element adjoint must be gradient-free in this slice")
     ds = adj.get(id(p_s))
@@ -469,6 +549,10 @@ def run_region(region: Region, values: list, uniforms: dict | None = None):
             return attrs["value"]
         if n.op == "core.yield":
             return ev(n.args[0])
+        if n.op == "core.tuple":
+            return tuple(ev(a) for a in n.args)
+        if n.op == "core.extract":
+            return ev(n.args[0])[attrs["index"]]
         if n.op == "tl.token":
             return Token()
         if n.op == "tl.uniform":
