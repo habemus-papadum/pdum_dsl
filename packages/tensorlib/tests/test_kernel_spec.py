@@ -95,7 +95,6 @@ def test_split_aligned_tensors_index_by_raw_coordinates():
     np.testing.assert_allclose(base.to_numpy(), np.arange(16.0))
 
 
-@P8
 def test_global_thread_idx_survives_coordinate_transforms():
     """Thread identity is AMBIENT everywhere: a device function sees the
     global thread id even after its coordinates were scaled/translated —
@@ -105,8 +104,8 @@ def test_global_thread_idx_survives_coordinate_transforms():
     def probe():
         @jit()
         def go(y, x):
-            g = grid_layout()  # noqa: F821 — the ambient reaches device functions too
-            gy, gx = global_thread_idx(block_idx("y", "x"), thread_idx("y", "x"), g)  # noqa: F821
+            g = grid_layout()  # the ambient reaches device functions too
+            gy, gx = global_thread_idx(block_idx("y", "x"), thread_idx("y", "x"), g)
             return (y - gy) + (x - gx)  # zero iff untransformed
 
         return go

@@ -70,6 +70,7 @@ from .dialect import (
     TL_RULES,
     TensorType,
     _globals_of,
+    _inline_plain,
     _lookup,
     _tl_call,
     capture_shim,
@@ -548,10 +549,71 @@ def _fn_arg(ctx, handle, args, out_spec, node):
     CURRENT launch binding — both classes."""
     pname, wrap = _resolve_staged(ctx, handle)
     if all(isinstance(a, Node) for a in args) and hasattr(handle, "fntype"):
+        if _references_ambient(handle):
+            return _inline_ambient(ctx, handle, args, out_spec, node)
         region = _scalar_region(handle, len(args))
         if _liftable(region):
             return _splice_fn(ctx, handle, region, args, out_spec, node, pname, wrap)
     return _fn_arg_oracle(ctx, handle, args, out_spec, node, pname, wrap)
+
+
+_AMBIENT_NAMES = frozenset({"thread_idx", "block_idx", "grid_layout", "global_thread_idx"})
+
+
+def _references_ambient(handle) -> bool:
+    """Does this device function's body reach the ambient? Confirmed by
+    OBJECT IDENTITY of what its names resolve to, never by string."""
+    fn = getattr(handle, "pyfunc", None)
+    if fn is None:
+        return False
+    code = fn.__code__
+    names = [n for n in code.co_names + code.co_freevars if n in _AMBIENT_NAMES]
+    if not names:
+        return False
+    env = dict(zip(code.co_freevars, (c.cell_contents for c in fn.__closure__ or ())))
+    return any(isinstance(env.get(n, fn.__globals__.get(n)), _Intrinsic) for n in names)
+
+
+def _inline_ambient(ctx, handle, args, out_spec, node):
+    """An ambient-referencing device function inlines by CAPTURE-AND-CALL
+    through the kernel rules (S.3: device functions ARE value-language
+    kernels): the raws inside are the launch's own — thread identity is
+    AMBIENT, so transforming the coordinates a caller passes changes what
+    the function samples, never who it is."""
+    fn = handle.pyfunc
+    for cell_name, cell in zip(fn.__code__.co_freevars, fn.__closure__ or ()):
+        if isinstance(cell.cell_contents, (int, float, bool)):
+            raise ValueError(
+                f"ambient device function {fn.__qualname__!r} captures data ({cell_name!r}) — "
+                f"the ambient-inline channel carries citizens only today; pass the value as an argument"
+            )
+    return _shape_result(_inline_plain(ctx, fn, tuple(args), node), out_spec)
+
+
+def _shape_result(result, out_spec):
+    """The destructuring pattern CHECKED against the fn's actual result
+    shape; returns the flat tuple the assign loop consumes."""
+    if out_spec is None:
+        if isinstance(result, tuple):
+            raise ValueError(
+                f"the function returns {len(result)} values — destructure them (the pattern declares the outputs)"
+            )
+        return result
+    if not isinstance(result, tuple) or len(result) != len(out_spec):
+        got = len(result) if isinstance(result, tuple) else 1
+        raise ValueError(f"the destructuring pattern names {len(out_spec)} outputs but the function returns {got}")
+    flat = []
+    for s, part in zip(out_spec, result):
+        if s is None:
+            if isinstance(part, tuple):
+                raise ValueError("the destructuring pattern binds one name where the function returns a tuple")
+            flat.append(part)
+        else:
+            if not isinstance(part, tuple) or len(part) != s:
+                got = len(part) if isinstance(part, tuple) else 1
+                raise ValueError(f"the destructuring pattern names {s} grouped outputs but the function returns {got}")
+            flat.extend(part)
+    return tuple(flat)
 
 
 def _splice_fn(ctx, handle, region, args, out_spec, node, pname, wrap):
@@ -619,28 +681,7 @@ def _splice_fn(ctx, handle, region, args, out_spec, node, pname, wrap):
             return ctx.emit("tl.pointwise", *lifted, node=node, f=f)
         return ctx.emit(nd.op, *lifted, node=node, **attrs)  # an all-scalar subtree stays value-dialect
 
-    result = go(region.body[-1].args[0])
-    if out_spec is None:
-        if isinstance(result, tuple):
-            raise ValueError(
-                f"the function returns {len(result)} values — destructure them (the pattern declares the outputs)"
-            )
-        return result
-    if not isinstance(result, tuple) or len(result) != len(out_spec):
-        got = len(result) if isinstance(result, tuple) else 1
-        raise ValueError(f"the destructuring pattern names {len(out_spec)} outputs but the function returns {got}")
-    flat = []
-    for s, part in zip(out_spec, result):
-        if s is None:
-            if isinstance(part, tuple):
-                raise ValueError("the destructuring pattern binds one name where the function returns a tuple")
-            flat.append(part)
-        else:
-            if not isinstance(part, tuple) or len(part) != s:
-                got = len(part) if isinstance(part, tuple) else 1
-                raise ValueError(f"the destructuring pattern names {s} grouped outputs but the function returns {got}")
-            flat.extend(part)
-    return tuple(flat)
+    return _shape_result(go(region.body[-1].args[0]), out_spec)
 
 
 def _fn_arg_oracle(ctx, handle, args, out_spec, node, pname, wrap):
