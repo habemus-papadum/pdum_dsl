@@ -1,10 +1,14 @@
 # 240 — The cleanup pivot
 
-**Status: TRANSIENT working document (P8.5).** This is the pivot's home:
-education first, then the plan, then the ledger of what lands. Sections
-graduate into 200/210/220 as work completes; the document retires to
-`history/` when it is empty. Nothing in here changes ratified syntax —
-the skipped spec tests remain the forward contract.
+**Status: RETIRED (C6 graduation, 2026-07-26).** The pivot ran its
+whole arc C0–C6; this file is its ledger, preserved in `history/`.
+The surviving content graduated: the literal doctrine → 200 §1.5
+amendment; the pivot's outcome record → 200 §7 (P8.5); the
+token-promotion pointer (do-not-forget A) and the fold-boundary
+checkpointing guidance → 200 §8; the crystallized principle → 220
+§15 (one lowering engine — dialects are rule-pack layers); the
+executor seam → 210. Nothing in here changed ratified syntax — the
+skipped spec tests remain the forward contract.
 
 **Why now.** The `value_and_grad`-in-kernel investigation exposed that
 the kernel tier stages host code by *convention* (any callable applied
@@ -735,3 +739,24 @@ compile-once thesis, staged compose/restage) passed UNCHANGED on the
 switch. 618 passed at land. *Remaining C5:* combinator taps
 (record-in-combinators is a skipped spec test — it arrives with its
 own slice), consumers optionally off the migration view.
+
+**C6 — graduation (landed; this file retires).** The I.1 table's
+resolution, row by row: two-tier cache YES (C5.2); coherence check
+YES, recursive (C4.2 via the capture shim; fn-arguments through
+`lower_handle` itself); capture guards/value keying YES by the
+fingerprint mechanism (C1's design — raw-closure kernels key on env
+fingerprints, staleness is a MISS; recorded as the deliberate
+alternative to dsl guards); backend column: the SEAT exists (C5.2's
+`_executor` + `_EXECUTOR_FP`; a real device backend is L4-era by the
+Not-doing list, the P8 conformance executor is its first tenant);
+host evaluation during lowering YES (C1's declared doors + the shared
+pack's refusals). Deliberately NOT taken inside the pivot, recorded:
+combinator taps (a skipped spec test; its own P8 slice), the
+step-tier uniform channel (steps bake captured scalars — the gap
+waits for a step-tier launch loop), consumers stepping off the
+migration view (each moves when it needs to; `export_program` dies
+with the last one). Graduated per the status header; the LOC budget
+re-measured at 2605 counted and the cap consciously lowered
+3400 → 2800 (the migration headroom returned; the tripwire is snug
+again). The march resumes at the P8 rungs: ambient triple → buffer
+reads → vertex/fragment → the WebGPU conformance executor.

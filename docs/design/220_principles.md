@@ -222,3 +222,39 @@ and randomness the day the value tier does.
 **Pinned:** test_kernel (config bracket, taps, honest invalidation);
 test_kernel_spec.py — the committed future spellings as skipped tests,
 un-skipping per milestone.
+
+## 15. One lowering engine — dialects are rule-pack layers
+
+Entry 14 states the syntax law; this is its machinery, proven by the
+P8.5 pivot: there is ONE lowering engine (the dsl Lowerer), and a
+tier is a RULE-PACK LAYER over it, never a second machine. The tl
+tensor dialect is the base pack plus tl rows; the kernel tier layers
+ambient/store rows over that; the step and assemblage tiers are
+further thin layers — each contributes only its genuine vocabulary,
+and TENSOR-TYPEDNESS selects the dialect path per node (a scalar
+subtree flows through the base pack unchanged, all-scalar subtrees of
+a spliced kernel ride the value dialect inside tensor regions).
+Type identity is the value's OBSERVABLE frame — for tensors, per dim
+its name, domain, and labeling frame, with representation
+(strides/offset) riding as a non-identity shadow read only through
+the one inference authority — which makes tl's alignment law an
+ordinary type rule (refusing at emission, with source locations and
+the incumbent's own fix recipes) and makes content keys distinguish
+what execution distinguishes, nothing else.
+The organizing rule for growth (owner-acked): an op's DEFINITION SITE
+owns all its columns — type rule, evaluator row, adjoint row,
+spelling rows — so a dialect extends by table rows, never by wrapping
+another dialect's machinery.
+And schedules are EVALUATION STRATEGIES, never IR: store-all and
+revolve share every node (the recompute theorem holds bit-identically
+with dropout on, because closed-form fields re-select at absolute
+coordinates); an L4 certified descent may BAKE a schedule later
+without a representation change.
+**Enables:** alignment errors at emission instead of launch; one
+derivative walker serving fold, general regions, and the incumbent
+adjoints through a migration view; the marshaling dialect (`abi.*`)
+shared verbatim between tiers; a kernel's fn-arguments inlining
+through the same engine that lowered them as citizens.
+**Pinned:** test_dialect.py (differentials bit-identical, alignment
+with locations, frame-keyed content keys, the fold/revolve theorem);
+test_kernel.py (zero-oracle inlining, one executor per content key).

@@ -40,6 +40,17 @@ device backend: contracts on artifacts, enforcement at launch, refusals that
 quote the fix. The 200-era version generalizes it: boundary descriptors
 (Buffer + Layout + Encoding) ARE the contract.
 
+*Where a kernel executor plugs in (P8.5).* The kernel tier is two-tier
+cached like the dsl tier: the specialization tier holds the launch
+plan, and the content tier keys `(region.key, executor fp)` — today's
+one executor is the numpy interpreter (`_executor` in `pdum.tl.kernel`
+closes over the region). The P8 WebGPU conformance executor replaces
+that body with render + compile behind the SAME content key and brings
+`_EXECUTOR_FP` its second value; the per-launch scalar channel is
+already physical (`abi.slot` offsets/fmts packed into staging bytes by
+the launcher), so a device backend consumes it as a uniform buffer
+without a representation change.
+
 ## WebGPU runtime learnings (measured on M3, step 9–10 era)
 
 - **Synchronous readback is a fixed-latency protocol act, not bandwidth**:

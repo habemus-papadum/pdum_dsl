@@ -234,6 +234,27 @@ fold counts, dim extents in declarations) accepts only `Literal`-typed
 values; a plain int reaching one refuses with a designed message naming
 the annotation fix.
 
+**§1.5 amendment (P8.5, owner-ruled): the literal doctrine — untagged
+is data, always.** An unmarked scalar reaching a body (captured global,
+closure value) is RUNTIME DATA: it lowers to a per-launch slot in the
+marshaling dialect (`abi.slot`, one concept at every tier), re-read
+from the environment at each launch — warm on change, its value never
+entering identity (the environment fingerprint keys its name and TYPE
+only). A value becomes a compile-time constant only through a DECLARED
+door, of which there are three with one meaning: the parameter
+annotation (`n: Literal[int]` — everything passed there is
+structural), the call site (`f(literal(k), ...)`), and the value's
+definition site (`C = literal(0.79...)` — `pdum.dsl.literal`).
+Declared literals bake and value-key: recompiling on change is then
+CHOSEN. Source-text constants are code, not captures — inside the code
+fingerprint, unaffected. Machinery (fold/reduce) gets no scalar
+special cases: operators declare their structural slots, and pass 1 of
+the two-pass mechanism CHECKS that the incoming IR is compile-time
+constant, refusing with the reason. The capture doctrine underneath is
+uniform: captured CITIZENS (helpers, markers, staged transforms) are
+code, keyed by fingerprint; captured VALUES are data, typed and
+channeled; `literal` is the sole bridge between the worlds.
+
 **The derivation request.** The training step is derived by one request
 carrying three name-pattern selection sets, all identity-bearing:
 
@@ -1572,6 +1593,31 @@ reference; the quad+`f` golden runs on the WebGPU conformance
 executor differentially against reference on the development Mac;
 the graphics zoo entries run; D + Z green.
 
+**P8.5 — The cleanup pivot (M; LANDED mid-P8, 2026-07-26).** Inserted
+before the remaining P8 rungs because they all build on the kernel
+lowerer; ran as one arc (C0–C6), each step green against a frozen
+invariant battery. What it left behind: ONE lowering engine — the tl
+tensor tier is a DIALECT over the `pdum.dsl` core (`tl.*` ops with
+Layout-shadow type rules on the shared Node/Region infrastructure;
+kernel, step, and assemblage tiers are rule-pack LAYERS over one
+value pack; the second lowering machine is deleted); type identity is
+the layout's observable frame, so tl's alignment law refuses at
+emission with source locations and content keys distinguish frames;
+the staging family (`@staged`/`@macro`, declaration-first) replaced
+convention-recognized host evaluation; the literal doctrine (§1.5
+amendment) replaced const-baking; `tl.uniform` merged into the
+`abi.*` marshaling dialect with a real extract→pack→launch byte
+channel; the kernel tier gained the dsl cache shape (specialization
+tier + content-addressed executor tier — the seat where the P8
+conformance executor's render+compile slots in); function-valued
+arguments INLINE (the liftable straight-line class splices as
+pointwise rows over arg-rooted slots; per-element oracle dispatch
+survives only behind a declared boundary, for bounded control flow
+until predication); region-rendered Programs (the migration view)
+serve every incumbent consumer until each retargets. The pivot's
+ledger lives in `history/240_cleanup-pivot.md`; the crystallized
+principle is 220 §15.
+
 **P9 — The indexing family; runway handoff (S).** The §1.9 family
 lands: `take` + `scatter_add` (the adjoint pair) + `argtopk`/`argsort`
 (gradient-free) + reference OOB refusal + cost entries + the
@@ -1606,7 +1652,11 @@ is split+bind one tree level down; the three genuinely new things at L4
 are predicates and decisions, not representation: the capacity WF
 predicate (byte-exact, from descriptors + lowering annotations),
 ordering/race-freedom (the token mechanism of §S.3, owned by the
-checker), and materialization-boundary placement. Legality = the
+checker — NOTE, owner-acked at the P8.5 graduation: the token/store
+ordering mechanism currently lives in the tl dialect; tile barriers
+and every effectful dialect consume the SAME tokens, so promote it to
+a shared/core dialect WHEN this work asks for it — the promotion is
+expected, not speculative), and materialization-boundary placement. Legality = the
 equivalence chain (a sequence of named certified rewrites — split,
 bind, reorder-under-license, fuse-as-elision, pad-with-guards, plus the
 overlapped-split/halo-recompute class the stencil flagship needs) AND
@@ -1614,7 +1664,15 @@ the per-level WF certificate checked on the result. The objective:
 minimize parent-memory traffic under child capacity; the pipeline is a
 descend-and-revisit loop with declared invalidation edges (fusion
 invalidates checkpoint and traffic plans; placement invalidates
-partition candidates); combine-introducing rewrites precede `grad`,
+partition candidates); the FOLD BOUNDARY is the natural
+checkpointing/activation-recompute site — its region structure
+already declares everything a schedule engine needs (the step, the
+carried state, elements re-derivable at absolute coordinates), and
+store-all vs revolve are EVALUATION STRATEGIES over the same two
+regions, bit-identical with dropout on (the recompute theorem) — so
+schedule choice is a machine-characteristics decision made here, with
+at most config-tier hint helpers added WHEN this engine exists to
+read them, none before; combine-introducing rewrites precede `grad`,
 split/bind/place commute with it; the naive→flash move is a registered
 named rewrite whose license is the declared combine. The descent
 search may seed from sibling programs' plans as **non-binding hints**
@@ -1690,3 +1748,6 @@ materializing computation. `out=`, `over`, `jvp`-as-pdum-concept,
 `matmul`, `Named`, per-element dispatch as a production path, and the
 demo backends are deliberately absent from this system. Design docs
 010–195 live in `docs/design/history/`; git history is the archive.
+The P8.5 cleanup pivot's working document and ledger (240) retired to
+`history/240_cleanup-pivot.md` at its C6 graduation — its surviving
+content lives in §1.5, §7 (P8.5), §8, and 220 §15.

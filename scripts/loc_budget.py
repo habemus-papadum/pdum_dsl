@@ -28,7 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 KERNEL = ROOT / "packages" / "dsl" / "src" / "pdum" / "dsl"
 
-KERNEL_TOTAL_CAP = 3400  # P1 redraw: measured 2253 at the move + headroom for the
+KERNEL_TOTAL_CAP = 2800  # P1 redraw: measured 2253 at the move + headroom for the
 # P4-P7 installments (random fields, scope, stores); each future raise is a
 # conscious act with the reason recorded here.
 # P8 raise (owner-ruled, 2026-07-25): 2600 -> 3000 after the derivative engine
@@ -37,6 +37,10 @@ KERNEL_TOTAL_CAP = 3400  # P1 redraw: measured 2253 at the move + headroom for t
 # Pivot raise (owner-ruled, 2026-07-26): 3000 -> 3400 for the C4+ migration —
 # "don't bang your head trying to fit everything into the budget"; the
 # tripwire stays, and C6 graduation is the natural point to re-measure.
+# C6 re-measure (2026-07-26): the pivot ended at 2605 counted — the migration
+# never spent its headroom (the tl side absorbed the moves). Cap lowered
+# 3400 -> 2800: the tripwire is snug again; the ~200 slack funds the P8
+# ambient/buffer-read rungs, and any further raise is a conscious act here.
 
 # Per-file caps. Engine files carry their pre-move caps (same code, same
 # discipline); the P1 arrivals were capped at their measured size + slack.
