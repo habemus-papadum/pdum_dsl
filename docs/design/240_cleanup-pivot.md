@@ -410,3 +410,27 @@ sharing the same ops — the pack needed two vocabulary entries
 (`pointwise`, `const_like`), concrete input for the C4 region-
 formulation design. 601 passed at land. **The full spike (C3a + C3b)
 now awaits the owner's verdict before C4 begins.**
+
+**C4.1 — the dialect foundation lands in src/ (landed; verdict was
+"go").** `pdum/tl/dialect.py` is the spike promoted with the design
+items resolved: the **per-kind yield protocol** (`lower_body(fn,
+arg_types, kind=...)` — a `step` yields its returned value, a
+`compute` kernel yields its final token, and a kernel `return`
+refuses with the pinned voice — kinds declare their yields, users add
+no ceremony); **object-based intrinsic recognition** (`thread_idx`
+and the S.1 vocabulary recognized by OBJECT IDENTITY from the body's
+own globals, never name strings — and the P5 shadowing lesson bit
+again on the way in: `pdum.tl.compute` the package attr is the
+DECORATOR, so direct-name imports only); **the op-selection pattern
+written once** (`_typed_rule` — one factory builds the operator and
+comparison rules; a dialect extends by table rows, not by wrapping);
+the two-pass check, the region VJP, `run_region` (the evaluation
+column, reusing `ir._store` and eager iota), and `fold_grad` with
+store-all and revolve as ONE code path parameterized by `slots`.
+The spike file was promoted to `tests/test_dialect.py` — eight pins,
+kept verbatim where possible, now testing src/. Nothing deleted yet
+(the foundation supersedes nothing until C4.2 flips the kernel).
+602 passed at land. **Next: C4.2 — the kernel switch** (@compute
+lowers through the dialect; claiming/taps, fn-arg recipes, the env
+fingerprint, and launch migrate onto Regions; `_KernelLowerer`
+retires; kernel keys become region content keys).
