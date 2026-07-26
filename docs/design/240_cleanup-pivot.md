@@ -372,3 +372,41 @@ pack — should become intrinsic-object recognition when real.
 TensorType; store index checking; fn-valued args; reduce. **fold is
 C3b — the hard part, next, pending the owner's C3a verdict.**
 597 passed at land.
+
+**C3b — fold/revolve through the dialect, AWAITING OWNER REVIEW.**
+Appended to the same spike file, in the owner-proposed TWO-PASS shape:
+`check_fold_step_supported` (pass 1) walks the step region and refuses
+unsupported ops WITH the reason and the supported set — never
+mid-derivation (pinned); pass 2 does the work. Results, all green:
+- *b1* — `tl.fold` as a region-carrying op (the type rule computes the
+  element type by REMOVING the folded dim from the source's layout
+  type and checks binders and yield against it); forward differential
+  vs tl's `ir.run` fold is bit-identical, from ONE single-source step
+  function lowered by both engines.
+- *b2* — the VJP is REGION-IN/REGION-OUT (the generated-function
+  model made literal): `derive_step_vjp` consumes the step region,
+  recomputes the forward inside the adjoint region, splices slopes
+  from THE one table (`Prim` trees → `tl.pointwise` chains), and
+  asserts the element's adjoint is gradient-free (the mask
+  discipline). Store-all gradient vs tl `autodiff.grad` agrees to
+  1e-12 (different engines, different summation order — exact
+  equality is reserved for within-engine).
+- *b3* — **the recompute theorem holds through the dialect**: revolve
+  (checkpoint, recompute segments, RE-SELECT the zero-memory random
+  field at ABSOLUTE coordinates) and store-all produce BIT-IDENTICAL
+  gradients with dropout on. Coordinate provenance survived the
+  region formulation — the risk the owner kept inside the spike, and
+  it held.
+*The surfaced design answer (predicted as a fork; resolved by
+evidence):* schedules lived naturally as EVALUATION STRATEGIES over
+the same two regions (step + vjp) — store-all and revolve share all
+IR; nothing pushed the schedule into the IR. Evidence for
+schedule-as-execution-column; baking a schedule into IR remains
+available to the L4 certified-descent era without conflict.
+*A dialect-hierarchy finding:* the single-source step exposed that
+STEP bodies (S.1 tier: `pointwise(where, ...)` spelled) and KERNEL
+bodies (scalar tier: bare markers) are DIFFERENT dialect leaves
+sharing the same ops — the pack needed two vocabulary entries
+(`pointwise`, `const_like`), concrete input for the C4 region-
+formulation design. 601 passed at land. **The full spike (C3a + C3b)
+now awaits the owner's verdict before C4 begins.**
