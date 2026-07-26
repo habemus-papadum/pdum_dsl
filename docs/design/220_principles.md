@@ -175,8 +175,8 @@ open op zoo.
 derivative table staying one page; the BPTT engine deriving flash's
 backward because the case analysis is finite; a reference interpreter
 small enough to be an oracle.
-**Pinned:** test_opcount (exact tallies), test_memory, the COMPUTE.md
-adjoint table realized in autodiff, test_at_kink.
+**Pinned:** test_opcount (exact tallies), test_memory, the layout-adjoint
+table realized in autodiff, test_at_kink.
 
 ## 13. The seam — observability without instrumentation
 

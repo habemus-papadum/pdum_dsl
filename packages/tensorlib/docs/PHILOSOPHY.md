@@ -77,7 +77,7 @@ backward exists because the online-softmax combine was *declared*, not
 because anyone wrote it. Hand-maintained rule tables are where semantic
 rot begins; we let them stop growing.
 
-**Honesty as a deliverable.** CONCERNS.md is a first-class artifact: every
+**Honesty as a deliverable.** BOUNDARIES.md is a first-class artifact: every
 known coarseness, tie-caveat, unfused collective, and process-level
 registry is written down next to the code that has it. The zoo pins every
 model to an independent numpy denotation. When a win only appears under

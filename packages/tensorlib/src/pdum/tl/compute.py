@@ -1,7 +1,7 @@
 """The computational primitives — pointwise/reduce/scan + iota, repeat_like
 (THE alignment primitive), contract, const_like — reference (numpy) semantics.
 
-This is the deliberately inefficient correctness layer from COMPUTE.md §3:
+This is the deliberately inefficient correctness layer:
 check alignment, export operands to numpy, apply the marker's numpy
 function, wrap the result back with the surviving dims' charts and labels.
 It materializes stride-0 repeats and overlapping windows — a real backend

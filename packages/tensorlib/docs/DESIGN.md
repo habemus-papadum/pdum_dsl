@@ -1,9 +1,10 @@
-# tensorlib — design exploration
+# DESIGN — the layout layer (decisions D1–D18)
 
-A library about **memory layout and views of data**. There is no computational
-layer here; that comes later, on top. This layer's job is to describe, with
-complete algebraic transparency, *where things live* — so that a compiler
-(e.g. pdum.dsl) can reason about addresses symbolically.
+The layer about **memory layout and views of data**; the compute layer
+sits on top (the workspace spec, `docs/design/200_the-spec.md`). This
+layer's job is to describe, with complete algebraic transparency,
+*where things live* — so that a compiler can reason about addresses
+symbolically.
 
 ## 1. Core objects
 

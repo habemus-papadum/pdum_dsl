@@ -1,4 +1,4 @@
-"""The compute reference layer: pointwise, reduce, iota (COMPUTE.md §2-3)."""
+"""The compute reference layer: pointwise, reduce, iota."""
 
 import numpy as np
 import pytest

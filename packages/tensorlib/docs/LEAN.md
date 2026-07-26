@@ -21,7 +21,7 @@ actually needs to quantify over programs. Use Mathlib aggressively.
 |---|---|
 | dim names, D5 order-free | an index *type* `δ` (DecidableEq, Fintype) — order never exists |
 | raw lattice domains [start, stop) | `Box δ := (lo hi : δ → ℤ)`; coords are subtype functions |
-| abstract tensor (COMPUTE.md §8 layer 1) | `Tensor δ b α := Coord b → α` — Mathlib `Matrix` generalized |
+| abstract tensor (the denotation layer) | `Tensor δ b α := Coord b → α` — Mathlib `Matrix` generalized |
 | Layout (strides, offset) | `Layout δ` structure + `loc : Coord b → ℤ` |
 | Buffer / read seam | `Buffer α := ℤ → α` (element-granular; bytes abstracted away) |
 | FunctionalBuffer | a *definable* affine `Buffer ℚ` |
@@ -47,7 +47,7 @@ Three pleasant surprises fell out of writing this table:
 3. **Layout ops are linear maps.** Every view op induces an `ℝ`-linear map
    `Tensor b₁ ℝ →ₗ[ℝ] Tensor b₂ ℝ` (repeat, slice-as-restriction, window,
    decimate — all linear; pointwise(mul) bilinear; reduce(add) linear). The
-   AD adjoint table in COMPUTE.md §7 is then Mathlib's `LinearMap.adjoint`
+   AD adjoint table is then Mathlib's `LinearMap.adjoint`
    on finite-dimensional inner-product spaces — repeat†=reduce-sum and
    slice†=zero-pad become *computations*, not new theory.
 
@@ -200,7 +200,7 @@ Until then, transformations are stated as equational lemmas about composed
 functions (`pointwise f ∘ pointwise g = pointwise (f ∘ g)` and friends) —
 genuinely useful already.
 
-**AD.** Two-stage plan matching COMPUTE.md §7: (a) leaf lemmas — per-marker
+**AD.** Two-stage plan matching the adjoint discipline: (a) leaf lemmas — per-marker
 derivatives, mostly stock Mathlib (`Real.exp` has a derivative; bilinearity
 of mul is free); (b) the reverse-mode transformation on the deep IR, proved
 against `fderiv` composition. The linear-map realization above means the

@@ -11,5 +11,3 @@ denotations.
 Part of the [pdum_dsl](https://github.com/habemus-papadum/pdum_dsl)
 workspace; published in lockstep with `habemus-papadum-dsl`. See
 `docs/design/200_the-spec.md` for the specification.
-
-**Status: migration P0 skeleton — contents arrive at P2.**

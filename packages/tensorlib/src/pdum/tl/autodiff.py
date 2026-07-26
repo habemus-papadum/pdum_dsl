@@ -32,8 +32,7 @@ Contracts and conventions:
   gradient-free op are dropped.
 - Fan-out accumulates: a var consumed n times receives n contributions,
   summed pointwise.
-- Adjoints of layout ops are layout(+compute) programs, per the COMPUTE.md
-  table: repeat†=reduce-sum, slice†=pad-0, pad†=slice (fill cotangent
+- Adjoints of layout ops are layout(+compute) programs: repeat†=reduce-sum, slice†=pad-0, pad†=slice (fill cotangent
   discarded), shift/flip/rename/split/merge are relabelings,
   select†=repeat-at-point+pad, window/stencil†=per-tap overlap-add,
   decimate†=zero-stuffing (materialize+merge; factor-divisible source
