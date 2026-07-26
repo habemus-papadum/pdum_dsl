@@ -223,7 +223,9 @@ def _arg_fp(a) -> tuple:
     if fp is not None:  # a Handle/Pipeline: FnType identity — types, never values
         return ("fn", fp)
     if isinstance(a, Tensor):
-        return ("tensor", tuple((d.name, d.start, d.stop) for d in a.layout.dims), str(a.dtype))
+        # the fingerprint IS the type identity (frame included) + dtype, the
+        # compute-layer fact the type does not yet carry
+        return ("tensor", tensor_type(a).dims, str(a.dtype))
     raise TypeError(f"@compute arguments are tensors or kernel values, got {a!r}")
 
 

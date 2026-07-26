@@ -626,3 +626,33 @@ keeping only the step tier's public surface (lift_step/LiftedStep),
 the frozen method table the dialect consumes, and the host-math
 tables. ONE lowering engine remains. 611 passed at land; the C0
 battery green throughout.
+
+**C4.3f — the C4 tail: the labeling frame joins type identity
+(landed).** `TensorType` is now constructed FROM a Layout — the shadow
+is REQUIRED, and identity/shadow incoherence is impossible by
+construction: identity is DERIVED as the layout's observable frame,
+per dim `(name, start, stop)` growing `(chart, labels, level)` only
+when a frame exists (the degenerate frame stays implicit, exactly as
+chart.py's doctrine spells it); strides/offset stay representation,
+shadow-only. What the richer identity buys, pinned: (i) same-dims,
+different-frames operands misalign AT EMISSION — `_r_pointwise` runs
+the incumbent `alignment()` diagnosis over the shadows, so the
+refusal quotes tl's own fix recipes with source locations; (ii)
+region content keys distinguish frames — the C5 content-cache trap (a
+charted lattice served a plain artifact) killed before C5 exists;
+(iii) the kernel arg fingerprint IS the type identity plus dtype
+(`_arg_fp`), so a same-dims relaunch with a new frame is an honest
+MISS (pinned: warm on the same frame, refused miss under forbid on
+the charted relaunch, correct values on the recompile). Result
+shadows now come from the ONE authority: `_r_pointwise`/`_r_iota` ask
+`infer_instr` (dense over the first tensor operand / the iota stride
+pattern) instead of copying an operand's real strides forward — the
+stale-stride divergence a bridged `simplify`/`materialize` after a
+pointwise would have seen; `_minus_dim` fabricates the incumbent
+fold-element shadow (`_dense_like` minus the folded dim — ir.py's own
+line). **dtype stays at the compute layer, deliberately**: tensor.py
+says it in so many words ("dtype and value-unit compatibility belong
+to the compute layer"), the shadow-inference authority is layout-only,
+and dtype already rides the kernel arg fingerprint — it joins
+TensorType when a backend column (C5+) brings actual dtype semantics
+to honor, not before. 614 passed at land.

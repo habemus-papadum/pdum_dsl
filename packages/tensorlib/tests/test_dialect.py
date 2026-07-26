@@ -16,7 +16,6 @@ from pdum.tl.compute import const_like, pointwise, reduce, repeat_like  # noqa: 
 from pdum.tl.dialect import (
     CORE_OPS,
     TL_OPS,
-    TensorType,
     check_fold_step_supported,
     derive_step_vjp,
     fold_grad,
@@ -57,6 +56,33 @@ def test_alignment_is_a_type_rule_and_refuses_with_locations():
     other = Tensor.from_numpy(np.zeros((3, 3)), ("y", "x"))
     with pytest.raises(TypeError, match=r"aligned to the target.*\[.*test_dialect"):
         lower_body(bad, (tensor_type(img), tensor_type(other)), kind="compute")
+
+
+def test_the_labeling_frame_is_identity_and_misaligns_at_emission():
+    """C4 tail: charts/labels/levels are IN type identity — same dims,
+    different frames refuse AT EMISSION, quoting the incumbent alignment
+    diagnosis (tl's own fix recipes), with the source point."""
+
+    def bad(img, plain, charted):
+        y, x = thread_idx("y", "x")
+        img[y, x] = plain * charted
+
+    img = Tensor.from_numpy(np.zeros((2, 3)), ("y", "x"))
+    plain = Tensor.from_numpy(np.ones((2, 3)), ("y", "x"))
+    charted = plain.with_charts(x=("0 um", "0.25 um"))
+    with pytest.raises(TypeError, match=r"(?s)ALIGNED.*charted.*\[.*test_dialect"):
+        lower_body(bad, (tensor_type(img), tensor_type(plain), tensor_type(charted)), kind="compute")
+
+
+def test_content_keys_distinguish_frames():
+    """One body, same dims, different labeling frames: DIFFERENT region
+    keys — so a content cache can never serve a charted lattice an
+    artifact lowered for a plain one."""
+    plain = Tensor.from_numpy(np.zeros((5, 7)), ("y", "x"))
+    charted = Tensor.from_numpy(np.zeros((5, 7)), ("y", "x")).with_charts(x=("0 um", "1 um"))
+    r1 = lower_body(spike_kernel.fn, (tensor_type(plain),), kind="compute")
+    r2 = lower_body(spike_kernel.fn, (tensor_type(charted),), kind="compute")
+    assert r1.key != r2.key
 
 
 def test_lowering_is_content_keyed():
@@ -133,7 +159,7 @@ def test_b1_fold_forward_differential():
     step = lower_body(_theorem_step, (tensor_type(s0), tensor_type(s0)), kind="step")
     check_fold_step_supported(step)  # pass 1
     b = Builder({**CORE_OPS, **TL_OPS})
-    src_tt = TensorType(tuple((d.name, d.start, d.stop) for d in mask.layout.dims))
+    src_tt = tensor_type(mask)
     p_s, p_src = b.param(0, tensor_type(s0)), b.param(1, src_tt)
     fold = b.emit("tl.fold", p_s, p_src, regions=(step,), dim="tm")
     region = Region(params=(p_s, p_src), body=(b.emit("core.yield", fold),))
@@ -178,7 +204,7 @@ def test_b_pass1_refuses_unsupported_shapes_with_the_reason():
     """The two-pass mechanism's first pass: an unsupported op in a step
     refuses NAMING the op, the supported set, and why."""
     b = Builder({**CORE_OPS, **TL_OPS})
-    tt = TensorType((("x", 0, 4),))
+    tt = tensor_type(Tensor.from_numpy(np.zeros(4), ("x",)))
     p = b.param(("st", 0), tt)
     rogue = b.emit("tl.iota", p, name="x")
     bad = Region(params=(p, b.param(("st", 1), tt)), body=(b.emit("core.yield", rogue),))

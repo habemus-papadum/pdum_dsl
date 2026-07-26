@@ -25,18 +25,20 @@ Design items resolved here (the spike's frictions):
   (``check_fold_step_supported``) walks a region and refuses anything
   the machinery cannot handle, WITH the reason; pass 2 does the work.
 
-Deliberately deferred, recorded in 240: charts/labels/levels and dtype
-join TensorType with the step-tier migration; store index checking and
-fn-valued arguments join with the kernel switch (C4.2); reduce/scan and
-the layout family follow as slices. Schedules (store-all vs revolve)
-are EVALUATION STRATEGIES over the same regions — never IR (the C3b
-finding); an L4 certified descent may bake one later.
+The labeling frame (charts/labels/levels) is IN type identity — the
+degenerate frame stays implicit, per the chart doctrine — so frames
+misalign at emission and content keys distinguish them; dtype stays at
+the compute layer (tensor.py's doctrine) until a backend column asks
+(C5+). Schedules (store-all vs revolve) are EVALUATION STRATEGIES over
+the same regions — never IR (the C3b finding); an L4 certified descent
+may bake one later.
 """
 
 from __future__ import annotations
 
 import ast as pyast
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 from pdum.dsl.derivative import TABLE, Const, Prim
 from pdum.dsl.ir import Builder, Region
@@ -54,23 +56,39 @@ from .compute import pointwise as _eager_pw
 from .compute import reduce as _eager_reduce
 from .compute import repeat_like as _eager_repeat_like
 from .compute import scan as _eager_scan
-from .ir import _LAYOUT_OPS, Instr, Token, _store, eval_instr, infer_instr, pw_marker
+from .ir import _LAYOUT_OPS, Instr, Token, _dense_like, _store, eval_instr, infer_instr, pw_marker
 from .lifting import _HOST_BIN, _HOST_CMP, _METHODS, _STRUCTURAL_SLOT, _Intrinsic
 from .markers import Marker
-from .tensor import Tensor
+from .tensor import Tensor, alignment
 
 # --- types -------------------------------------------------------------------
 
 
+def _dim_key(d):
+    """One dim's identity entry: (name, start, stop), growing the labeling
+    frame (chart, labels, level) only when one exists — plain integer
+    indexing is the degenerate frame left implicit (chart.py's doctrine,
+    mirrored in the type)."""
+    if d.chart is None and d.labels is None and d.level is None:
+        return (d.name, d.start, d.stop)
+    return (d.name, d.start, d.stop, d.chart, d.labels, d.level)
+
+
 @dataclass(frozen=True)
 class TensorType(Type):
-    """A tensor-typed SSA value: the layout LATTICE is the identity (dims —
-    what alignment and keys compare), and the full Layout rides along as a
-    non-identity SHADOW payload for inference (charts, strides, labels —
-    C4.3; dtype joins later)."""
+    """A tensor-typed SSA value, constructed FROM a Layout. IDENTITY (what
+    alignment, fold binders, and content keys compare) is the layout's
+    observable frame: per dim its name, domain, and labeling frame. The
+    full Layout is the REQUIRED non-identity shadow — strides/offset are
+    representation, read only by inference through the incumbent
+    authority. dtype stays at the compute layer (tensor.py's doctrine)
+    until a backend column asks (C5+)."""
 
-    dims: tuple  # ((name, start, stop), ...) — identity
-    layout: object = field(default=None, compare=False, repr=False)  # the shadow
+    layout: object = field(compare=False, repr=False)  # the shadow — required
+    dims: tuple = field(init=False)  # identity, derived from the layout
+
+    def __post_init__(self):
+        object.__setattr__(self, "dims", tuple(_dim_key(d) for d in self.layout.dims))
 
 
 @dataclass(frozen=True)
@@ -79,18 +97,19 @@ class TokenType(Type):
 
 
 def tensor_type(t: Tensor) -> TensorType:
-    return TensorType(tuple((d.name, d.start, d.stop) for d in t.layout.dims), layout=t.layout)
+    return TensorType(t.layout)
 
 
 def tensor_type_of_layout(lay) -> TensorType:
-    return TensorType(tuple((d.name, d.start, d.stop) for d in lay.dims), layout=lay)
+    return TensorType(lay)
 
 
 _of_layout = tensor_type_of_layout
 
 
 def _minus_dim(tt: TensorType, name: str) -> TensorType:
-    return TensorType(tuple(d for d in tt.dims if d[0] != name))
+    # the incumbent fold-element shadow: dense over the surviving dims
+    return TensorType(_dense_like(tuple(d for d in tt.layout.dims if d.name != name)))
 
 
 # --- the ops, typed by rules (tl's alignment law AS type rules) --------------
@@ -100,9 +119,13 @@ def _r_pointwise(args, attrs, regions):
     ts = [a for a in args if isinstance(a, TensorType)]
     if not ts:
         raise TypeError("tl.pointwise wants at least one tensor operand")
-    if any(frozenset(t.dims) != frozenset(ts[0].dims) for t in ts):
-        raise TypeError(f"tl.pointwise wants ALIGNED operands, got {ts[0]!r} vs a mismatch")
-    return ts[0]  # alignment is by NAME, order-free (tl's law); scalars broadcast
+    # tl's alignment law, by ITS OWN diagnosis engine (name-based, order-free,
+    # frames compared) — the fixes are the incumbent recipes; scalars broadcast
+    issues = alignment(*(SimpleNamespace(layout=t.layout) for t in ts))
+    if issues:
+        details = "\n".join(f"  {m!r}" for m in issues)
+        raise TypeError(f"tl.pointwise wants ALIGNED operands:\n{details}")
+    return TensorType(infer_instr(Instr("out", "pointwise", ("a0",), {}), {"a0": ts[0].layout}))
 
 
 def _r_iota(args, attrs, regions):
@@ -111,7 +134,7 @@ def _r_iota(args, attrs, regions):
         raise TypeError("tl.iota wants the lattice source tensor")
     if attrs["name"] not in [d[0] for d in t.dims]:
         raise TypeError(f"tl.iota: the lattice has no dim {attrs['name']!r}")
-    return t
+    return TensorType(infer_instr(Instr("out", "iota", ("a0",), {"name": attrs["name"]}), {"a0": t.layout}))
 
 
 def _r_store(args, attrs, regions):
@@ -148,8 +171,8 @@ def _r_bridge(base):
         names = tuple(f"a{i}" for i in range(len(args)))
         shadows = {}
         for n, t in zip(names, args):
-            if not isinstance(t, TensorType) or t.layout is None:
-                raise TypeError(f"tl.{base} wants tensor operands with layout shadows, got {t!r}")
+            if not isinstance(t, TensorType):
+                raise TypeError(f"tl.{base} wants tensor operands, got {t!r}")
             shadows[n] = t.layout
         return _of_layout(infer_instr(Instr("out", base, names, dict(attrs)), shadows))
 
@@ -225,8 +248,6 @@ def capture_shim(fn):
     with closure values kept RAW — bodies close over helpers, markers, and
     staged transforms (compile-time CITIZENS), and host scalars (DATA);
     neither is a typed env slot."""
-    from types import SimpleNamespace
-
     from pdum.dsl import capture as _cap
 
     snap = _cap._SNAPSHOTS.get(fn.__code__)
@@ -296,7 +317,7 @@ def _host(ctx, node):
             t = ctx.lower(node.args[0])
             want = _host(ctx, node.args[1])
             if hasattr(t, "type") and isinstance(t.type, TensorType):
-                return next(hi - lo for (n_, lo, hi) in t.type.dims if n_ == want)
+                return next(d[2] - d[1] for d in t.type.dims if d[0] == want)
         if callable(fn) and not hasattr(fn, "fp"):
             args = [_host(ctx, a) for a in node.args]
             kwargs = _host_kwargs(ctx, node.keywords)
@@ -361,7 +382,7 @@ def _tl_call(ctx, node):
         if obj is _eager_extent:  # a structural READ: host data from the TYPE
             t = ctx.lower(node.args[0])
             want = _host(ctx, node.args[1])
-            return next(hi - lo for (n_, lo, hi) in t.type.dims if n_ == want)
+            return next(d[2] - d[1] for d in t.type.dims if d[0] == want)
         if obj is _eager_contract:  # ONE visible line over the primitives (S.1)
             a, bb = (ctx.lower(x) for x in node.args)
             axis = _host(ctx, node.keywords[0].value) if node.keywords else _host(ctx, node.args[2])
@@ -769,9 +790,9 @@ def _pullback(b, order: list, out, seed) -> dict:
             if f == "mean":
                 red = {d[0] for d in operand.type.dims} - {d[0] for d in node.type.dims}
                 n_red = 1
-                for name, lo, hi in operand.type.dims:
-                    if name in red:
-                        n_red *= hi - lo
+                for d in operand.type.dims:
+                    if d[0] in red:
+                        n_red *= d[2] - d[1]
                 rep = b.emit("tl.pointwise", rep, b.emit("core.const", type=f64, value=float(n_red)), f="div")
             acc(operand, rep)
         elif node.op == "tl.repeat_like":
@@ -967,8 +988,6 @@ def export_program(region: Region, param_names: tuple, names_of: dict | None = N
         charts/labels/placement restamped so eager alignment holds (the
         incumbent const_like discipline, ported)."""
         lay = ref.type.layout
-        if lay is None:
-            raise TypeError("export_program needs layout shadows on tensor operands")
         dims = tuple((d.name, (d.start, d.stop)) for d in lay.dims)
         v = emit("const", (), "c", value=float(value), dims=dims)
         charts = {d.name: d.chart for d in lay.dims if d.labels is None}

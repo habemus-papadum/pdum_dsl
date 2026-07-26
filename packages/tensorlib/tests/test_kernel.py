@@ -137,6 +137,24 @@ def test_key_discipline_shape_miss_value_hit_launch_never_keys_fn_swap_miss():
             shader(twill(1.0, 0.0) | zoom(1.0) | zoom(1.0), img)
 
 
+def test_a_new_frame_is_a_new_artifact():
+    """C4 tail: the labeling frame joined type identity, and the arg
+    fingerprint IS that identity — same dims with a new frame is an honest
+    MISS (a warm artifact's types would carry the wrong frame); the
+    recompiled kernel then serves the charted lattice."""
+    src, dst = T(np.ones((2, 3)), ("y", "x")), T(np.zeros((2, 3)), ("y", "x"))
+    copy_kernel(src, dst)
+    with events.forbid("kernel.miss"):  # same frame: warm
+        copy_kernel(src, dst)
+    cs = T(np.ones((2, 3)), ("y", "x")).with_charts(x=("0 um", "1 um"))
+    cd = T(np.zeros((2, 3)), ("y", "x")).with_charts(x=("0 um", "1 um"))
+    with pytest.raises(events.EventForbidden):
+        with events.forbid("kernel.miss"):  # FRAME MISS: a new frame is a new lattice
+            copy_kernel(cs, cd)
+    copy_kernel(cs, cd)  # the recompile, outside the tripwire
+    np.testing.assert_array_equal(cd.to_numpy(), 2.0 * np.ones((2, 3)))
+
+
 def test_compile_once_thesis_for_function_valued_arguments():
     """The thesis at the kernel tier: 50 fresh pipelines with fresh values,
     one compile — values ride the rebind channel."""
