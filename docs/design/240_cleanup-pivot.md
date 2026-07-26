@@ -342,3 +342,33 @@ scope cut, recorded:* staged calls inside dsl-tier `@jit` bodies
 (staged-citizen locals in the value language) are NOT opened here —
 that door belongs to the dialect formulation (C3), where "which
 region am I in" gets its real answer. 594 passed at land.
+
+**C3a — the spike, AWAITING OWNER REVIEW (landed as a side path).**
+One self-contained file — `packages/tensorlib/tests/test_spike_tl_dialect.py`
+(~170 counted lines, nothing under src/ touched) — expresses the easy
+slice (`tl.pointwise`/`tl.iota`/`tl.store` + TensorType/TokenType) as
+a dsl dialect. All three pins pass first-run:
+(1) *the differential is bit-identical* — the same kernel body through
+today's `_KernelLowerer` + `ir.run` and through the dsl `Lowerer` with
+a tl rule pack + a 40-line evaluation visitor;
+(2) *alignment became an ordinary type rule* — a misaligned store
+refuses AT EMISSION with the source location in the message, for free
+(the dsl Builder's loc plumbing; tl's lifter hand-builds these);
+(3) *content keys came free* — two lowerings of one body are
+`region.key`-identical (the cache-efficiency premise).
+The dialect-region question got its first empirical answer: ONE
+lowerer, packs LAYER (three rule overrides delegating to the value
+pack), and TENSOR-TYPEDNESS selects the path — no annotations needed
+for this slice; scalar subtrees (const lifting, host math) flowed
+through the base pack unchanged.
+*Honest frictions, for the owner's review:* (i) kernels have no
+`return`, so the spike drives the Lowerer manually (`run_body` demands
+a return — C4 needs a no-return body driver); (ii) the pack had to
+override `Assign`/`BinOp`/`Call` wholesale and delegate — a
+first-class dialect-layering seam (per-node dispatch by operand type)
+would shrink packs; (iii) `thread_idx` is recognized by NAME in the
+pack — should become intrinsic-object recognition when real.
+*Scope cuts carried to C4:* charts/labels/levels not yet in
+TensorType; store index checking; fn-valued args; reduce. **fold is
+C3b — the hard part, next, pending the owner's C3a verdict.**
+597 passed at land.
