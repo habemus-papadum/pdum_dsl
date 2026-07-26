@@ -1,4 +1,4 @@
-"""@compute kernels on the reference evaluator (200 §S.3, P7).
+"""@compute kernels — lowered through the ONE dsl Lowerer (240 C4.2).
 
 A kernel body IS the value language plus the dialect extensions (the
 one-body-language law, 200 §S.3 amendment): the thread AMBIENT
@@ -8,31 +8,28 @@ parameters), explicit token-threaded STORES into writable arguments
 indices. Function-valued arguments apply at the thread coordinates,
 including tuple-returning ones (``v, (dy, dx) = f(y, x)`` — the
 destructuring pattern declares the structure). Writability is inferred
-from the body: an argument is writable iff it is stored to. Ordering is
-TOKEN THREADING: one implicit token threads through all stores in
-statement order (the frontend policy); tokens never appear in user
-syntax.
+from the body: an argument is writable iff it is stored to.
+
+Since the pivot's kernel switch, kernels lower through the DSL Lowerer
+with the KERNEL RULE PACK — a layer over the tl dialect pack, which is a
+layer over the base value pack — onto ``tl.*`` Regions (``tl.iota`` over
+the writable lattice, ``tl.pointwise`` bodies, token-threaded
+``tl.store``), and ``run_region`` executes them. The iota unification is
+now literal: thread coordinates ARE ``tl.iota`` nodes.
 
 Claiming is TAGLESS (S.4 amendment): every uniquely-named binding is a
 claimable site — ``config(taps={"dist": t})`` binds the binding named
 ``dist``; a name bound more than once is invalidated with the reason,
 never auto-suffixed.
 
-The reference lowering is the IOTA UNIFICATION: thread coordinates are
-coordinate iotas over the writable target's lattice, the body lowers to
-pointwise/store instructions over them, and the whole kernel is one tl
-Program run by ``ir.run`` — the same kernel is expressible by hand as
-pointwise-over-iotas, and the two are differential-tested.
-
 **Function-valued arguments** carry their FnType identity (``handle.fp``:
 code + env TYPES, never values) in the kernel key: swapping a stage is a
 new artifact; new captured values on the same shape are a WARM HIT, with
 the values riding a per-launch rebind (the uniform channel at reference
 tier). Per-element host dispatch through the spelled oracle is the
-sanctioned oracle-grade execution. Guard policy for argument handles,
-recorded: identity rides the FnType fp in the key; values rebind at every
-launch; cell guards are not needed at the reference tier (the device tier
-revisits when argument handles bake into artifacts).
+sanctioned oracle-grade execution. A body may also host-STAGE a declared
+``@staged`` transform of a parameter (``g = value_and_grad(f, ...)``) —
+the recipe replays on the CURRENT binding every launch.
 
 **Invocation is the bracket** — ``kernel[config(blocks, threads,
 taps={...})](args)``; geometry is invocation-only and never enters any
@@ -50,16 +47,25 @@ from __future__ import annotations
 import ast
 import hashlib
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import numpy as np
 from pdum.dsl import events
 from pdum.dsl.cache import Memo
+from pdum.dsl.ir import Node, Region
+from pdum.dsl.lower import Lowerer, check_coherence
+from pdum.dsl.ops import CORE_OPS
+from pdum.dsl.registry import DEFAULT
+from pdum.dsl.value import _assign as _value_assign
+from pdum.dsl.value import _name as _value_name
+from pdum.dsl.value import _subscript as _value_subscript
+from pdum.dsl.valuekind import typeof
 
-from .ir import Program, run
-from .lifting import _T, _Intrinsic, _Lifter
+from .dialect import TL_OPS, TL_RULES, TensorType, _globals_of, _tl_call, run_region, tensor_type
+from .lifting import _Intrinsic
 from .markers import Marker
-from .producer import _captured, _fn_ast
-from .registry import MARKERS
+from .mdsl import CompositeMarker
+from .producer import _captured
 from .tensor import Tensor
 
 KERNELS = Memo("kernel", capacity=1 << 30)
@@ -208,15 +214,352 @@ def _arg_fp(a) -> tuple:
     raise TypeError(f"@compute arguments are tensors or kernel values, got {a!r}")
 
 
-# ---- compilation -----------------------------------------------------------
+# ---- the kernel rule pack: a layer over the dialect pack --------------------
+
+
+def _kernel_handle(fn):
+    """A capture SHIM for kernel-tier lowering: the same snapshot/coherence
+    surface as a Handle, but closure values stay RAW — kernel bodies close
+    over helpers, markers, and staged transforms, which are compile-time
+    CITIZENS, not typed env slots (they never marshal; the env fingerprint
+    keys them instead)."""
+    from pdum.dsl import capture as _cap
+
+    snap = _cap._SNAPSHOTS.get(fn.__code__)
+    if snap is None:
+        snap = _cap._SNAPSHOTS[fn.__code__] = _cap._take_snapshot(fn)
+    env = {}
+    for name, cell in zip(fn.__code__.co_freevars, fn.__closure__ or ()):
+        try:
+            env[name] = cell.cell_contents
+        except ValueError:
+            pass
+    return SimpleNamespace(
+        snapshot=snap,
+        pyfunc=fn,
+        env=env,
+        freevars=fn.__code__.co_freevars,
+        fntype=SimpleNamespace(template=SimpleNamespace(label=fn.__qualname__)),
+        table=None,
+    )
+
+
+def _lookup(ctx, name):
+    """Kernel name resolution order: locals -> closure freevars (raw) ->
+    the body's globals."""
+    v = ctx.locals.get(name)
+    if v is None:
+        v = ctx.handle.env.get(name)
+    if v is None:
+        v = _globals_of(ctx).get(name)
+    return v
+
+
+class _NotHost(Exception):
+    """An AST argument is not a host value (it involves lowered IR)."""
+
+
+def _host_value(ctx, node):
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Tuple):
+        return tuple(_host_value(ctx, e) for e in node.elts)
+    if isinstance(node, ast.Name):
+        v = _lookup(ctx, node.id)
+        if v is None or isinstance(v, Node) or (isinstance(v, tuple) and any(isinstance(x, Node) for x in v)):
+            raise _NotHost()
+        return v
+    raise _NotHost()
+
+
+def _claim(ctx, name, value):
+    """The naming law IS the claiming mechanism (tagless, S.4 amendment):
+    every uniquely-named binding is a site; a name bound more than once is
+    invalidated with the reason, never auto-suffixed."""
+    c = ctx.context
+    if name in c["k.claimed"]:
+        c["k.claims"].pop(name, None)
+        c["k.invalid"][name] = "bound at more than one site (rebinding or inlining made it non-unique)"
+        return
+    c["k.claimed"].add(name)
+    if isinstance(value, Node) and isinstance(value.type, TensorType):
+        c["k.claims"][name] = value
+    else:
+        c["k.invalid"][name] = "not a lattice value (nothing to store)"
+
+
+def _lower_args(ctx, call):
+    """Lower call arguments tuple-aware: an AST tuple stays a Python tuple
+    of nodes (coordinate PAIRS ride as tuples through pipelines)."""
+    return tuple(tuple(ctx.lower(e) for e in a.elts) if isinstance(a, ast.Tuple) else ctx.lower(a) for a in call.args)
+
+
+def _k_call(ctx, node):
+    """Kernel call resolution, object-identity-first: the ambient, markers,
+    function-valued arguments (with staged recipes), the C1/C2 staging
+    door, and captured-helper inlining; the dialect pack serves the rest."""
+    c = ctx.context
+    if isinstance(node.func, ast.Name):
+        name = node.func.id
+        obj = _lookup(ctx, name)
+        if isinstance(obj, _Intrinsic) and obj.name == "thread_idx":
+            lattice = ctx.root.params[-1]  # the writable target (S.3 convention)
+            out = tuple(ctx.emit("tl.iota", lattice, node=node, name=cst.value) for cst in node.args)
+            c["k.iotas"].extend(out)
+            return out  # ALWAYS a tuple
+        if isinstance(obj, (Marker, CompositeMarker)):
+            args = [ctx.lower(a) for a in node.args]
+            if any(isinstance(a, Node) and isinstance(a.type, TensorType) for a in args):
+                return ctx.emit("tl.pointwise", *args, node=node, f=obj.name)
+        if obj is not None and getattr(obj, "fp", None) is not None:
+            return _fn_arg(ctx, obj, _lower_args(ctx, node), None, node)
+        if callable(obj) and not isinstance(obj, (Marker, CompositeMarker, _Intrinsic)):
+            try:
+                h_args = [_host_value(ctx, a) for a in node.args]
+                h_kwargs = {kw.arg: _host_value(ctx, kw.value) for kw in node.keywords}
+            except _NotHost:
+                h_args = None
+            if h_args is not None:
+                # the declared staging door (240 C1/C2), kernel-side
+                if getattr(obj, "__staged__", False):
+                    result = obj(*h_args, **h_kwargs)
+                    if getattr(result, "fp", None) is None:
+                        raise ValueError(
+                            f"staged transform {name!r} returned {type(result).__name__!r}, not a "
+                            f"function citizen — staged transforms produce fp-carrying values"
+                        )
+                    c["k.recipes"][id(result)] = (obj, tuple(h_args), dict(h_kwargs))
+                    return result
+                result = obj(*h_args, **h_kwargs)  # structural host evaluation (implicit)
+                if getattr(result, "fp", None) is not None:
+                    raise ValueError(
+                        f"{name!r} returned a function value at lower time without being a "
+                        f"declared staged transform — decorate it with @staged "
+                        f"(pdum.dsl.staged), or build the value outside the body"
+                    )
+                return result
+            if hasattr(obj, "__code__"):  # a captured helper over lowered values: INLINE
+                return _k_inline(ctx, obj, _lower_args(ctx, node), node)
+    return _tl_call(ctx, node)
+
+
+def _k_inline(ctx, fn, args, node):
+    """Capture-and-call: a plain helper inlines through a CHILD lowerer over
+    the same rules and the same build context — its bindings claim, and its
+    claims collide honestly (the naming law reaches inlined bodies)."""
+    handle = _kernel_handle(fn)
+    check_coherence(handle)
+    child = Lowerer(handle, ctx.rules, ctx.ops, ctx.derived, wrap=ctx.loc(node), context=ctx.context, root=ctx.root)
+    names = fn.__code__.co_varnames[: fn.__code__.co_argcount]
+    if len(names) != len(args):
+        raise TypeError(f"{fn.__qualname__} takes {len(names)} arguments, got {len(args)}")
+    child.locals.update(zip(names, args))
+    return child.run_body()
+
+
+def _resolve_staged(ctx, obj):
+    """Walk the staged-recipe chain (240 C1) from ``obj`` down to the ONE
+    kernel parameter underneath; return (pname, replay)."""
+    c = ctx.context
+    pname = next((n for n, v in c["k.fn_params"].items() if v is obj), None)
+    if pname is not None:
+        return pname, lambda cur: cur
+    rec = c["k.recipes"].get(id(obj))
+    if rec is None:
+        return None, None
+    fn, args, kwargs = rec
+    a_replays, k_replays, found = [], {}, []
+    for a in args:
+        p, r = _resolve_staged(ctx, a) if getattr(a, "fp", None) is not None else (None, None)
+        a_replays.append(r)
+        if p is not None:
+            found.append(p)
+    for key, v in kwargs.items():
+        p, r = _resolve_staged(ctx, v) if getattr(v, "fp", None) is not None else (None, None)
+        k_replays[key] = r
+        if p is not None:
+            found.append(p)
+    if len(found) != 1:
+        raise ValueError(
+            f"a staged transform used inside a kernel must reference exactly one kernel "
+            f"parameter (found {len(found)}) — stage it outside the body instead"
+        )
+
+    def replay(cur, fn=fn, args=args, kwargs=kwargs, ar=tuple(a_replays), kr=dict(k_replays)):
+        return fn(
+            *[r(cur) if r is not None else a for a, r in zip(args, ar)],
+            **{k: (kr[k](cur) if kr[k] is not None else v) for k, v in kwargs.items()},
+        )
+
+    return found[0], replay
+
+
+def _fn_arg(ctx, handle, args, out_spec, node):
+    """A function-valued argument applied at the thread coordinates:
+    pointwise instrs over launch-rebindable markers — per-element dispatch
+    through the spelled oracle (oracle-grade by doctrine). Tuple arguments
+    flatten per spec; tuple RESULTS flatten per ``out_spec`` (from the
+    destructuring pattern). Staged transforms of a parameter replay their
+    recipe chain on the CURRENT launch binding."""
+    c = ctx.context
+    pname, wrap = _resolve_staged(ctx, handle)
+    flat, spec = [], []
+    for a in args:
+        if isinstance(a, Node):
+            flat.append(a)
+            spec.append(None)
+        else:
+            spec.append(len(a))
+            flat.extend(a)
+    n_out = 1 if out_spec is None else sum(1 if s is None else s for s in out_spec)
+    outs = []
+    for k in range(n_out):
+        fp_key = (handle.fp, tuple(spec), out_spec, k)
+        mname = f"kernel.fn.{hashlib.sha256(repr(fp_key).encode()).hexdigest()[:10]}"
+
+        def _make(mname=mname, spec=tuple(spec), out_spec=out_spec, k=k, wrap=wrap):
+            def apply(*coords):
+                from pdum.dsl.reference import reference
+
+                f = _ARG_BINDINGS[mname]
+                if wrap is not None:  # replay the recipe chain on the CURRENT binding
+                    f = wrap(f)
+
+                def call(*cs):
+                    it = iter(cs)
+                    rebuilt = [float(next(it)) if s is None else tuple(float(next(it)) for _ in range(s)) for s in spec]
+                    res = reference(f)(*rebuilt)
+                    if out_spec is None:
+                        return res
+                    flat_res = []
+                    for s, part in zip(out_spec, res):
+                        flat_res.append(part) if s is None else flat_res.extend(part)
+                    return flat_res[k]
+
+                return np.vectorize(call)(*coords)
+
+            return Marker(mname, apply)
+
+        from .registry import MARKERS
+
+        MARKERS.derive(mname, _make)
+        if pname is not None:
+            c["k.fn_markers"].setdefault(pname, []).append(mname)
+        outs.append(ctx.emit("tl.pointwise", *flat, node=node, f=mname))
+    return outs[0] if out_spec is None else tuple(outs)
+
+
+def _check_indices(ctx, sub):
+    idx = sub.slice.elts if isinstance(sub.slice, ast.Tuple) else [sub.slice]
+    for i in idx:
+        v = ctx.lower(i)
+        if not (isinstance(v, Node) and any(v == t for t in ctx.context["k.iotas"])):
+            raise ValueError(
+                "kernel subscripts take exactly the thread coordinates "
+                "(data-dependent indexing is take/scatter_add, arriving P9)"
+            )
+
+
+def _k_assign(ctx, node):
+    c = ctx.context
+    if len(node.targets) != 1:
+        return _value_assign(ctx, node)
+    tgt = node.targets[0]
+    if isinstance(tgt, ast.Subscript):  # the store, at exactly the thread coordinates
+        target = ctx.lower(tgt.value)
+        if not (isinstance(target, Node) and isinstance(target.type, TensorType)) or id(target) not in c["k.pname_of"]:
+            raise ValueError("stores write into a tensor argument")
+        _check_indices(ctx, tgt)
+        value = _k_call(ctx, node.value) if isinstance(node.value, ast.Call) else ctx.lower(node.value)
+        tok = c.get("tl.token") or ctx.emit("tl.token", node=node)
+        c["tl.token"] = ctx.emit("tl.store", tok, target, value, node=node)
+        c["k.stored"].append(c["k.pname_of"][id(target)])
+        return None
+    if isinstance(tgt, ast.Tuple) and all(isinstance(e, (ast.Name, ast.Tuple)) for e in tgt.elts):
+        if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name):
+            fname = node.value.func.id
+            obj = _lookup(ctx, fname)
+            if obj is not None and getattr(obj, "fp", None) is not None:
+                # the destructuring PATTERN declares the output structure
+                out_spec, groups = [], []
+                for e in tgt.elts:
+                    if isinstance(e, ast.Name):
+                        out_spec.append(None)
+                        groups.append((e.id,))
+                    elif all(isinstance(x, ast.Name) for x in e.elts):
+                        out_spec.append(len(e.elts))
+                        groups.append(tuple(x.id for x in e.elts))
+                    else:
+                        raise ValueError("destructure a function result into names or name-tuples")
+                outs = iter(_fn_arg(ctx, obj, _lower_args(ctx, node.value), tuple(out_spec), node.value))
+                for group in groups:
+                    for n in group:
+                        v = next(outs)
+                        ctx.locals[n] = v
+                        _claim(ctx, n, v)
+                return None
+        value = _k_call(ctx, node.value) if isinstance(node.value, ast.Call) else ctx.lower(node.value)
+        if isinstance(value, tuple) and all(isinstance(e, ast.Name) for e in tgt.elts):
+            for e, v in zip(tgt.elts, value):
+                ctx.locals[e.id] = v
+                _claim(ctx, e.id, v)
+            return None
+        return _value_assign(ctx, node)
+    if isinstance(tgt, ast.Name):
+        value = _k_call(ctx, node.value) if isinstance(node.value, ast.Call) else ctx.lower(node.value)
+        ctx.locals[tgt.id] = value
+        _claim(ctx, tgt.id, value)
+        return None
+    return _value_assign(ctx, node)
+
+
+def _k_subscript(ctx, node):
+    """A LOAD at the thread coordinates: the view itself."""
+    if isinstance(node.value, ast.Name):
+        base = ctx.locals.get(node.value.id)
+        if isinstance(base, Node) and isinstance(base.type, TensorType):
+            _check_indices(ctx, node)
+            return base
+    return _value_subscript(ctx, node)
+
+
+def _k_name(ctx, node):
+    """Names resolve locals-first; a HOST SCALAR freevar or global
+    const-lifts (module constants are kernel vocabulary — keyed by the env
+    fingerprint, so rebinding one is a miss, never staleness). Host
+    CITIZENS (helpers, markers, staged results) are consumed at call
+    sites, never as expression values."""
+    if node.id in ctx.locals:
+        return ctx.locals[node.id]  # Nodes and host bindings alike
+    v = ctx.handle.env.get(node.id, None)
+    if v is None:
+        v = _globals_of(ctx).get(node.id)
+    if isinstance(v, (int, float, bool)):
+        return ctx.emit("core.const", node=node, type=typeof(v), value=v)
+    if v is not None:
+        raise ValueError(f"{node.id!r} is a host citizen here — kernels use it at a call site, not as a value")
+    return _value_name(ctx, node)  # the proper refusal voice
+
+
+KERNEL_RULES = {
+    **TL_RULES,
+    ast.Assign: _k_assign,
+    ast.Call: _k_call,
+    ast.Subscript: _k_subscript,
+    ast.Name: _k_name,
+}
+
+
+# ---- compilation ------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class _Artifact:
-    program: Program
+    region: Region
     params: tuple  # kernel parameter names, in order
-    writable: tuple  # parameter names that are stored to
-    fn_markers: dict  # parameter name -> marker names (launch rebind slots; one per flat output)
+    tensor_params: tuple  # tensor parameter names, region-param order
+    writable: tuple  # parameter names that are stored to (incl. tap buffers)
+    fn_markers: dict  # parameter name -> marker names (launch rebind slots)
     tap_sites: dict  # site name -> lattice dim names (valid sites)
     invalid_taps: dict  # site name -> reason (the naming law met inlining)
     requested_taps: tuple = ()  # the name set this artifact was built for
@@ -238,314 +581,80 @@ class _Artifact:
         for name, mnames in self.fn_markers.items():  # values ride the rebind channel
             for mname in mnames:
                 _ARG_BINDINGS[mname] = bound[name]
-        inputs = {name: a for name, a in bound.items() if isinstance(a, Tensor)}
-        run(self.program, inputs)
+        values = [bound[n] for n in self.tensor_params] + [bound[f"tap:{n}"] for n in self.requested_taps]
+        run_region(self.region, values)
         return None  # stores are the effect; kernels return nothing (taps included)
 
 
-class _KernelLowerer(_Lifter):
-    """thread_idx, subscript loads/stores, and function-argument calls on
-    top of the shared lowering machinery."""
-
-    def __init__(self, env: dict):
-        super().__init__(env)
-        self.threads: dict[str, _T] = {}  # thread name -> iota _T
-        self.target: _T | None = None  # the lattice source (first writable use)
-        self.token: str | None = None
-        self.stored: list[str] = []  # parameter names stored to, in order
-        self.fn_markers: dict[str, list] = {}  # param -> marker names (one per flat output)
-        self.param_names: tuple = ()  # kernel parameters — fn-arg slots live here ONLY
-        self.tap_vars: dict[str, str] = {}  # site name -> SSA var
-        self.invalid_taps: dict[str, str] = {}  # site name -> reason
-        self.claimed: set[str] = set()  # every binding name ever seen (uniqueness law)
-
-    def child(self, env: dict) -> "_KernelLowerer":
-        """Helpers inlined into a kernel share its claiming/thread context
-        (the site dicts are shared by reference, so a helper's bindings
-        register and collide honestly). Stores inside helpers are not yet
-        supported."""
-        inner = super().child(env)
-        inner.threads, inner.target = self.threads, self.target
-        inner.tap_vars, inner.invalid_taps = self.tap_vars, self.invalid_taps
-        inner.claimed = self.claimed
-        inner.fn_markers, inner.param_names = self.fn_markers, self.param_names
-        return inner
-
-    def claim(self, name: str, value) -> None:
-        """The naming law IS the claiming mechanism (S.4 amendment, tagless):
-        every uniquely-named binding is a site — free unless requested. A
-        name bound more than once (rebinding, or a helper inlined twice) is
-        INVALIDATED with the reason; the law never auto-suffixes."""
-        if name in self.claimed:
-            self.tap_vars.pop(name, None)
-            self.invalid_taps[name] = "bound at more than one site (rebinding or inlining made it non-unique)"
-            return
-        self.claimed.add(name)
-        if isinstance(value, _T):
-            self.tap_vars[name] = value.var
-        else:
-            self.invalid_taps[name] = "not a lattice value (nothing to store)"
-
-    def _i_thread_idx(self, *names):
-        if self.target is None:
-            raise ValueError("thread_idx needs a writable argument to define the lattice")
-        out = []
-        for n in names:
-            if n not in {d.name for d in self.target.shadow.dims}:
-                raise ValueError(f"thread_idx({n!r}): the writable argument has no dim {n!r}")
-            t = self.emit("iota", (self.target.var,), f"tid_{n}", name=n)
-            self.threads[n] = t
-            out.append(t)
-        return tuple(out)
-
-    def statement(self, stmt) -> None:
-        if (
-            isinstance(stmt, ast.Assign)
-            and len(stmt.targets) == 1
-            and isinstance(stmt.targets[0], ast.Tuple)
-            and isinstance(stmt.value, ast.Call)
-            and self._fn_arg_destructure(stmt)
-        ):
-            return
-        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Subscript):
-            target = self.value(stmt.targets[0].value)
-            if not isinstance(target, _T):
-                raise ValueError("stores write into a tensor argument")
-            self._check_indices(stmt.targets[0], target)
-            value = self.value(stmt.value)
-            if not isinstance(value, _T):
-                value = self.const_like(float(value), target)
-            tok = self.token or self.b.emit("token", (), hint="tok")
-            self.token = self.b.emit("store", (tok, target.var, value.var), hint="st")
-            self.shadows[self.token] = self.shadows.get(self.token)
-            self.stored.append(target.var)
-            return
-        super().statement(stmt)
-
-    def _check_indices(self, sub: ast.Subscript, target: _T) -> None:
-        idx = sub.slice.elts if isinstance(sub.slice, ast.Tuple) else [sub.slice]
-        vals = [self.value(i) for i in idx]
-        tids = {t.var for t in self.threads.values()}
-        for v in vals:
-            if not (isinstance(v, _T) and v.var in tids):
-                raise ValueError(
-                    "kernel subscripts take exactly the thread coordinates "
-                    "(data-dependent indexing is take/scatter_add, arriving P9)"
-                )
-
-    def value(self, node):
-        if isinstance(node, ast.Subscript):
-            base = (
-                super().value(node.value)
-                if not isinstance(node.value, ast.Name)
-                else self.adopt(self.env.get(node.value.id))
-            )
-            if isinstance(base, _T):  # a LOAD at the thread coordinates: the view itself
-                self._check_indices(node, base)
-                return base
-        return super().value(node)
-
-    def compute_call(self, target, args, kwargs):
-        from .markers import Marker
-        from .mdsl import CompositeMarker
-
-        if isinstance(target, (Marker, CompositeMarker)):
-            # a kernel body is SCALAR-TIER code — per-thread values, like a
-            # marker body — so bare names apply directly (S.2's one
-            # definition, two consumers: the same gelu serves both)
-            return self.pointwise(target.name, *args, hint=target.name.rsplit(".", 1)[-1])
-        made = super().compute_call(target, args, kwargs)
-        if made is not None:
-            return made
-        fp = getattr(target, "fp", None)
-        if fp is not None and all(
-            isinstance(a, _T) or (isinstance(a, tuple) and all(isinstance(x, _T) for x in a)) for a in args
-        ):
-            return self._fn_arg_call(target, args)
-        return None
-
-    def _resolve_staged(self, obj):
-        """Walk the staged-recipe chain (240 C1) from ``obj`` down to the ONE
-        kernel parameter underneath; return (pname, replay) where
-        ``replay(current)`` re-applies the whole chain to the current launch
-        binding. Recipes compose — ``t2(t1(f))`` restages through both."""
-        pname = next((n for n in self.param_names if self.env.get(n) is obj), None)
-        if pname is not None:
-            return pname, lambda cur: cur
-        rec = self.staged_recipes.get(id(obj))
-        if rec is None:
-            return None, None
-        fn, args, kwargs = rec
-        a_replays, k_replays, found = [], {}, []
-        for a in args:
-            p, r = self._resolve_staged(a) if getattr(a, "fp", None) is not None else (None, None)
-            a_replays.append(r)
-            if p is not None:
-                found.append(p)
-        for key, v in kwargs.items():
-            p, r = self._resolve_staged(v) if getattr(v, "fp", None) is not None else (None, None)
-            k_replays[key] = r
-            if p is not None:
-                found.append(p)
-        if len(found) != 1:
-            raise ValueError(
-                f"a staged transform used inside a kernel must reference exactly one kernel "
-                f"parameter (found {len(found)}) — stage it outside the body instead"
-            )
-
-        def replay(cur, fn=fn, args=args, kwargs=kwargs, ar=tuple(a_replays), kr=dict(k_replays)):
-            return fn(
-                *[r(cur) if r is not None else a for a, r in zip(args, ar)],
-                **{k: (kr[k](cur) if kr[k] is not None else v) for k, v in kwargs.items()},
-            )
-
-        return found[0], replay
-
-    def _fn_arg_destructure(self, stmt) -> bool:
-        """``v, (dy, dx) = f(y, x)`` — a tuple-returning function argument.
-        The DESTRUCTURING PATTERN declares the output structure (the same
-        spec discipline as tuple arguments): one pointwise per flat output,
-        each a component of the same per-element oracle call. Every bound
-        name claims (the naming law)."""
-        call = stmt.value
-        if not isinstance(call.func, ast.Name) or call.keywords:
-            return False
-        handle = self.env.get(call.func.id)
-        if getattr(handle, "fp", None) is None:
-            return False
-        args = tuple(self.value(a) for a in call.args)
-        if not all(isinstance(a, _T) or (isinstance(a, tuple) and all(isinstance(x, _T) for x in a)) for a in args):
-            return False
-        out_spec, groups = [], []
-        for e in stmt.targets[0].elts:
-            if isinstance(e, ast.Name):
-                out_spec.append(None)
-                groups.append((e.id,))
-            elif isinstance(e, ast.Tuple) and all(isinstance(x, ast.Name) for x in e.elts):
-                out_spec.append(len(e.elts))
-                groups.append(tuple(x.id for x in e.elts))
-            else:
-                raise ValueError("destructure a function result into names or name-tuples")
-        outs = iter(self._fn_arg_call(handle, args, out_spec=tuple(out_spec)))
-        for group in groups:
-            for n in group:
-                v = self.rebind(next(outs), n)
-                self.env[n] = v
-                self.claim(n, v)
-        return True
-
-    def _fn_arg_call(self, handle, args, out_spec=None):
-        """A function-valued argument applied at the thread coordinates:
-        pointwise instrs over launch-rebindable markers — per-element
-        dispatch through the spelled oracle (oracle-grade by doctrine).
-        A tuple argument (``f((y, x))``) flattens into the operands and
-        regroups per element; a tuple RESULT flattens per ``out_spec``
-        (from the destructuring pattern), one instr per flat component.
-
-        A handle may also be a host-STAGED transform of a parameter —
-        ``g = value_and_grad(f, wrt=...)`` written INSIDE the body, where
-        f is a parameter (a declared @staged transform, recorded as a
-        replayable recipe at the host-evaluation door). Then the BASE
-        parameter rides the rebind channel and the recipe chain re-applies
-        per launch — a warm hit never serves stale captured values."""
-        pname = next((n for n in self.param_names if self.env.get(n) is handle), None)
-        wrap = None
-        if pname is None:
-            pname, wrap = self._resolve_staged(handle)
-        flat, spec = [], []
-        for a in args:
-            if isinstance(a, _T):
-                flat.append(a)
-                spec.append(None)
-            else:
-                spec.append(len(a))
-                flat.extend(a)
-        n_out = 1 if out_spec is None else sum(1 if s is None else s for s in out_spec)
-        outs = []
-        for k in range(n_out):
-            fp_key = (handle.fp, tuple(spec), out_spec, k)
-            mname = f"kernel.fn.{hashlib.sha256(repr(fp_key).encode()).hexdigest()[:10]}"
-
-            def _make(mname=mname, spec=tuple(spec), out_spec=out_spec, k=k, wrap=wrap):
-                def apply(*coords):
-                    from pdum.dsl.reference import reference
-
-                    f = _ARG_BINDINGS[mname]
-                    if wrap is not None:  # replay the recipe chain on the CURRENT binding
-                        f = wrap(f)
-
-                    def call(*cs):
-                        it = iter(cs)
-                        rebuilt = [
-                            float(next(it)) if s is None else tuple(float(next(it)) for _ in range(s)) for s in spec
-                        ]
-                        res = reference(f)(*rebuilt)
-                        if out_spec is None:
-                            return res
-                        flat_res = []
-                        for s, part in zip(out_spec, res):
-                            flat_res.append(part) if s is None else flat_res.extend(part)
-                        return flat_res[k]
-
-                    return np.vectorize(call)(*coords)
-
-                return Marker(mname, apply)
-
-            MARKERS.derive(mname, _make)
-            if pname is not None:
-                self.fn_markers.setdefault(pname, []).append(mname)
-            outs.append(self.pointwise(mname, *flat, hint="fx"))
-        return outs[0] if out_spec is None else tuple(outs)
-
-
 def _compile(fn, args, tap_names=()) -> _Artifact:
-    tree = _fn_ast(fn)
-    params = [a.arg for a in tree.args.args]
-    if len(params) != len(args):
-        raise TypeError(f"{fn.__qualname__} takes {len(params)} arguments, got {len(args)}")
-    lo = _KernelLowerer(_captured(fn))
-    lo.param_names = tuple(params)
-    writable_target = next((a for a in args if isinstance(a, Tensor)), None)
-    if writable_target is None:
-        raise TypeError("@compute needs at least one tensor argument (the thread lattice)")
-    for name, a in zip(params, args):
+    handle = _kernel_handle(fn)
+    check_coherence(handle)
+    ctx = Lowerer(handle, KERNEL_RULES, {**CORE_OPS, **TL_OPS}, {}, context={"registry": DEFAULT})
+    c = ctx.context
+    c.update(
+        {
+            "k.claims": {},
+            "k.invalid": {},
+            "k.claimed": set(),
+            "k.recipes": {},
+            "k.fn_params": {},
+            "k.fn_markers": {},
+            "k.iotas": [],
+            "k.stored": [],
+            "k.pname_of": {},
+        }
+    )
+    names = fn.__code__.co_varnames[: fn.__code__.co_argcount]
+    if len(names) != len(args):
+        raise TypeError(f"{fn.__qualname__} takes {len(names)} arguments, got {len(args)}")
+    p_nodes, tensor_names = [], []
+    for name, a in zip(names, args):
         if isinstance(a, Tensor):
-            lo.b.input(name)
-            lo.shadows[name] = a.layout
-            lo.env[name] = _T(name, a.layout)
+            p = ctx.builder.param(len(p_nodes), tensor_type(a))
+            p_nodes.append(p)
+            tensor_names.append(name)
+            ctx.locals[name] = p
+            c["k.pname_of"][id(p)] = name
         else:
-            lo.env[name] = a  # a kernel value: identity in the key, values rebind
-    # the thread lattice: the writable argument's layout — discovered from the
-    # body's stores, but thread_idx may precede the store syntactically, so we
-    # seed with the LAST tensor argument (the S.3 convention: outputs last)
-    lo.target = next((lo.env[n] for n, a in reversed(list(zip(params, args))) if isinstance(a, Tensor)), None)
+            ctx.locals[name] = a  # a kernel value: identity in the key, values rebind
+            c["k.fn_params"][name] = a
+    if not p_nodes:
+        raise TypeError("@compute needs at least one tensor argument (the thread lattice)")
+    ctx.params = tuple(p_nodes)
+    tree = next(n for n in ast.parse(handle.snapshot.text).body if isinstance(n, ast.FunctionDef))
     with events.span("kernel.lower", fn.__qualname__):
         for stmt in tree.body:
             if isinstance(stmt, ast.Return):
                 raise ValueError("kernels return nothing — stores into writable arguments are the effect")
-            lo.statement(stmt)
-    if not lo.stored:
+            ctx.lower(stmt)
+    tok = c.get("tl.token")
+    if tok is None:
         raise ValueError(f"{fn.__qualname__} stores nothing — a kernel's effect is its stores")
-    for name in tap_names:  # requested taps become token-threaded stores
-        if name in lo.invalid_taps:
-            raise ValueError(f"tap {name!r} is INVALID: {lo.invalid_taps[name]}")
-        if name not in lo.tap_vars:
-            have = sorted(lo.tap_vars) or ["<none>"]
-            raise ValueError(f"no tap site {name!r} — sites: {', '.join(have)}")
-        buf = lo.b.input(f"tap:{name}")
-        lo.shadows[buf] = lo.shadows[lo.tap_vars[name]]
-        tok = lo.token or lo.b.emit("token", (), hint="tok")
-        lo.token = lo.b.emit("store", (tok, buf, lo.tap_vars[name]), hint="st")
-        lo.stored.append(buf)
-    writable = tuple(dict.fromkeys(lo.stored))
-    tap_sites = {n: tuple(d.name for d in lo.shadows[v].dims) for n, v in lo.tap_vars.items()}
+    tap_params = []
+    for tname in tap_names:  # requested taps become token-threaded stores
+        if tname in c["k.invalid"]:
+            raise ValueError(f"tap {tname!r} is INVALID: {c['k.invalid'][tname]}")
+        if tname not in c["k.claims"]:
+            have = sorted(c["k.claims"]) or ["<none>"]
+            raise ValueError(f"no tap site {tname!r} — sites: {', '.join(have)}")
+        claimed = c["k.claims"][tname]
+        p = ctx.builder.param(len(p_nodes) + len(tap_params), claimed.type)
+        tap_params.append(p)
+        tok = ctx.builder.emit("tl.store", tok, p, claimed)
+        c["k.stored"].append(f"tap:{tname}")
+    region = Region(
+        params=tuple(p_nodes) + tuple(tap_params),
+        body=(ctx.builder.emit("core.yield", tok),),
+    )
+    tap_sites = {n: tuple(d[0] for d in v.type.dims) for n, v in c["k.claims"].items()}
     return _Artifact(
-        program=lo.b.program(),
-        params=tuple(params),
-        writable=writable,
-        fn_markers=dict(lo.fn_markers),
+        region=region,
+        params=tuple(names),
+        tensor_params=tuple(tensor_names),
+        writable=tuple(dict.fromkeys(c["k.stored"])),
+        fn_markers=dict(c["k.fn_markers"]),
         tap_sites=tap_sites,
-        invalid_taps=dict(lo.invalid_taps),
+        invalid_taps=dict(c["k.invalid"]),
         requested_taps=tuple(tap_names),
     )
 

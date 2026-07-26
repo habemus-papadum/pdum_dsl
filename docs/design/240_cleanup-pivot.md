@@ -434,3 +434,35 @@ kept verbatim where possible, now testing src/. Nothing deleted yet
 lowers through the dialect; claiming/taps, fn-arg recipes, the env
 fingerprint, and launch migrate onto Regions; `_KernelLowerer`
 retires; kernel keys become region content keys).
+
+**C4.2 — the kernel switch (landed).** Every `@compute` kernel now
+lowers through the ONE dsl Lowerer with the KERNEL RULE PACK — a
+layer over the tl dialect pack, itself a layer over the base value
+pack — onto `tl.*` Regions executed by `run_region`.
+**`_KernelLowerer` is deleted** (the whole class and its `_Lifter`
+kernel machinery — superseded and removed in the same step, per the
+chaos rules); `ir.Program`/`ir.run` no longer serve the kernel tier.
+What migrated onto Regions, behavior-identical (the full kernel
+battery — 20 tests — plus the live spec tests passed unchanged,
+except one introspection line reading region ops instead of Program
+instrs): tagless claiming with honest invalidation (claims flow
+through inlined helpers via the SHARED build context — the 130 §7
+seam again), config-bracket taps as appended region params +
+token-threaded stores, fn-valued arguments with per-launch rebind and
+tuple-result destructuring, staged recipes with replay, the C1/C2
+staging door (kernel-side, declaration-first), the env fingerprint,
+the overlap refusal, and every pinned refusal voice. The iota
+unification is now LITERAL: thread coordinates ARE `tl.iota` nodes.
+One new mechanism the switch demanded: **the kernel capture shim**
+(`_kernel_handle`) — the same snapshot/coherence surface as a dsl
+Handle, but closure values stay RAW, because kernel bodies close over
+helpers, markers, and staged transforms: compile-time CITIZENS keyed
+by the env fingerprint, never typed env slots. Host-scalar freevars
+and globals const-lift through `_k_name` (module constants are kernel
+vocabulary). Name resolution is one order everywhere: locals →
+closure freevars (raw) → the body's globals. 602 passed at land, C0
+battery green throughout. *Remaining C4 slices:* the step/assemblage
+tier (reduce/scan, the layout family, charts/labels/levels + dtype in
+TensorType, autodiff/signatures/opcount retarget), then C5 (dispatch
+alignment: coherence + guards + two-tier caches for kernels), C6
+graduation.

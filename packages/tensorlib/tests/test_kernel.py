@@ -67,8 +67,8 @@ def test_the_iota_unification_differential():
     f = twill(2.0, 1.0) | zoom(1.0)
     img = T(np.zeros((3, 4)), ("y", "x"))
     shader(f, img)
-    assert any(i.op == "iota" for i in _program_of(f, img).instrs)
-    assert any(i.op == "store" for i in _program_of(f, img).instrs)
+    ops = _region_ops(f, img)  # the unification is LITERAL now: coords ARE tl.iota
+    assert "tl.iota" in ops and "tl.store" in ops
     # hand assemblage: pointwise over coordinate iotas
     base = T(np.zeros((3, 4)), ("y", "x"))
     yv, xv = iota(base, "y"), iota(base, "x")
@@ -83,11 +83,12 @@ def test_the_iota_unification_differential():
     np.testing.assert_allclose(img.to_numpy(), loop, rtol=1e-12)
 
 
-def _program_of(f, img):
+def _region_ops(f, img):
+    from pdum.tl.dialect import walk_region
     from pdum.tl.kernel import _arg_fp, _code_fp, _env_fp
 
     key = (_code_fp(shader.fn), _env_fp(shader.fn), (_arg_fp(f), _arg_fp(img)), ())
-    return KERNELS.peek(key).program
+    return [n.op for n in walk_region(KERNELS.peek(key).region)]
 
 
 # --- the two-consumers differential (S.2) -----------------------------------

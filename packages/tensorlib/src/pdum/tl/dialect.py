@@ -50,9 +50,9 @@ from pdum.dsl.value import LOWER_RULES, _assign, _binop, _call, _compare
 from .compute import const_like
 from .compute import iota as _eager_iota
 from .compute import pointwise as _eager_pw
-from .ir import Token, _store
+from .ir import Token, _store, pw_marker
 from .lifting import _Intrinsic
-from .markers import Marker, pw
+from .markers import Marker
 from .tensor import Tensor
 
 # --- types -------------------------------------------------------------------
@@ -261,7 +261,7 @@ def lower_body(fn, arg_types: tuple, *, kind: str, registry=None) -> Region:
 _FOLD_STEP_SUPPORTED = {"tl.pointwise", "core.const", "core.param", "core.yield"}
 
 
-def _walk(region: Region):
+def walk_region(region: Region):
     seen: set[int] = set()
 
     def go(n):
@@ -280,7 +280,7 @@ def check_fold_step_supported(step: Region) -> None:
     """PASS 1 (owner-ruled): is this step a shape the fold machinery
     handles? Anything else refuses NOW, with the reason — never
     mid-derivation."""
-    for n in _walk(step):
+    for n in walk_region(step):
         if n.op not in _FOLD_STEP_SUPPORTED:
             raise TypeError(
                 f"tl.fold step contains {n.op!r}, which the fold adjoint does not support yet "
@@ -384,7 +384,7 @@ def run_region(region: Region, values: list):
             ops_v = [ev(a) for a in n.args]
             ref = next(v for v in ops_v if isinstance(v, Tensor))
             ops_v = [v if isinstance(v, Tensor) else const_like(ref, float(v)) for v in ops_v]
-            return _eager_pw(getattr(pw, attrs["f"]), *ops_v)
+            return _eager_pw(pw_marker(attrs["f"]), *ops_v)
         if n.op == "tl.store":
             tok, dst, val = n.args
             return _store(ev(tok), ev(dst), ev(val))
