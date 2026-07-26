@@ -601,3 +601,28 @@ extractor. The kernel pack slimmed to its genuine layer (ambient
 iota-recording + fn-args) over the shared pack. `_Lifter`'s step
 entry point is superseded; the class survives ONLY for the assemblage
 unit lowerer — deleted when that switches. 611 passed at land.
+
+**C4.3e — the assemblage switch and THE DEMOLITION (landed).** The
+unit tier became a RULE-PACK LAYER over the shared dialect pack
+(`UNIT_RULES` in assemblage.py, ~90 lines): `_u_name` adopts captured
+Params as named inputs by CAPTURE IDENTITY (one Param object, one
+leaf, summed gradient — the zoo-gate-9 tie preserved); `_u_call`
+carries the scope-path taps and the mode-aware dropout idiom (its
+mask/keep/drop node names recorded in the naming ledger — the
+introspection pins held); the flow chains across composed units
+through a shared build context; the region yields (flow, *taps) and
+exports through the migration view, with the incumbent DCE/tap
+pruning unchanged on the exported Program. Semantics the switch
+surfaced and honored: tuples in tl bodies are HOST AGGREGATES
+(destructured structurally; `core.tuple` exists only at a region's
+yield — interior tuples have no Program spelling and now cannot
+arise); `extent(x, d)` reads structurally from a lowered node's TYPE
+inside structural slots (llama's RoPE); and **Params refuse the host
+door** — a call whose arguments are all Params must lower, never
+execute eagerly (the qknorm catch, which was also a silent
+performance trap). Then the demolition: **`_Lifter`, `_T`, and
+`_Emit` are DELETED** — lifting.py fell from ~490 lines to 145,
+keeping only the step tier's public surface (lift_step/LiftedStep),
+the frozen method table the dialect consumes, and the host-math
+tables. ONE lowering engine remains. 611 passed at land; the C0
+battery green throughout.

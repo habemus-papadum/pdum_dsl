@@ -279,6 +279,8 @@ def _host(ctx, node):
         v = _lookup(ctx, node.id)
         if v is None or hasattr(v, "type") or isinstance(v, tuple) and any(hasattr(x, "type") for x in v):
             raise NotHost()
+        if type(v).__name__ == "Param":  # a future-tensor citizen, never host data
+            raise NotHost()
         return v
     if isinstance(node, pyast.Attribute):
         return getattr(_host(ctx, node.value), node.attr)
@@ -290,6 +292,11 @@ def _host(ctx, node):
         fn = _lookup(ctx, node.func.id)
         if fn is None:
             fn = getattr(builtins, node.func.id, None)
+        if fn is _eager_extent:  # a structural READ of a lowered tensor's type
+            t = ctx.lower(node.args[0])
+            want = _host(ctx, node.args[1])
+            if hasattr(t, "type") and isinstance(t.type, TensorType):
+                return next(hi - lo for (n_, lo, hi) in t.type.dims if n_ == want)
         if callable(fn) and not hasattr(fn, "fp"):
             args = [_host(ctx, a) for a in node.args]
             kwargs = _host_kwargs(ctx, node.keywords)
@@ -482,7 +489,7 @@ def _tl_assign(ctx, node):
         tok = ctx.context.get("tl.token") or ctx.emit("tl.token", node=node)
         ctx.context["tl.token"] = ctx.emit("tl.store", tok, target, value, node=node)
         return None
-    value = _tl_call(ctx, node.value) if isinstance(node.value, pyast.Call) else ctx.lower(node.value)
+    value = ctx.lower(node.value)  # dispatches through the ACTIVE pack's rules
     if isinstance(tgt, pyast.Tuple) and isinstance(value, tuple):  # y, x = thread_idx(...)
         for e, v in zip(tgt.elts, value):
             ctx.locals[e.id] = v
@@ -531,6 +538,8 @@ def _refuse_branch_expr(ctx, node):
 
 def _tl_subscript(ctx, node):
     base = ctx.lower(node.value)
+    if isinstance(base, tuple):  # host-aggregate destructure
+        return base[_host(ctx, node.slice)]
     if hasattr(base, "type") and isinstance(base.type, TensorType):
         raise ValueError("tensor subscripts do not exist here — use .slice()/.select()")
     from pdum.dsl.value import _subscript as _base_subscript
@@ -547,6 +556,25 @@ def _tl_attribute(ctx, node):
     from pdum.dsl.value import _attribute as _base_attribute
 
     return _base_attribute(ctx, node)
+
+
+def _tl_expr_stmt(ctx, node):
+    """An effectful statement call (taps); docstrings vanish."""
+    if isinstance(node.value, pyast.Constant):
+        return None
+    if isinstance(node.value, pyast.Call):
+        ctx.lower(node.value)
+        return None
+    from pdum.dsl.value import _expr_stmt as _base_expr_stmt
+
+    return _base_expr_stmt(ctx, node)
+
+
+def _tl_tuple(ctx, node):
+    """tl bodies: tuples are HOST aggregates of values (the incumbent
+    semantics) — destructured structurally, never core.tuple interiors;
+    a region's yield materializes the terminal tuple."""
+    return tuple(ctx.lower(e) for e in node.elts)
 
 
 def _tl_constant(ctx, node):
@@ -569,6 +597,8 @@ def _tl_unary(ctx, node):
 
 TL_RULES = {
     **LOWER_RULES,
+    pyast.Expr: _tl_expr_stmt,
+    pyast.Tuple: _tl_tuple,
     pyast.Constant: _tl_constant,
     pyast.UnaryOp: _tl_unary,
     pyast.Assign: _tl_assign,
@@ -613,20 +643,18 @@ def lower_body(
     if kind == "step":
         if isinstance(tree, pyast.Lambda):
             result = ctx.lower(tree.body)
-            flat = result.args if getattr(result, "op", None) == "core.tuple" else (result,)
-            if not all(hasattr(v, "type") and isinstance(v.type, TensorType) for v in flat):
-                raise ValueError(f"a step must return tensors, got {flat!r}")
-            return Region(params=params, body=(ctx.builder.emit("core.yield", result),))
-        for stmt in tree.body[:-1]:
-            ctx.lower(stmt)
-        last = tree.body[-1]
-        if not isinstance(last, pyast.Return) or last.value is None:
-            raise ValueError("a step body must end in `return <tensor(s)>`")
-        result = ctx.lower(last.value)
-        flat = result.args if getattr(result, "op", None) == "core.tuple" else (result,)
+        else:
+            for stmt in tree.body[:-1]:
+                ctx.lower(stmt)
+            last = tree.body[-1]
+            if not isinstance(last, pyast.Return) or last.value is None:
+                raise ValueError("a step body must end in `return <tensor(s)>`")
+            result = ctx.lower(last.value)
+        flat = result if isinstance(result, tuple) else (result,)
         if not all(hasattr(v, "type") and isinstance(v.type, TensorType) for v in flat):
             raise ValueError(f"a step must return tensors, got {flat!r}")
-        return Region(params=params, body=(ctx.builder.emit("core.yield", result),))
+        yielded = result if not isinstance(result, tuple) else ctx.builder.emit("core.tuple", *result)
+        return Region(params=params, body=(ctx.builder.emit("core.yield", yielded),))
     if kind != "compute":
         raise ValueError(f"unknown body kind {kind!r} — kinds declare their yields here")
     for stmt in tree.body:

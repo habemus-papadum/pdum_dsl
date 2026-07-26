@@ -20,14 +20,32 @@ taps become named outputs, unrequested ones are pruned by DCE for free.
 
 from __future__ import annotations
 
+import ast as pyast
 import fnmatch
 import hashlib
 from dataclasses import dataclass
 
 from pdum.dsl.cache import Memo
+from pdum.dsl.ir import Region
+from pdum.dsl.lower import Lowerer, check_coherence
+from pdum.dsl.registry import DEFAULT
 
-from .lifting import _T, _Lifter
-from .producer import _captured, _fn_ast
+from .dialect import (
+    CORE_OPS,
+    TL_OPS,
+    TL_RULES,
+    TensorType,
+    _host,
+    _lookup,
+    _scalar_lift,
+    _tl_call,
+    _tl_name,
+    capture_shim,
+    export_program,
+    tensor_type_of_layout,
+)
+from .lifting import _Intrinsic
+from .producer import _fn_ast
 from .scope import Param, Scope
 from .tensor import Tensor
 from .transforms import dce
@@ -111,84 +129,124 @@ class Assemblage:
     layouts: dict  # EVERY input's layout — what virtual analyses consume
 
 
-class _UnitLowerer(_Lifter):
-    """The assemblage body lowerer: captured Params become named inputs
-    (once per OBJECT — capture identity), taps record their sites, dropout
-    is the mode-aware idiom."""
+def _u_name(ctx, node):
+    """The unit layer of name resolution: a captured Param ADOPTS as a
+    named input — once per OBJECT (capture identity: one Param captured by
+    two units is ONE leaf; its gradient sums)."""
+    return _adopt(ctx, _tl_name(ctx, node))
 
-    def __init__(self, env: dict):
-        super().__init__(env)
-        self.param_vars: dict[int, _T] = {}  # id(Param) -> input _T
-        self.params: dict[str, Param] = {}
-        self.taps: dict[str, str] = {}
 
-    def child(self, env: dict) -> "_UnitLowerer":
-        inner = super().child(env)
-        inner.param_vars, inner.params, inner.taps = self.param_vars, self.params, self.taps
-        return inner
+def _adopt(ctx, v):
+    if isinstance(v, Param):
+        c = ctx.context
+        got = c["u.param_nodes"].get(id(v))
+        if got is None:
+            got = ctx.builder.param(("u", 1 + len(c["u.param_nodes"])), tensor_type_of_layout(v.layout))
+            c["u.param_nodes"][id(v)] = got
+            c["u.params"][v.name] = v
+            c["u.param_order"].append((v.name, got))
+        return got
+    return v
 
-    def adopt(self, v):
-        if isinstance(v, Param):
-            got = self.param_vars.get(id(v))
-            if got is None:
-                self.b.input(v.name)
-                self.shadows[v.name] = v.layout
-                got = self.param_vars[id(v)] = _T(v.name, v.layout)
-                self.params[v.name] = v
-            return got
-        return v
 
-    def _i_tap(self, x, s: Scope):
-        if not isinstance(x, _T):
-            raise ValueError("tap takes a tensor and a scope site")
-        self.taps[s.name] = x.var
-        return x
-
-    def _i_dropout(self, x, p, s: Scope):
-        """The dropout IDIOM (§1.8): mode-aware, mask by closed-form field.
-        Identity under eval — the mode branch lives here, never in user
-        code; the mask is a constant field, so AD needs no new rule."""
-        if not isinstance(x, _T):
-            raise ValueError("dropout takes a tensor, a rate, and a scope site")
-        if s.policy("mode", "train") == "eval":
+def _u_call(ctx, node):
+    """The unit layer of call resolution: scope-path taps and the
+    mode-aware dropout idiom; everything else is the shared dialect pack."""
+    if isinstance(node.func, pyast.Name):
+        obj = _lookup(ctx, node.func.id)
+        if isinstance(obj, _Intrinsic) and obj.name == "tap":
+            x = ctx.lower(node.args[0])
+            site = _host(ctx, node.args[1])
+            if not (hasattr(x, "type") and isinstance(x.type, TensorType) and isinstance(site, Scope)):
+                raise ValueError("tap takes a tensor and a scope site")
+            ctx.context["u.taps"][site.name] = x
             return x
-        u = self.emit("random", (x.var,), "u", dist="uniform", key=s.stream())
-        pc = self.const_like(float(p), x)
-        kc = self.const_like(1.0 - float(p), x)
-        z = self.const_like(0.0, x)
-        m = self.pointwise("lt", u, pc, hint="mask")
-        xs = self.pointwise("div", x, kc, hint="keep")
-        return self.pointwise("where", m, z, xs, hint="drop")
+        if isinstance(obj, _Intrinsic) and obj.name == "dropout":
+            x = ctx.lower(node.args[0])
+            if not (hasattr(x, "type") and isinstance(x.type, TensorType)):
+                raise ValueError("dropout takes a tensor, a rate, and a scope site")
+            p, site = float(_host(ctx, node.args[1])), _host(ctx, node.args[2])
+            if site.policy("mode", "train") == "eval":  # identity under eval — the mode
+                return x  # branch lives HERE, never in user code (§1.8)
+            names = ctx.context.setdefault("tl.names", {})
+            u = ctx.emit("tl.random", x, node=node, dist="uniform", key=site.stream())
+            names.setdefault(id(u), "u")
+            m = ctx.emit("tl.pointwise", u, _scalar_lift(ctx, node, p), node=node, f="lt")
+            names.setdefault(id(m), "mask")
+            xs = ctx.emit("tl.pointwise", x, _scalar_lift(ctx, node, 1.0 - p), node=node, f="div")
+            names.setdefault(id(xs), "keep")
+            drop = ctx.emit("tl.pointwise", m, _scalar_lift(ctx, node, 0.0), xs, node=node, f="where")
+            names.setdefault(id(drop), "drop")
+            return drop
+    return _tl_call(ctx, node)
+
+
+UNIT_RULES = {**TL_RULES, pyast.Name: _u_name, pyast.Call: _u_call}
 
 
 def _lower(u: Unit, input_layouts: dict) -> tuple:
-    lo = _UnitLowerer({})
-    flow = None
-    inputs = []
+    """Chain the unit fns' bodies through ONE dsl-Lowerer build (shared
+    context; one lowerer per fn, nodes are values): the first unit names
+    the flowing input; captured Params adopt as they are seen."""
+    ops = {**CORE_OPS, **TL_OPS}
+    names_led: dict = {}
+    context = {
+        "registry": DEFAULT,
+        "tl.kind": "unit",
+        "tl.names": names_led,
+        "u.param_nodes": {},
+        "u.params": {},
+        "u.param_order": [],
+        "u.taps": {},
+    }
+    flow = flow_param = flow_name = None
     for fn in u.fns:
-        tree = _fn_ast(fn)
-        params = [a.arg for a in tree.args.args]
+        handle = capture_shim(fn)
+        check_coherence(handle)
+        ctx = Lowerer(handle, UNIT_RULES, ops, {}, context=context)
+        params = list(fn.__code__.co_varnames[: fn.__code__.co_argcount])
         if len(params) != 1:
             raise ValueError(f"a unit takes exactly one flowing value, got {params} in {fn.__qualname__}")
-        inner = lo.child(_captured(fn))
         if flow is None:  # the first unit names the program's flowing input
             name = params[0]
             layout = input_layouts.pop(name, None)
             if layout is None:
                 raise ValueError(f"the flowing input {name!r} needs a layout: assemblage(u, {name}=<layout>)")
             layout = layout.layout if isinstance(layout, Tensor) else layout
-            lo.b.input(name)
-            lo.shadows[name] = layout
-            flow = _T(name, layout)
-            inputs.append(name)
-        inner.env[params[0]] = flow
-        outs = inner.run_body(tree)
-        if len(outs) != 1:
-            raise ValueError(f"a unit returns exactly one flowing value ({fn.__qualname__} returned {len(outs)})")
-        flow = _T(outs[0], lo.shadows[outs[0]])
+            flow_param = ctx.builder.param(("u", 0), tensor_type_of_layout(layout))
+            flow, flow_name = flow_param, name
+        ctx.locals[params[0]] = flow
+        ctx.params = (flow_param,)
+        tree = _fn_ast(fn)
+        if isinstance(tree, pyast.Lambda):
+            result = ctx.lower(tree.body)
+        else:
+            for stmt in tree.body[:-1]:
+                ctx.lower(stmt)
+            last = tree.body[-1]
+            if not isinstance(last, pyast.Return) or last.value is None:
+                raise ValueError(f"a unit returns exactly one flowing value ({fn.__qualname__} returned none)")
+            result = ctx.lower(last.value)
+        if isinstance(result, tuple) or getattr(result, "op", None) == "core.tuple":
+            n = len(result) if isinstance(result, tuple) else len(result.args)
+            raise ValueError(f"a unit returns exactly one flowing value ({fn.__qualname__} returned {n})")
+        flow = result
     if input_layouts:
         raise ValueError(f"unknown inputs bound: {sorted(input_layouts)}")
-    return lo, tuple(inputs), flow.var
+    c = context
+    sites = sorted(c["u.taps"])
+    tap_nodes = [c["u.taps"][site] for site in sites]
+    yielded = flow if not tap_nodes else ctx.builder.emit("core.tuple", flow, *tap_nodes)
+    region = Region(
+        params=(flow_param, *(node for _, node in c["u.param_order"])),
+        body=(ctx.builder.emit("core.yield", yielded),),
+    )
+    in_names = (flow_name, *(n for n, _ in c["u.param_order"]))
+    program, outs = export_program(region, in_names, names_of=names_led)
+    taps = dict(zip(sites, outs[1:]))
+    layouts = {flow_name: region.params[0].type.layout}
+    layouts.update({n: p.layout for n, p in c["u.params"].items()})
+    return program, in_names, outs[0], dict(c["u.params"]), taps, layouts
 
 
 def assemblage(u: Unit, *, scope: Scope | None = None, taps: tuple = (), **input_layouts) -> Assemblage:
@@ -206,18 +264,17 @@ def assemblage(u: Unit, *, scope: Scope | None = None, taps: tuple = (), **input
 
 
 def _build(u: Unit, taps: tuple, input_layouts: dict) -> Assemblage:
-    lo, inputs, out = _lower(u, input_layouts)
-    prog = lo.b.program()
-    requested = [v for site, v in sorted(lo.taps.items()) if any(fnmatch.fnmatch(site, p) for p in taps)]
+    prog, in_names, out, params, tap_vars, layouts = _lower(u, input_layouts)
+    requested = [v for site, v in sorted(tap_vars.items()) if any(fnmatch.fnmatch(site, p) for p in taps)]
     keep = (out, *requested)
     prog = dce(prog, keep) if len(prog.instrs) else prog
-    layouts = {i.var: lo.shadows[i.var] for i in prog.instrs if i.op == "input"}
+    live = {i.var for i in prog.instrs if i.op == "input"}
     return Assemblage(
         program=prog,
-        inputs=inputs,
+        inputs=(in_names[0],),
         output=out,
-        params=dict(lo.params),
-        taps=dict(lo.taps),
+        params=params,
+        taps=tap_vars,
         outputs=keep,
-        layouts=layouts,
+        layouts={n: v for n, v in layouts.items() if n in live},
     )

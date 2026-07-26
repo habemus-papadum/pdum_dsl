@@ -1,21 +1,18 @@
-"""Tensor-typed lifting — the shared expression syntax's tensor half (S.2).
+"""Tensor-typed lifting — the step tier's public surface (S.2).
 
-A fold step is a plain function over tensor-typed parameters; lifting lowers
-it to a step Program by TYPE-DIRECTED inspection of the AST:
+Since the pivot's step switch (240 C4.3d), bodies lower through the ONE
+dsl Lowerer with the tl dialect pack (``dialect.py``) and render back as
+Programs through the migration view; ``_Lifter`` — the second lowering
+engine — is DELETED. This module keeps the step tier's public surface
+(``lift_step``/``LiftedStep``), the frozen layout-method table
+(``_METHODS`` — the dialect consumes its packers), the structural-slot
+voice, and the host-math tables.
 
-- unannotated parameters are TENSOR-typed: they become ``input`` instrs, and
-  every operation over them emits IR (operators → pointwise markers, method
-  calls → layout ops, layout shadows tracked through ``ir.infer_instr``);
-- parameters annotated ``n: Literal[int]`` are STRUCTURAL (200 §1.5): bound
-  to build-time values and evaluated on the host — ``n - 1`` in a slice
-  extent is ordinary arithmetic at lift time;
-- sub-expressions with no tensor in them (captured charts, Fractions,
-  helper-function results) evaluate on the host; a helper called on tensor
-  arguments inlines — its body lowers under the same rules.
-
-Structural slots (slice/pad extents, shift deltas, method keywords) accept
-only host values: a tensor reaching one refuses, naming the annotation fix.
-Straight-line enforced at lowering, exactly like marker bodies.
+The semantics are unchanged and pinned: unannotated parameters are
+TENSOR-typed inputs; ``n: Literal[int]`` parameters are STRUCTURAL, bound
+to build-time values with host arithmetic in structural slots; helpers
+inline; tensors reaching structural slots refuse, naming the annotation
+fix; straight-line enforced at lowering.
 """
 
 from __future__ import annotations
@@ -25,18 +22,15 @@ from dataclasses import dataclass
 
 from pdum.dsl.types import LiteralAnnotation
 
-from .ir import Instr, Program, infer_instr
+from .ir import Program
 from .layout import Layout
-from .producer import _captured, _fn_ast
+from .producer import _fn_ast
 from .tensor import Tensor
 
 _STRUCTURAL_SLOT = (
     "{what} is a STRUCTURAL slot: a runtime tensor cannot shape the lattice — "
     "pass a build-time value (annotate the parameter: `n: Literal[int]`, 200 §1.5)"
 )
-
-_CMP = {ast.Eq: "eq", ast.NotEq: "ne", ast.LtE: "le", ast.Lt: "lt", ast.GtE: "ge", ast.Gt: "gt"}
-_BIN = {ast.Add: "add", ast.Sub: "sub", ast.Mult: "mul", ast.Div: "div"}
 
 # method name -> (op, packer(args, kwargs) -> params); every packer input is
 # host-evaluated before packing (the structural-slot discipline)
@@ -64,39 +58,6 @@ _METHODS = {
 }
 
 
-class _Emit:
-    """The internal instr accumulator: core naming (claim/derive), nothing
-    more — makers and Program/Instr literals are the public authoring
-    surfaces; this stays private."""
-
-    def __init__(self) -> None:
-        from pdum.dsl.naming import Namer
-
-        self.instrs: list[Instr] = []
-        self.names = Namer()
-
-    def input(self, name: str) -> str:
-        self.names.claim(name)
-        self.instrs.append(Instr(name, "input", (), {}))
-        return name
-
-    def emit(self, op: str, operands=(), hint: str | None = None, **params) -> str:
-        var = self.names.derive(hint or op)
-        self.instrs.append(Instr(var, op, tuple(operands), params))
-        return var
-
-    def program(self) -> Program:
-        return Program(tuple(self.instrs))
-
-
-@dataclass(frozen=True)
-class _T:
-    """A tensor-typed intermediate: its SSA var and its layout shadow."""
-
-    var: str
-    shadow: object
-
-
 @dataclass(frozen=True)
 class _Intrinsic:
     """An S.1 vocabulary function: meaningful only inside a lowered body."""
@@ -108,16 +69,6 @@ class _Intrinsic:
             f"{self.name} is assemblage vocabulary — it lowers by inspection "
             f"inside a unit or step body; there is nothing to call"
         )
-
-
-def _holds_tensor(v) -> bool:
-    if isinstance(v, _T):
-        return True
-    if isinstance(v, (tuple, list)):
-        return any(_holds_tensor(x) for x in v)
-    if isinstance(v, dict):
-        return any(_holds_tensor(x) for x in v.values())
-    return False
 
 
 def __getattr__(name):  # lifting.contract stays importable — ONE function
@@ -176,306 +127,6 @@ def lift_step(fn, **bindings) -> LiftedStep:
     region = lower_body(fn, tuple(arg_types), kind="step", host=host, out_names=bound_names)
     program, outs = export_program(region, tuple(inputs), names_of=bound_names)
     return LiftedStep(program, tuple(inputs), outs)
-
-
-class _Lifter:
-    def __init__(self, env: dict):
-        self.env = env
-        self.b = _Emit()
-        self.shadows: dict[str, object] = {}
-        self.staged_recipes: dict[int, tuple] = {}  # id(result) -> (fn, args, kwargs)
-
-    # ---- emission --------------------------------------------------------
-
-    def adopt(self, v):
-        """Hook: convert a captured value at name resolution (the unit
-        lowerer turns captured Params into named inputs here)."""
-        return v
-
-    def child(self, env: dict) -> "_Lifter":
-        """A same-kind lowerer over ``env`` sharing this one's program and
-        name space — how helpers inline without losing the subclass."""
-        inner = type(self)(env)
-        inner.b, inner.shadows = self.b, self.shadows
-        inner.staged_recipes = self.staged_recipes
-        return inner
-
-    def emit(self, op: str, operands: tuple[str, ...], hint: str, **params) -> _T:
-        var = self.b.emit(op, operands, hint=hint, **params)
-        self.shadows[var] = infer_instr(self.b.instrs[-1], self.shadows)
-        return _T(var, self.shadows[var])
-
-    def claim(self, name: str, value) -> None:
-        """Hook: the naming law as the claiming mechanism (S.4 amendment) —
-        kernel-tier lowerers register every binding as a claimable site."""
-
-    def rebind(self, t: _T, name: str) -> _T:
-        """Rename the JUST-emitted instr's var to the Python binding name
-        (deduped through the same Namer) — nothing references it yet."""
-        last = self.b.instrs[-1]
-        if last.var != t.var or name in self.b.names:
-            return t  # a re-bound existing var, or a taken name: keep the hint
-        fresh = self.b.names.derive(name)
-        self.b.instrs[-1] = Instr(fresh, last.op, last.operands, dict(last.params))
-        self.shadows[fresh] = self.shadows.pop(t.var)
-        return _T(fresh, self.shadows[fresh])
-
-    def const_like(self, value, t: _T) -> _T:
-        """A structural scalar broadcast over a tensor operand's lattice —
-        charts/labels/placement restamped so alignment holds."""
-        dims = tuple((d.name, (d.start, d.stop)) for d in t.shadow.dims)
-        out = self.emit("const", (), "c", value=float(value), dims=dims)
-        charts = {d.name: d.chart for d in t.shadow.dims if d.labels is None}
-        labels = {d.name: d.labels for d in t.shadow.dims if d.labels is not None}
-        if any(c is not None for c in charts.values()):
-            out = self.emit("with_charts", (out.var,), "c", charts=charts)
-        if labels:
-            out = self.emit("with_labels", (out.var,), "c", labels=labels)
-        levels = {d.name: d.level for d in t.shadow.dims}
-        if any(lv is not None for lv in levels.values()):
-            out = self.emit("bind", (out.var,), "c", levels=levels)
-        return out
-
-    def pointwise(self, f: str, *operands, hint: str | None = None) -> _T:
-        ts = [o for o in operands if isinstance(o, _T)]
-        ops = tuple(o.var if isinstance(o, _T) else self.const_like(o, ts[0]).var for o in operands)
-        return self.emit("pointwise", ops, hint or f, f=f)
-
-    # ---- the body --------------------------------------------------------
-
-    def run_body(self, tree) -> tuple[str, ...]:
-        if isinstance(tree, ast.Lambda):
-            return self.returns(self.value(tree.body))
-        for stmt in tree.body[:-1]:
-            self.statement(stmt)
-        last = tree.body[-1]
-        if not isinstance(last, ast.Return) or last.value is None:
-            raise ValueError("a step body must end in `return <tensor(s)>`")
-        return self.returns(self.value(last.value))
-
-    def returns(self, value) -> tuple[str, ...]:
-        vals = value if isinstance(value, tuple) else (value,)
-        if not all(isinstance(v, _T) for v in vals):
-            raise ValueError(f"a step must return tensors, got {vals!r}")
-        return tuple(v.var for v in vals)
-
-    def statement(self, stmt) -> None:
-        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
-            target, value = stmt.targets[0], self.value(stmt.value)
-            if isinstance(target, ast.Name):
-                # SSA names come from Python binding names (S.1): the RHS's
-                # final emission takes the binding name as its hint
-                if isinstance(value, _T):
-                    value = self.rebind(value, target.id)
-                self.env[target.id] = value
-                self.claim(target.id, value)
-                return
-            if isinstance(target, ast.Tuple) and all(isinstance(e, ast.Name) for e in target.elts):
-                if not isinstance(value, tuple) or len(value) != len(target.elts):
-                    raise ValueError(f"cannot destructure {value!r} into {len(target.elts)} names")
-                for e, p in zip(target.elts, value):
-                    self.env[e.id] = p
-                    self.claim(e.id, p)
-                return
-        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
-            return  # a docstring
-        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
-            self.value(stmt.value)  # an effectful statement call
-            return
-        if isinstance(stmt, ast.FunctionDef):  # a local helper: bind it for later inlining
-            raise ValueError("define step helpers OUTSIDE the step body; calls inline them")
-        raise ValueError(
-            f"step bodies are straight-line: a {type(stmt).__name__} statement cannot be "
-            f"lowered — bounded control flow exists only in the value language (S.2)"
-        )
-
-    # ---- expressions -----------------------------------------------------
-
-    def value(self, node):
-        if isinstance(node, ast.Constant):
-            return node.value
-        if isinstance(node, ast.Name):
-            if node.id not in self.env:
-                raise ValueError(f"unknown name {node.id!r} in a step body")
-            return self.adopt(self.env[node.id])
-        if isinstance(node, ast.Tuple):
-            return tuple(self.value(e) for e in node.elts)
-        if isinstance(node, ast.Dict):
-            return {self.value(k): self.value(v) for k, v in zip(node.keys, node.values)}
-        if isinstance(node, ast.BinOp):
-            lhs, rhs = self.value(node.left), self.value(node.right)
-            op = _BIN.get(type(node.op))
-            if isinstance(lhs, _T) or isinstance(rhs, _T):
-                if op is None:
-                    raise ValueError(f"operator {type(node.op).__name__} has no pointwise primitive")
-                return self.pointwise(op, lhs, rhs)
-            return _HOST_BIN[type(node.op)](lhs, rhs)
-        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-            v = self.value(node.operand)
-            return self.pointwise("neg", v) if isinstance(v, _T) else -v
-        if isinstance(node, ast.Compare) and len(node.ops) == 1:
-            lhs, rhs = self.value(node.left), self.value(node.comparators[0])
-            if isinstance(lhs, _T) or isinstance(rhs, _T):
-                return self.pointwise(_CMP[type(node.ops[0])], lhs, rhs)
-            return _HOST_CMP[type(node.ops[0])](lhs, rhs)
-        if isinstance(node, ast.Attribute):
-            base = self.value(node.value)
-            if isinstance(base, _T):
-                raise ValueError(f"tensors have no attribute access in step bodies (.{node.attr})")
-            return getattr(base, node.attr)
-        if isinstance(node, ast.Subscript):
-            base, idx = self.value(node.value), self.value(node.slice)
-            if isinstance(base, _T):
-                raise ValueError("tensor subscripts do not exist here — use .slice()/.select()")
-            return base[idx]
-        if isinstance(node, ast.Call):
-            return self.call(node)
-        if isinstance(node, (ast.IfExp, ast.BoolOp, ast.GeneratorExp, ast.ListComp)):
-            raise ValueError(
-                "step bodies are straight-line: if/and/or cannot be lowered — "
-                "use where(cond, a, b); the branch is data flow here"
-            )
-        raise ValueError(f"cannot lower a {type(node).__name__} in a step body")
-
-    def kwargs_of(self, node: ast.Call) -> dict:
-        out: dict = {}
-        for kw in node.keywords:
-            if kw.arg is None:  # a **splat: the dict is a host value
-                out.update(self.value(kw.value))
-            else:
-                out[kw.arg] = self.value(kw.value)
-        return out
-
-    def call(self, node: ast.Call):
-        if isinstance(node.func, ast.Attribute):  # a method: tensor layout op, or host method
-            base = self.value(node.func.value)
-            args = [self.value(a) for a in node.args]
-            kwargs = self.kwargs_of(node)
-            if isinstance(base, _T):
-                return self.tensor_method(base, node.func.attr, args, kwargs)
-            return getattr(base, node.func.attr)(*args, **kwargs)
-        target = self.value(node.func)
-        args = [self.value(a) for a in node.args]
-        kwargs = self.kwargs_of(node)
-        if isinstance(target, _Intrinsic):
-            return getattr(self, f"_i_{target.name}")(*args, **kwargs)
-        made = self.compute_call(target, args, kwargs)
-        if made is not None:
-            return made
-        if callable(target):
-            if any(isinstance(a, _T) for a in args) or any(isinstance(v, _T) for v in kwargs.values()):
-                return self.inline(target, args, kwargs)
-            # Recognition is DECLARATION-FIRST (240 C2): a declared staged
-            # transform host-evaluates and records a replayable recipe —
-            # and must produce a function citizen, pedantically:
-            if getattr(target, "__staged__", False):
-                result = target(*args, **kwargs)
-                if getattr(result, "fp", None) is None:
-                    name = getattr(target, "__name__", repr(target))
-                    raise ValueError(
-                        f"staged transform {name!r} returned {type(result).__name__!r}, not a "
-                        f"function citizen — staged transforms produce fp-carrying values"
-                    )
-                self.staged_recipes[id(result)] = (target, tuple(args), dict(kwargs))
-                return result
-            # STRUCTURAL host evaluation (implicit, owner-ratified: 240 C1) —
-            # but an UNDECLARED call returning a function citizen refuses:
-            result = target(*args, **kwargs)
-            if getattr(result, "fp", None) is not None:
-                name = getattr(target, "__name__", repr(target))
-                raise ValueError(
-                    f"{name!r} returned a function value at lower time without being a "
-                    f"declared staged transform — decorate it with @staged "
-                    f"(pdum.dsl.staged), or build the value outside the body"
-                )
-            return result
-        raise ValueError(f"cannot call {target!r} in a step body")
-
-    # ---- the S.1 method vocabulary --------------------------------------
-
-    def tensor_method(self, base: _T, name: str, args: list, kwargs: dict):
-        if name not in _METHODS:
-            raise ValueError(f"tensors have no method {name!r} in step bodies")
-        if any(_holds_tensor(v) for v in list(args) + list(kwargs.values())):
-            raise ValueError(_STRUCTURAL_SLOT.format(what=f".{name}(...)"))
-        op, pack = _METHODS[name]
-        return self.emit(op, (base.var,), name, **pack(args, kwargs))
-
-    def rep_dim(self, t: _T, d) -> _T:
-        """Broadcast one dim onto ``t``, carrying the source dim's chart,
-        labels, and placement (the declaration stays complete)."""
-        out = self.emit(
-            "repeat", (t.var,), "rep", name=d.name, extent=(d.start, d.stop), chart=d.chart, labels=d.labels
-        )
-        if d.level is not None:
-            out = self.emit("bind", (out.var,), "rep", levels={d.name: d.level})
-        return out
-
-    def compute_call(self, target, args, kwargs):
-        """THE surface↔IR correspondence (220): the recognized set is
-        exactly the primitive set — pointwise/reduce/scan/iota/const_like/
-        repeat_like emit one instruction each, extent is the structural
-        read, and NOTHING else is recognized: every other function is plain
-        code that inlines (or refuses). A bare marker call on tensors
-        refuses, pointing at pointwise. Returns None for non-vocabulary."""
-        from .compute import const_like as _cl
-        from .compute import extent as _ex
-        from .compute import iota as _io
-        from .compute import pointwise as _pw
-        from .compute import reduce as _rd
-        from .compute import repeat_like as _rl
-        from .compute import scan as _sc
-        from .markers import Marker
-        from .mdsl import CompositeMarker
-
-        if target is _pw:
-            f, *ops = args
-            fname = f.name if isinstance(f, (Marker, CompositeMarker)) else f
-            return self.pointwise(fname, *ops, hint=str(fname).rsplit(".", 1)[-1])
-        if target is _rd or target is _sc:
-            f, a = args[0], args[1]
-            dims = args[2] if len(args) > 2 else kwargs.get("dims" if target is _rd else "dim")
-            fname = f if isinstance(f, str) else f.name
-            ops = tuple(t.var for t in (a if isinstance(a, tuple) else (a,)))
-            if target is _rd:
-                names = (dims,) if isinstance(dims, str) else tuple(dims)
-                return self.emit("reduce", ops, "red", f=fname, dims=names)
-            return self.emit("scan", ops, "scan", f=fname, dim=dims)
-        if target is _rl:
-            x, like = args
-            return self.emit("repeat_like", (x.var, like.var), "rl")
-        if target is _ex:
-            d = args[0].shadow.dim(args[1])
-            return (d.start, d.stop)
-        if target is _io:
-            return self.emit("iota", (args[0].var,), "iota", name=args[1])
-        if target is _cl:
-            return self.const_like(args[1], args[0])
-        if isinstance(target, (Marker, CompositeMarker)):
-            raise ValueError(
-                f"{target.name} is a marker — tensor-tier application is "
-                f"spelled pointwise({target.name}, ...) (bare names lower "
-                f"only inside scalar marker bodies)"
-            )
-        return None
-
-    def inline(self, fn, args, kwargs) -> object:
-        """A helper called on tensor arguments: lower its body here, its
-        parameters bound to the caller's values — inlining by lowering.
-        Defaults and keyword-only parameters bind through the real
-        signature (S.1 helpers read like ordinary Python)."""
-        import inspect
-
-        tree = _fn_ast(fn)
-        inner = self.child(_captured(fn))
-        try:
-            ba = inspect.signature(fn).bind(*args, **kwargs)
-            ba.apply_defaults()
-        except TypeError as exc:
-            raise ValueError(f"{fn.__name__}(...): {exc}") from None
-        inner.env.update(ba.arguments)
-        outs = inner.run_body(tree)
-        return _T(outs[0], self.shadows[outs[0]]) if len(outs) == 1 else tuple(_T(o, self.shadows[o]) for o in outs)
 
 
 _HOST_BIN = {
