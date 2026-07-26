@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from .capture import Handle
 from .derived import DerivedValue
 from .ir import VerifyError
-from .staging import staged
+from .staging import macro, staged
 from .types import Scalar
 
 
@@ -221,6 +221,7 @@ def _tangent_of(b, node, seed_key, memo):
     )
 
 
+@macro
 def _with_respect_to(ctx, args, node):
     """The value-space operator, as a LOWERING MACRO: differentiate the
     already-lowered DAG from the wrt value to the differentiated value —
@@ -240,9 +241,6 @@ def _with_respect_to(ctx, args, node):
     memo = ctx.context.setdefault("tangent_memos", {}).setdefault(u.key, {})
     d = tangent(ctx.builder, v, u.key, memo)
     return d if d is not None else ctx.builder.emit("core.const", type=v.type, value=0.0)
-
-
-_with_respect_to.__lower_macro__ = True
 
 
 class _ValueAndGrad(DerivedValue):

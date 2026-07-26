@@ -325,3 +325,20 @@ MISS with fresh values, never a stale artifact — pinned by
 `test_rebound_captured_global_misses_never_stale` and
 `test_edited_captured_helper_misses_never_stale`. All C0 battery
 lines stayed green throughout (593 passed at land).
+
+**C2 — one staging family, declaration-first (landed).**
+`pdum/dsl/staging.py` is now the family's home and doctrine: two
+decorators, one contract. `@macro` declares a value-space lowering
+macro (IR-in/IR-out at the call site — `with_respect_to` now carries
+the decorator instead of a hand-set attribute); `@staged` declares a
+function-space staged transform (citizen-in/citizen-out, build-rule
+IR, replayable recipes — `value_and_grad`). Recognition in the tl
+lifter is DECLARATION-FIRST: a declared staged call host-evaluates,
+is VALIDATED to return a function citizen (a declared transform
+returning structural data refuses — pinned), and records its recipe;
+the result-type sniff survives only as the refusal backstop for
+undeclared calls. Both decorators export from `pdum.dsl`. *Deliberate
+scope cut, recorded:* staged calls inside dsl-tier `@jit` bodies
+(staged-citizen locals in the value language) are NOT opened here —
+that door belongs to the dialect formulation (C3), where "which
+region am I in" gets its real answer. 594 passed at land.

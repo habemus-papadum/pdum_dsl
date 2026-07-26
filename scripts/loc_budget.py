@@ -63,7 +63,7 @@ FILE_CAPS = {
     "render.py": 90,  # the shared dominator-walking emitter
     "derivative.py": 235,  # P8: the ONE table at its forced altitude + schema + both engines
     "markers.py": 70,  # P8 numpy-authority: THE vocabulary + the one CORE_OWNED/PREDS home (was 60)
-    "staging.py": 15,  # 240 C1: the @staged declaration door
+    "staging.py": 30,  # 240 C1/C2: the staging family — @staged + @macro, one doctrine (was 15)
 }
 
 _SKIP = {tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER}

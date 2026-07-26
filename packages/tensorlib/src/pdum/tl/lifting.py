@@ -360,19 +360,29 @@ class _Lifter:
         if callable(target):
             if any(isinstance(a, _T) for a in args) or any(isinstance(v, _T) for v in kwargs.values()):
                 return self.inline(target, args, kwargs)
-            # STRUCTURAL host evaluation (implicit, owner-ratified: 240 C1) —
-            # but a FUNCTION CITIZEN crossing this door is a staging act, and
-            # staging is DECLARED, never convention:
-            result = target(*args, **kwargs)
-            if getattr(result, "fp", None) is not None:
-                if not getattr(target, "__staged__", False):
+            # Recognition is DECLARATION-FIRST (240 C2): a declared staged
+            # transform host-evaluates and records a replayable recipe —
+            # and must produce a function citizen, pedantically:
+            if getattr(target, "__staged__", False):
+                result = target(*args, **kwargs)
+                if getattr(result, "fp", None) is None:
                     name = getattr(target, "__name__", repr(target))
                     raise ValueError(
-                        f"{name!r} returned a function value at lower time without being a "
-                        f"declared staged transform — decorate it with @staged "
-                        f"(pdum.dsl.staged), or build the value outside the body"
+                        f"staged transform {name!r} returned {type(result).__name__!r}, not a "
+                        f"function citizen — staged transforms produce fp-carrying values"
                     )
                 self.staged_recipes[id(result)] = (target, tuple(args), dict(kwargs))
+                return result
+            # STRUCTURAL host evaluation (implicit, owner-ratified: 240 C1) —
+            # but an UNDECLARED call returning a function citizen refuses:
+            result = target(*args, **kwargs)
+            if getattr(result, "fp", None) is not None:
+                name = getattr(target, "__name__", repr(target))
+                raise ValueError(
+                    f"{name!r} returned a function value at lower time without being a "
+                    f"declared staged transform — decorate it with @staged "
+                    f"(pdum.dsl.staged), or build the value outside the body"
+                )
             return result
         raise ValueError(f"cannot call {target!r} in a step body")
 

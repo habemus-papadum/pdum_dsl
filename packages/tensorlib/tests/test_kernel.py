@@ -439,3 +439,22 @@ def test_edited_captured_helper_misses_never_stale():
         np.testing.assert_allclose(img.to_numpy(), np.arange(3.0) * 100.0)
     finally:
         globals()["_c1_helper"] = original
+
+
+def test_staged_transform_must_return_a_function_citizen():
+    """Declaration-first, checked both ways (240 C2): a DECLARED staged
+    transform that returns structural data is a broken declaration."""
+    from pdum.dsl import staged
+
+    @staged
+    def not_a_transform(f):
+        return 42.0  # structural, not a citizen
+
+    @compute
+    def k(f, img):
+        (y,) = thread_idx("y")
+        g = not_a_transform(f)  # noqa: F841
+        img[y] = y * 1.0
+
+    with pytest.raises(ValueError, match=r"not a\s+function citizen"):
+        k(twill(1.0, 0.0) | zoom(1.0), T(np.zeros(3), ("y",)))

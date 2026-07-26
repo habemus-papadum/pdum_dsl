@@ -1,21 +1,32 @@
-"""Staged transforms — the explicit door (240 C1, owner-ruled).
+"""The staging family — declared, never convention (240 C1/C2).
 
-Host evaluation during body lowering is legal for STRUCTURAL results
-(numbers, tuples, charts — the implicit regime, ratified) — but a host
-call that returns a FUNCTION CITIZEN (an fp-carrying value: a Handle or
-a Derived) is a staging act, and staging is DECLARED, never convention:
-the callable must be decorated ``@staged``, or the lowering refuses
-loudly.
+Two kinds of compile-time citizens, one doctrine: anything that runs at
+LOWER TIME and shapes IR is DECLARED with a decorator from this module;
+recognition is declaration-first at every tier, and the undeclared case
+refuses loudly. Both are ordinary functions — functional and composable
+by ruling; sequences of transformations compose from smaller ones.
 
-A staged transform is an ordinary function — functional and composable
-by ruling. When one executes during lowering, the lowerer records the
-call as a REPLAYABLE RECIPE against its result; at launch the recipe
-chain re-applies the transforms to the CURRENT parameter values, so a
-warm cache hit never serves a stale capture. Recipes chain through
-composition: ``t2(t1(f))`` restages through both. The contract a staged
-transform must honor (device parity, 240 §I.4): its output may depend
-on its inputs' IDENTITY (fp — code and types), never on captured
-runtime VALUES; values flow only at execution.
+- ``@macro`` — a VALUE-SPACE lowering macro: called inside a body, it
+  receives the lowering context and the already-lowered argument IR and
+  emits transformed IR into the same region (``with_respect_to`` is the
+  archetype). IR-in, IR-out, at the call site.
+
+- ``@staged`` — a FUNCTION-SPACE staged transform: it may be host-called
+  during body lowering and returns a function CITIZEN (an fp-carrying
+  Handle/Derived) whose IR comes from a registered build rule when it
+  lowers (``value_and_grad`` is the archetype). Citizen-in, citizen-out;
+  the "generated function" model, fp-keyed and cache-efficient. When one
+  executes during lowering, the lowerer records the call as a REPLAYABLE
+  RECIPE against its result; at launch the recipe chain re-applies the
+  transforms to the CURRENT parameter values, so a warm hit never serves
+  a stale capture. Recipes chain through composition: ``t2(t1(f))``
+  restages through both.
+
+The contract both kinds must honor (device parity, 240 §I.4): output may
+depend on the inputs' IDENTITY (fp — code and types), never on captured
+runtime VALUES; values flow only at execution. Structural host
+evaluation (numbers, tuples, charts) stays implicit — the doctrine
+governs function citizens only.
 """
 
 from __future__ import annotations
@@ -24,4 +35,12 @@ from __future__ import annotations
 def staged(fn):
     """Declare ``fn`` a staged transform (see the module docstring)."""
     fn.__staged__ = True
+    return fn
+
+
+def macro(fn):
+    """Declare ``fn`` a value-space lowering macro: it receives
+    ``(ctx, args, node)`` — the lowering context, the lowered argument
+    nodes, and the source location — and returns the IR it emitted."""
+    fn.__lower_macro__ = True
     return fn
