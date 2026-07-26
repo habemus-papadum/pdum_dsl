@@ -677,3 +677,25 @@ node's full attrs (`src/offset/fmt`) and the absence of `tl.uniform`.
 backend-column seam (tier 2 on `(region.key, backend.fp)`), then
 fn-arg inlining replacing per-element oracle dispatch (combinator
 taps live), consumers optionally stepping off the migration view.
+
+**C5.2 — the two-tier cache + the backend column's seat (landed).**
+The kernel tier now has the dsl's cache SHAPE: tier 1 (`KERNELS`, the
+existing Memo) is the specialization tier — `(code fp, env fp, arg
+fps, tap names) -> launch plan` — and tier 2 (`ARTIFACTS`, the dsl's
+own `ArtifactCache` class, its `artifact.miss`/`artifact.compile`
+events for free) is content-addressed on `(region.key, executor fp)`:
+identical IR never builds its executor twice, even from different
+templates. `_executor(region)` is the numpy interpreter's whole
+"compile" (close over the region; launch = `run_region`) and is
+EXPLICITLY the backend column's seat — the conformance executor (P8,
+wgpu) replaces that body with render+compile behind the same content
+key, and `_EXECUTOR_FP` gains its second value there. Pinned: two
+source-identical kernels under different names — two code fps, a
+tier-1 miss for the second, `forbid("artifact.miss")` holds, and both
+launch plans hold the SAME executor object over equal region keys.
+The spec tier stays fingerprint-keyed rather than guard-checked —
+that is C1's settled design (raw-closure kernels key on env
+fingerprints; staleness is a MISS, not a guard trip), the I.1
+"guards" row's yes-by-different-mechanism. 616 passed at land.
+*Remaining C5:* fn-arg inlining (the per-element oracle retires;
+combinator taps live), consumers optionally off the migration view.

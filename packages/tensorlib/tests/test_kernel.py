@@ -455,6 +455,34 @@ def test_uniform_slots_ride_the_dsl_marshaling_dialect():
     assert not any(n.op == "tl.uniform" for n in ops)
 
 
+def test_identical_ir_shares_one_executor_across_kernels():
+    """240 C5.2: the content tier. Two kernels, two templates, ONE
+    artifact — the second lowers (a spec miss: new code fp) but its
+    executor comes from the content cache (artifact HIT on
+    (region.key, executor fp)): identical IR never builds twice."""
+    from pdum.tl.kernel import _arg_fp, _code_fp, _env_fp
+
+    @compute
+    def k_left(img):
+        (y,) = thread_idx("y")
+        img[y] = y * 3.0
+
+    @compute
+    def k_right(img):
+        (y,) = thread_idx("y")
+        img[y] = y * 3.0
+
+    assert _code_fp(k_left.fn) != _code_fp(k_right.fn)  # the pin's premise: two templates
+    img = T(np.zeros(3), ("y",))
+    k_left(img)  # warms BOTH tiers
+    with events.forbid("artifact.miss"):  # tier 1 misses (new template); tier 2 must NOT
+        k_right(img)
+    np.testing.assert_allclose(img.to_numpy(), np.arange(3.0) * 3.0)
+    a = KERNELS.peek((_code_fp(k_left.fn), _env_fp(k_left.fn), (_arg_fp(img),), ()))
+    b = KERNELS.peek((_code_fp(k_right.fn), _env_fp(k_right.fn), (_arg_fp(img),), ()))
+    assert a.region.key == b.region.key and a.executor is b.executor
+
+
 from pdum.dsl import literal  # noqa: E402
 
 _C4_GAIN = literal(3.0)

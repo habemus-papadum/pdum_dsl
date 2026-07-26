@@ -51,7 +51,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from pdum.dsl import events
-from pdum.dsl.cache import Memo
+from pdum.dsl.cache import ArtifactCache, Memo
 from pdum.dsl.ir import Node, Region
 from pdum.dsl.lower import Lowerer, check_coherence
 from pdum.dsl.ops import CORE_OPS
@@ -79,7 +79,12 @@ from .markers import Marker
 from .producer import _captured
 from .tensor import Tensor
 
-KERNELS = Memo("kernel", capacity=1 << 30)
+KERNELS = Memo("kernel", capacity=1 << 30)  # tier 1: the specialization -> launch plan
+ARTIFACTS = ArtifactCache()  # tier 2, content-addressed: identical IR builds ONE executor (240 C5)
+# The backend column's kernel seat. The numpy interpreter is the one executor
+# today; the conformance executor (P8, wgpu) brings the second value — its
+# render+compile slots into _executor behind this same content key.
+_EXECUTOR_FP = ("run_region", "numpy")
 _ARG_BINDINGS: dict[str, object] = {}  # marker name -> the CURRENT handle (per launch)
 
 thread_idx = _Intrinsic("thread_idx")
@@ -489,6 +494,7 @@ KERNEL_RULES = {
 @dataclass(frozen=True)
 class _Artifact:
     region: Region
+    executor: object  # tier-2 artifact: (values, staging) -> effect; shared by content key
     fn: object  # the kernel fn — abi slots re-read its environment per launch
     uniforms: tuple  # (name, offset, fmt) abi slots (DATA: extracted + packed fresh every launch)
     params: tuple  # kernel parameter names, in order
@@ -524,8 +530,15 @@ class _Artifact:
             for name, off, fmt in self.uniforms:
                 struct.pack_into(fmt, staging, off, env[name])
             staging = bytes(staging)
-        run_region(self.region, values, uniforms=staging)
+        self.executor(values, staging)
         return None  # stores are the effect; kernels return nothing (taps included)
+
+
+def _executor(region: Region):
+    """The numpy interpreter's 'compile': close over the region. This is
+    the backend column's seam — a device executor replaces this body with
+    render + compile, behind the same content key."""
+    return lambda values, staging: run_region(region, values, uniforms=staging)
 
 
 def _compile(fn, args, tap_names=()) -> _Artifact:
@@ -594,6 +607,7 @@ def _compile(fn, args, tap_names=()) -> _Artifact:
     tap_sites = {n: tuple(d[0] for d in v.type.dims) for n, v in c["k.claims"].items()}
     return _Artifact(
         region=region,
+        executor=ARTIFACTS.get_or_compile((region.key, _EXECUTOR_FP), lambda: _executor(region)),
         fn=fn,
         uniforms=tuple((n, dict(nd.attrs)["offset"], dict(nd.attrs)["fmt"]) for n, nd in c["k.uniforms"].items()),
         params=tuple(names),
