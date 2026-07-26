@@ -25,7 +25,14 @@ import numpy as np
 import pytest
 from pdum.dsl.intrinsics import clamp
 from pdum.dsl.markers import sqrt
-from pdum.tl import Tensor, block_idx, compute, thread_idx  # noqa: F401 — ambient vocabulary in bodies
+from pdum.tl import (  # noqa: F401 — ambient vocabulary resolved from bodies' globals
+    Tensor,
+    block_idx,
+    compute,
+    global_thread_idx,
+    grid_layout,
+    thread_idx,
+)
 from pdum.tl.kernel import config
 
 P8 = pytest.mark.skip(reason="specified now; lands at P8 (graphics + the value-tier derivative engine)")
@@ -40,7 +47,6 @@ def T(arr, names):
 # --- P8: the ambient is the RAW lattice; global is a device function ---------
 
 
-@P8
 def test_raw_block_thread_ambient_and_derived_global():
     """The ambient PRIMITIVES: the raw lattice pair — block_idx and
     thread_idx (within block; under the default one-block-spans-the-
@@ -60,10 +66,10 @@ def test_raw_block_thread_ambient_and_derived_global():
 
     @compute
     def k(img):
-        g = grid_layout()  # noqa: F821 — ambient: the launch grid AS A LAYOUT
-        by, bx = block_idx("y", "x")  # noqa: F821 — raw
+        g = grid_layout()  # ambient: the launch grid AS A LAYOUT
+        by, bx = block_idx("y", "x")  # raw
         ty, tx = thread_idx("y", "x")  # raw: within block under explicit geometry
-        gy, gx = global_thread_idx((by, bx), (ty, tx), g)  # noqa: F821 — the triple
+        gy, gx = global_thread_idx((by, bx), (ty, tx), g)  # the triple
         img[gy, gx] = (gy - (by * 8.0 + ty)) + (gx - (bx * 8.0 + tx))  # identity → 0
 
     img = T(np.ones((16, 16)), ("y", "x"))

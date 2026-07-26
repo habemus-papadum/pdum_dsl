@@ -166,6 +166,25 @@ def _r_fold(args, attrs, regions):
     return init
 
 
+# dict-valued instr params (the layout-method family's kwargs). Node attrs
+# are IDENTITY and must be hashable, so the dialect FREEZES these to sorted
+# item tuples at emission and THAWS them at every incumbent boundary.
+_DICT_PARAMS = frozenset({"parts", "ranges", "coords", "deltas", "mapping", "extents", "charts", "labels", "levels"})
+
+
+def _freeze_params(params: dict) -> dict:
+    return {k: tuple(sorted(v.items())) if k in _DICT_PARAMS and isinstance(v, dict) else v for k, v in params.items()}
+
+
+def _thaw_params(params: dict) -> dict:
+    return {
+        k: dict(v)
+        if k in _DICT_PARAMS and isinstance(v, tuple) and v and all(isinstance(e, tuple) and len(e) == 2 for e in v)
+        else v
+        for k, v in params.items()
+    }
+
+
 def _r_bridge(base):
     """The migration bridge (240 C4.3): the type rule IS the incumbent
     shadow inference — build the instruction, ask ``infer_instr``. One
@@ -178,7 +197,7 @@ def _r_bridge(base):
             if not isinstance(t, TensorType):
                 raise TypeError(f"tl.{base} wants tensor operands, got {t!r}")
             shadows[n] = t.layout
-        return _of_layout(infer_instr(Instr("out", base, names, dict(attrs)), shadows))
+        return _of_layout(infer_instr(Instr("out", base, names, _thaw_params(dict(attrs))), shadows))
 
     return rule
 
@@ -458,7 +477,7 @@ def _tl_call(ctx, node):
             except NotHost:
                 raise ValueError(_STRUCTURAL_SLOT.format(what=f".{name}(...)")) from None
             op, pack = _METHODS[name]
-            return ctx.emit(f"tl.{op}", base, node=node, **pack(args, kwargs))
+            return ctx.emit(f"tl.{op}", base, node=node, **_freeze_params(pack(args, kwargs)))
     return _call(ctx, node)
 
 
@@ -929,7 +948,7 @@ def run_region(region: Region, values: list, uniforms: bytes | None = None):
         if n.op.startswith("tl.") and n.op[3:] in _BRIDGED:
             ops_v = [ev(a) for a in n.args]
             names = tuple(f"a{i}" for i in range(len(ops_v)))
-            return eval_instr(Instr("out", n.op[3:], names, attrs), dict(zip(names, ops_v)))
+            return eval_instr(Instr("out", n.op[3:], names, _thaw_params(attrs)), dict(zip(names, ops_v)))
         if n.op == "tl.fold":
             init, src = ev(n.args[0]), ev(n.args[1])
             dim = attrs["dim"]
@@ -1040,6 +1059,6 @@ def export_program(region: Region, param_names: tuple, names_of: dict | None = N
             else:
                 operands.append(var_of[id(a)])
         hint = names_of.get(id(n), base.rsplit(".", 1)[-1])  # binding names become SSA names
-        var_of[id(n)] = emit(base, operands, hint, **dict(n.attrs))
+        var_of[id(n)] = emit(base, operands, hint, **_thaw_params(dict(n.attrs)))
     outs = tuple(var_of[id(a)] for a in yielded.args) if yielded.op == "core.tuple" else (var_of[id(yielded)],)
     return Program(tuple(instrs)), outs

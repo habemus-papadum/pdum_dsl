@@ -92,6 +92,11 @@ _ARG_BINDINGS: dict[str, object] = {}  # marker name -> the CURRENT handle (per 
 
 thread_idx = _Intrinsic("thread_idx")
 block_idx = _Intrinsic("block_idx")  # the RAW pair's other half (S.3: raws are the primitives)
+grid_layout = _Intrinsic("grid_layout")  # the launch geometry AS A LAYOUT (split+bind, like placement)
+# The stdlib device function over the full triple (block, thread, grid) — layout
+# evaluation. The kernel tier binds the NAME to the computed affine map
+# (S.3: declarations over recognition; CUDA's computed floor, Metal's built-in).
+global_thread_idx = _Intrinsic("global_thread_idx")
 
 
 @dataclass(frozen=True)
@@ -309,15 +314,31 @@ def _check_coverage(geom, art, args):
             )
 
 
-def _axis_pairs(ctx, lattice):
-    """The launch geometry's per-axis (block dim, thread dim) pairs on the
-    writable lattice: consecutive dims whose extents match config(blocks,
-    threads). The raws are iotas of these dims — a tensor already split to
-    the launch lattice is indexed by the raw pair directly (S.3)."""
-    blocks, threads = ctx.context["k.geom"]
+def _launch_form(ctx, lattice):
+    """How the launch geometry meets the writable lattice: ``("one", _)``
+    — a single block spans it; ``("pairs", [(b_dim, t_dim), ...])`` — the
+    target is already split to the geometry (raw indexing aligns for
+    free); ``("tile", [(axis, b, t), ...])`` — a flat target the kernel
+    tiles internally (blocks·threads must equal each extent; stores at
+    the declared global indices merge back)."""
+    geom = _norm_geom(ctx.context["k.geom"])
+    if geom is None:
+        return ("one", None)
+    blocks, threads = geom
     dims = lattice.type.dims
+    if len(dims) == len(blocks):  # a flat target: internal tiling
+        tiles = []
+        for d, b, t in zip(dims, blocks, threads):
+            if b * t != d[2] - d[1]:
+                raise ValueError(
+                    f"config(blocks={blocks}, threads={threads}) does not tile the writable "
+                    f"lattice {tuple((x[0], x[2] - x[1]) for x in dims)} — blocks·threads must "
+                    f"equal each extent, or split the target to the geometry yourself"
+                )
+            tiles.append((d[0], b, t))
+        return ("tile", tiles)
     pairs, i = [], 0
-    for b, t in zip(blocks or (), threads or ()):
+    for b, t in zip(blocks, threads or ()):
         if i + 1 < len(dims) and dims[i][2] - dims[i][1] == b and dims[i + 1][2] - dims[i + 1][1] == t:
             pairs.append((dims[i][0], dims[i + 1][0]))
             i += 2
@@ -325,11 +346,27 @@ def _axis_pairs(ctx, lattice):
             raise ValueError(
                 f"config(blocks={blocks}, threads={threads}): the raw pair indexes a launch-"
                 f"lattice-shaped target, and this writable's dims {tuple(d[0] for d in dims)} "
-                f"are not split to the geometry — split the target (raw indexing then aligns "
-                f"for free), or compute global indices explicitly via "
+                f"are neither split to the geometry nor tiled by it — split the target (raw "
+                f"indexing then aligns for free), or store at global indices via "
                 f"global_thread_idx(block_idx(...), thread_idx(...), grid_layout())"
             )
-    return pairs
+    return ("pairs", pairs)
+
+
+def _grid_node(ctx, lattice):
+    """The launch lattice as an IR value: for a pairs-form target the
+    target IS it; for a tile-form target, the memoized internal split
+    (bridged ``tl.split`` per axis — the raws are iotas of this view)."""
+    c = ctx.context
+    form, info = _launch_form(ctx, lattice)
+    if form != "tile":
+        return lattice
+    if c.get("k.grid_node") is None:
+        node = lattice
+        for a, b, t in info:
+            node = ctx.builder.emit("tl.split", node, name=a, parts=((f"{a}.b", b), (f"{a}.t", t)))
+        c["k.grid_node"] = node
+    return c["k.grid_node"]
 
 
 def _ambient_iota(ctx, kind, axis, name, lattice, node):
@@ -338,18 +375,74 @@ def _ambient_iota(ctx, kind, axis, name, lattice, node):
     the block coordinate. Under the DEFAULT geometry one block spans the
     lattice, so thread_idx EQUALS the global coordinate structurally (not
     modally) and block_idx is the zero field. Under explicit geometry the
-    raws are iotas of the launch lattice — served by the writable's
-    per-axis (block, thread) dim pairs when it is split to the geometry
-    (the smart-user case: raw indexing aligns for free, never a
-    requirement); a global index is always the EXPLICIT spelling,
-    global_thread_idx(block, thread, grid)."""
-    if _norm_geom(ctx.context["k.geom"]) is None:  # ONE block spans the lattice (default, or all-ones blocks)
+    raws are iotas of the launch lattice — the target's own (block,
+    thread) dim pairs when it is split to the geometry, or the internal
+    tiling of a flat target; a global index is always the EXPLICIT
+    spelling, global_thread_idx(block, thread, grid)."""
+    form, info = _launch_form(ctx, lattice)
+    if form == "one":
         if kind == "block_idx":
             dims = tuple((d[0], (d[1], d[2])) for d in lattice.type.dims)
             return ctx.emit("tl.const", node=node, value=0.0, dims=dims)
         return ctx.emit("tl.iota", lattice, node=node, name=name)
-    b_dim, t_dim = _axis_pairs(ctx, lattice)[axis]
-    return ctx.emit("tl.iota", lattice, node=node, name=b_dim if kind == "block_idx" else t_dim)
+    src = _grid_node(ctx, lattice)
+    if form == "pairs":
+        b_dim, t_dim = info[axis]  # positional: axis labels name the call's order
+    else:  # tile: the axis label must NAME a writable dim — no positional guessing on flat targets
+        match = next((tl for tl in info if tl[0] == name), None)
+        if match is None:
+            raise ValueError(f"the writable lattice has no axis {name!r} (dims: {tuple(t[0] for t in info)})")
+        a, _, _ = match
+        b_dim, t_dim = f"{a}.b", f"{a}.t"
+    return ctx.emit("tl.iota", src, node=node, name=b_dim if kind == "block_idx" else t_dim)
+
+
+def _grid_layout_of(ctx):
+    """``grid_layout()``: the launch geometry AS A LAYOUT — the writable
+    lattice split per axis into (block, thread) dims, level-bound
+    ("block"/"thread": the same split+bind object as placement's
+    machine-bound dims and the tile tier). Under the default geometry
+    the grid IS the flat writable lattice (one block spans it)."""
+    lattice = ctx.root.params[-1]
+    lay = lattice.type.layout
+    form, info = _launch_form(ctx, lattice)
+    if form == "one":
+        return lay
+    if form == "tile":
+        for a, b, t in info:
+            lay = lay.split(a, **{f"{a}.b": b, f"{a}.t": t})
+            lay = lay.bind(**{f"{a}.b": "block", f"{a}.t": "thread"})
+        return lay
+    for b_dim, t_dim in info:  # pairs: the target's own split, level-bound
+        lay = lay.bind(**{b_dim: "block", t_dim: "thread"})
+    return lay
+
+
+def _global_from_raws(ctx, blocks, threads, g, node):
+    """The kernel tier's binding of the stdlib device function: layout
+    evaluation — global = block·T + thread per axis, T read from the
+    GRID layout the caller passed (nothing ambient hides inside); under
+    a one-block grid the map is the identity on the thread pair. The
+    results are RECORDED as the declared global coordinates — legal
+    store indices against the flat target, merged back per axis."""
+    c = ctx.context
+    blocks = blocks if isinstance(blocks, tuple) else (blocks,)
+    threads = threads if isinstance(threads, tuple) else (threads,)
+    out = []
+    for b, t in zip(blocks, threads):
+        t_name = dict(t.attrs).get("name", "") if isinstance(t, Node) else ""
+        if _norm_geom(c["k.geom"]) is None:  # one block: the identity map
+            c["k.globals"][id(t)] = t_name
+            out.append(t)
+            continue
+        extent = next((d.size for d in g.dims if d.name == t_name), None)
+        if extent is None:
+            raise ValueError(f"global_thread_idx: the grid layout has no thread dim {t_name!r} — pass grid_layout()")
+        scale = ctx.emit("core.const", node=node, type=f64, value=float(extent))
+        gnode = ctx.emit("tl.pointwise", ctx.emit("tl.pointwise", b, scale, node=node, f="mul"), t, node=node, f="add")
+        c["k.globals"][id(gnode)] = t_name[:-2] if t_name.endswith(".t") else None
+        out.append(gnode)
+    return tuple(out)
 
 
 def _k_call(ctx, node):
@@ -365,6 +458,11 @@ def _k_call(ctx, node):
             out = tuple(_ambient_iota(ctx, obj.name, i, cst.value, lattice, node) for i, cst in enumerate(node.args))
             c["k.iotas"].extend(out)
             return out  # ALWAYS a tuple
+        if isinstance(obj, _Intrinsic) and obj.name == "grid_layout":
+            return _grid_layout_of(ctx)  # a HOST value: the geometry as a Layout
+        if isinstance(obj, _Intrinsic) and obj.name == "global_thread_idx":
+            b_arg, t_arg, g = _lower_args(ctx, node)
+            return _global_from_raws(ctx, b_arg, t_arg, g, node)
         if obj is not None and getattr(obj, "fp", None) is not None:
             return _fn_arg(ctx, obj, _lower_args(ctx, node), None, node)
     return _tl_call(ctx, node)
@@ -598,14 +696,23 @@ def _fn_arg_oracle(ctx, handle, args, out_spec, node, pname, wrap):
 
 
 def _check_indices(ctx, sub):
+    """Store indices are AMBIENT-DERIVED and bijective (owner-ruled): the
+    raw coordinates, or the DECLARED global coordinates (the recorded
+    outputs of global_thread_idx). Anything else — arbitrary index
+    arithmetic, data-dependent indexing — is scatter territory (P9)."""
     idx = sub.slice.elts if isinstance(sub.slice, ast.Tuple) else [sub.slice]
+    out = []
     for i in idx:
         v = ctx.lower(i)
-        if not (isinstance(v, Node) and any(v == t for t in ctx.context["k.iotas"])):
+        raw = isinstance(v, Node) and any(v == t for t in ctx.context["k.iotas"])
+        if not raw and id(v) not in ctx.context["k.globals"]:
             raise ValueError(
-                "kernel subscripts take exactly the thread coordinates "
-                "(data-dependent indexing is take/scatter_add, arriving P9)"
+                "kernel subscripts take exactly the thread coordinates — raw, or the "
+                "declared global_thread_idx pair (data-dependent indexing is "
+                "take/scatter_add, arriving P9)"
             )
+        out.append(v)
+    return out
 
 
 def _k_assign(ctx, node):
@@ -617,11 +724,19 @@ def _k_assign(ctx, node):
         target = ctx.lower(tgt.value)
         if not (isinstance(target, Node) and isinstance(target.type, TensorType)) or id(target) not in c["k.pname_of"]:
             raise ValueError("stores write into a tensor argument")
-        _check_indices(ctx, tgt)
+        idx_nodes = _check_indices(ctx, tgt)
         value = _k_call(ctx, node.value) if isinstance(node.value, ast.Call) else ctx.lower(node.value)
         if not hasattr(value, "type"):  # a scalar store broadcasts over the target lattice
             dims = tuple((d.name, (d.start, d.stop)) for d in target.type.layout.dims)
             value = ctx.emit("tl.const", node=node, value=float(value), dims=dims)
+        elif isinstance(value.type, TensorType):
+            # a store at DECLARED GLOBAL indices merges the split-lattice value
+            # back to the flat target, axis by axis (the tile form's other half)
+            present = {d[0] for d in value.type.dims}
+            for v in idx_nodes:
+                a = c["k.globals"].get(id(v))
+                if a and f"{a}.b" in present:
+                    value = ctx.emit("tl.merge", value, node=node, parts=(f"{a}.b", f"{a}.t"), name=a)
         tok = c.get("tl.token") or ctx.emit("tl.token", node=node)
         c["tl.token"] = ctx.emit("tl.store", tok, target, value, node=node)
         c["k.stored"].append(c["k.pname_of"][id(target)])
@@ -796,6 +911,8 @@ def _compile(fn, args, tap_names=(), geom=None) -> _Artifact:
             "k.uniform_size": 0,
             "k.arg_plans": {},
             "k.geom": geom,
+            "k.globals": {},
+            "k.grid_node": None,
         }
     )
     names = fn.__code__.co_varnames[: fn.__code__.co_argcount]
@@ -861,4 +978,14 @@ def _compile(fn, args, tap_names=(), geom=None) -> _Artifact:
     )
 
 
-__all__ = ["ComputeKernel", "Config", "block_idx", "compute", "config", "shared", "thread_idx"]
+__all__ = [
+    "ComputeKernel",
+    "Config",
+    "block_idx",
+    "compute",
+    "config",
+    "global_thread_idx",
+    "grid_layout",
+    "shared",
+    "thread_idx",
+]
