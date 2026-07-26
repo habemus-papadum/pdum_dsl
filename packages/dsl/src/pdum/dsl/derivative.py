@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from .capture import Handle
 from .derived import DerivedValue
 from .ir import VerifyError
+from .staging import staged
 from .types import Scalar
 
 
@@ -258,6 +259,7 @@ class _ValueAndGrad(DerivedValue):
         )
 
 
+@staged
 def value_and_grad(f, *, wrt):
     """Function-space: ``g = value_and_grad(f, wrt=("y", "x"))`` is a Derived
     transform; ``g(args)`` returns ``(f(args), (df/dy, df/dx))``. With wrt =

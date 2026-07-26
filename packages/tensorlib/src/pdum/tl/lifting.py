@@ -178,6 +178,7 @@ class _Lifter:
         self.env = env
         self.b = _Emit()
         self.shadows: dict[str, object] = {}
+        self.staged_recipes: dict[int, tuple] = {}  # id(result) -> (fn, args, kwargs)
 
     # ---- emission --------------------------------------------------------
 
@@ -191,6 +192,7 @@ class _Lifter:
         name space — how helpers inline without losing the subclass."""
         inner = type(self)(env)
         inner.b, inner.shadows = self.b, self.shadows
+        inner.staged_recipes = self.staged_recipes
         return inner
 
     def emit(self, op: str, operands: tuple[str, ...], hint: str, **params) -> _T:
@@ -358,7 +360,20 @@ class _Lifter:
         if callable(target):
             if any(isinstance(a, _T) for a in args) or any(isinstance(v, _T) for v in kwargs.values()):
                 return self.inline(target, args, kwargs)
-            return target(*args, **kwargs)  # fully structural: build-time evaluation
+            # STRUCTURAL host evaluation (implicit, owner-ratified: 240 C1) —
+            # but a FUNCTION CITIZEN crossing this door is a staging act, and
+            # staging is DECLARED, never convention:
+            result = target(*args, **kwargs)
+            if getattr(result, "fp", None) is not None:
+                if not getattr(target, "__staged__", False):
+                    name = getattr(target, "__name__", repr(target))
+                    raise ValueError(
+                        f"{name!r} returned a function value at lower time without being a "
+                        f"declared staged transform — decorate it with @staged "
+                        f"(pdum.dsl.staged), or build the value outside the body"
+                    )
+                self.staged_recipes[id(result)] = (target, tuple(args), dict(kwargs))
+            return result
         raise ValueError(f"cannot call {target!r} in a step body")
 
     # ---- the S.1 method vocabulary --------------------------------------

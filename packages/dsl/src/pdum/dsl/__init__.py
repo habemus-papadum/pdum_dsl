@@ -23,6 +23,7 @@ from .derivative import value_and_grad  # noqa: E402
 from .pipe import op  # noqa: E402
 from .reference import reference  # noqa: E402
 from .registry import DEFAULT, Registry  # noqa: E402
+from .staging import staged  # noqa: E402
 from .types import Literal  # noqa: E402 — the §1.5 annotation door
 
 __version__ = "0.0.0+dev"
@@ -70,5 +71,6 @@ __all__ = [
     "no_compile",
     "op",
     "value_and_grad",
+    "staged",
     "reference",
 ]

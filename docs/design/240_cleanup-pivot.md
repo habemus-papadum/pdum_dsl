@@ -184,13 +184,17 @@ C1–C2 are worth doing even if C3 fails its gate.
   fp-keyed IR-in/IR-out (the "generated function" model), registered,
   never convention-recognized. `value_and_grad` becomes the first
   ordinary citizen of that mechanism instead of its special case.
-- **C3 — The spike (decision gate).** On a side path, express ONE slice
-  of the tl IR as a dsl dialect — `tl.pointwise` + `tl.iota` +
-  `tl.store` with Layout-shadow type rules, enough to lower a small
-  kernel through the *dsl* Lowerer with a tl rule pack — and
-  differential-test it against today's `ir.run`. Owner reviews
-  ergonomics, LOC, and the fold/region question before any commitment.
-  If the spike disappoints, C4–C5 are re-planned and C1–C2 stand.
+- **C3 — The spike, in two stages (decision gates; the hard part stays
+  IN the spike — owner-ruled).** *C3a:* express one easy slice of the
+  tl IR as a dsl dialect — `tl.pointwise` + `tl.iota` + `tl.store` with
+  Layout-shadow type rules, enough to lower a small kernel through the
+  *dsl* Lowerer with a tl rule pack — differential-tested against
+  today's `ir.run`. *C3b:* the hard part, NOT deferred — `fold` (and
+  the revolve schedule) as a region-carrying dialect op, plus the
+  adjoint derivation over it, differential-tested against today's
+  autodiff on the recompute-theorem case. Owner reviews after EACH
+  stage. If either stage disappoints, C4–C5 are re-planned and C1–C2
+  stand.
 - **C4 — Migrate primitive-by-primitive** (only after the C3 gate):
   pointwise/iota/store → reduce/scan → repeat_like/layout family →
   fold/random, each slice differential-tested; the static consumers
@@ -205,17 +209,31 @@ C1–C2 are worth doing even if C3 fails its gate.
   200 (S.2/S.3 amendments), 220 (a principle entry if one crystallized),
   210; retire the file to `history/`.
 
-**Open questions for the owner** (answer before or during C1/C2):
+**Owner rulings** (received; supersede the open questions):
 
-1. Does structural math stay *implicitly* host-evaluable (numbers and
-   tuples always legal — my lean), or annotated?
-2. The staged-citizen spelling: registration (`staged(value_and_grad)`)
-   vs a protocol attribute vs a base class?
-3. Does the tree producer stay a separate tiny machine (my lean: yes)?
-4. `fold`/revolve in a region-based IR is the hardest design question
-   of C4 — does it block the spike (no: the spike deliberately excludes
-   it) and who designs it?
-5. Timing: C1 immediately, or the whole pivot as one arc?
+1. **Structural math stays implicit.** Numbers, tuples, and structural
+   facts (charts, extents) host-evaluate without annotation. The new
+   refusal targets exactly the smell: a host call returning a FUNCTION
+   CITIZEN (fp-carrying) must come from a declared staged transform.
+2. **Staged citizens are functional and composable** — a decorator
+   (`@staged`), not a class hierarchy. Sequences of transformations
+   must compose from smaller transformations: recipes chain, so
+   `t2(t1(f))` restages through both. Undecorated inlining stays free;
+   decorated helpers are ALSO the freedom to annotate which dialect a
+   function's body expects (a door C2/C3 may use).
+3. **One IR, many dialects, is the lean** — and the pivot's MAIN
+   OBJECTIVE is restated: find the right formulation for declaring and
+   detecting which dialect region a body is in. The dialect space is
+   plausibly a tree — a control-flow-free scalar core (the tiny
+   Arg/Const/Prim tree may be its most foundational expression), the
+   value language adding bounded control flow, tensor-typed
+   straight-line above, stores/ambient at the kernel leaf. The tree
+   producer's fate is decided BY that staging, not before it.
+4. **The hard part stays in the spike** — C3 is split (C3a easy slice,
+   C3b fold/revolve in regions), never deferred; de-risking is worth
+   the extra time.
+5. **The pivot runs as one arc**, C0 → C6, step by step, then the march
+   resumes at ambient derivatives.
 
 ---
 
@@ -250,4 +268,60 @@ same spellings un-skip on better machinery.
 
 ## Ledger
 
-- *(empty — appended as C-steps land)*
+**C0 — the frozen safety net (landed).** The invariant battery that
+DEFINES behavior-preserving for every pivot step. All of it green at
+freeze (589 passed, 17 skipped); any pivot step that reddens a line of
+this list is wrong by definition:
+
+- *The differentials* — `test_kernel.py`:
+  `test_the_s3_example_runs_on_the_reference_evaluator`,
+  `test_the_iota_unification_differential`,
+  `test_the_two_consumers_differential`; the eager-vs-lowered
+  differentials in `test_lifting.py` / `test_scope_assemblage.py`.
+- *The zoo gate* — `test_zoo.py` (every pin) + `test_transforms.py`.
+- *The recompute theorem* — `test_random.py::`
+  `test_the_recompute_theorem_revolve_equals_store_all_with_dropout_on`
+  and the whole random-field battery.
+- *The derivative contract* — `test_at_kink.py` (incl. the one-home
+  identity pins), `packages/dsl/tests/test_derivative.py`, the marker
+  granularity gate (`test_marker_granularity.py`).
+- *The refusal contracts* — both `test_refusal_contract.py` batteries
+  (dsl + tl): messages pinned by wording.
+- *Key discipline + compile-once* — `test_kernel.py::`
+  `test_key_discipline_shape_miss_value_hit_launch_never_keys_fn_swap_miss`,
+  `::test_compile_once_thesis_for_function_valued_arguments`; the dsl
+  cache/runtime batteries (`test_cache.py`, `test_runtime.py`,
+  `test_traced_dispatch.py`).
+- *The kernel dialect* — the LIVE tests of `test_kernel.py` and
+  `test_kernel_spec.py` (claiming, invalidation, config bracket,
+  in-kernel staging, analytic AA) and the SKIPPED spec tests as frozen
+  spellings (may not be respelled inside the pivot).
+- *Static consumers* — `test_opcount.py`, `test_memory.py`,
+  `test_signatures.py`, `test_autodiff.py`, `test_fold.py`.
+
+**C1 — the honesty holes, closed in place (landed).**
+(a) *Door 4 is explicit*: the host-evaluation branch in
+`lifting._Lifter.call` still evaluates structural results implicitly
+(ratified), but a result that is a FUNCTION CITIZEN (fp-carrying) now
+requires the callable to be declared `@staged`
+(`pdum.dsl.staging`, exported from `pdum.dsl`) — otherwise a loud
+refusal naming both fixes. Declared staged calls are recorded as
+replayable recipes (`staged_recipes`, shared down the inline chain).
+(b) *Restaging is a protocol, not an isinstance*:
+`_KernelLowerer._resolve_staged` walks the recipe chain from a staged
+result to the ONE kernel parameter underneath and builds a replay
+closure; the `_ValueAndGrad` special case is deleted;
+`value_and_grad` is now `@staged` — the mechanism's first ordinary
+citizen. Composition works and is pinned
+(`test_staged_transforms_compose_and_restage`): `t2(t1(f))` restages
+through both on a warm hit. A staged call referencing zero or multiple
+parameters refuses (relaxable later, recorded here).
+(c) *The kernel key is no longer blind*: `_env_fp` fingerprints the
+captured environment the body can see (referenced names only —
+markers by name, fn-citizens by fp, scalars by value, user helpers by
+recursive code+env fp, `pdum.*` library callables by qualified name,
+opaque objects by type). A rebound global or an edited helper is now a
+MISS with fresh values, never a stale artifact — pinned by
+`test_rebound_captured_global_misses_never_stale` and
+`test_edited_captured_helper_misses_never_stale`. All C0 battery
+lines stayed green throughout (593 passed at land).

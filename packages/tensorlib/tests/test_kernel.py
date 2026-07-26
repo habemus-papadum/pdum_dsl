@@ -84,9 +84,9 @@ def test_the_iota_unification_differential():
 
 
 def _program_of(f, img):
-    from pdum.tl.kernel import _arg_fp, _code_fp
+    from pdum.tl.kernel import _arg_fp, _code_fp, _env_fp
 
-    key = (_code_fp(shader.fn), (_arg_fp(f), _arg_fp(img)), ())
+    key = (_code_fp(shader.fn), _env_fp(shader.fn), (_arg_fp(f), _arg_fp(img)), ())
     return KERNELS.peek(key).program
 
 
@@ -332,3 +332,110 @@ def test_shared_mem_slot_is_reserved():
     img = T(np.zeros((2, 2)), ("y", "x"))
     with pytest.raises(NotImplementedError, match=r"tile tier \(L4\).*slot is reserved"):
         tapped_kernel[config(shared_mem=shared(t1=("ty", 16)))](img)
+
+
+# --- 240 C1: the explicit staging door + the closed kernel key ---------------
+
+
+def test_undeclared_function_returning_host_call_refuses():
+    """Door 4 is explicit now: a host call may return structural data, but
+    a FUNCTION CITIZEN crossing the door must come from @staged."""
+
+    def sneaky_factory():  # NOT @staged
+        @jit()
+        def go(y):
+            return y * 2.0
+
+        return go
+
+    @compute
+    def k(img):
+        (y,) = thread_idx("y")
+        f = sneaky_factory()  # noqa: F841
+        img[y] = y * 1.0
+
+    with pytest.raises(ValueError, match=r"@staged.*or build the value outside"):
+        k(T(np.zeros(3), ("y",)))
+
+
+def test_staged_transforms_compose_and_restage():
+    """Recipes chain (functional, composable — owner ruling): a staged
+    transform built on another staged transform replays through BOTH on a
+    warm hit, with the current parameter."""
+    from pdum.dsl import staged, value_and_grad
+
+    @staged
+    def slope_only(f):  # a smaller transform composed from a smaller one
+        return value_and_grad(f, wrt=("y",))
+
+    def line(a):
+        @jit()
+        def go(y):
+            return y * a
+
+        return go
+
+    @compute
+    def k(f, img):
+        (y,) = thread_idx("y")
+        g = slope_only(f)
+        v, (dy,) = g(y)
+        img[y] = dy  # the slope field: constant a
+
+    img = T(np.zeros(4), ("y",))
+    k(line(3.0), img)
+    np.testing.assert_allclose(img.to_numpy(), 3.0)
+    with events.forbid("kernel.miss"):  # warm hit, new capture...
+        k(line(5.0), img)
+    np.testing.assert_allclose(img.to_numpy(), 5.0)  # ...restaged, not stale
+
+
+_C1_SCALE = 2.0
+
+
+def test_rebound_captured_global_misses_never_stale():
+    """The env fingerprint (240 C1): a rebound global the body reads is a
+    MISS with the new value — the dsl guards' kernel-tier answer."""
+
+    @compute
+    def k(img):
+        (y,) = thread_idx("y")
+        img[y] = y * _C1_SCALE
+
+    img = T(np.zeros(3), ("y",))
+    k(img)
+    np.testing.assert_allclose(img.to_numpy(), np.arange(3.0) * 2.0)
+    globals()["_C1_SCALE"] = 7.0
+    try:
+        k(img)  # a different environment IS a different kernel
+        np.testing.assert_allclose(img.to_numpy(), np.arange(3.0) * 7.0)
+    finally:
+        globals()["_C1_SCALE"] = 2.0
+
+
+def _c1_helper(v):
+    return v * 10.0
+
+
+def test_edited_captured_helper_misses_never_stale():
+    """Same law for captured helper CODE: redefining the helper is a miss."""
+
+    @compute
+    def k(img):
+        (y,) = thread_idx("y")
+        img[y] = _c1_helper(y)
+
+    img = T(np.zeros(3), ("y",))
+    k(img)
+    np.testing.assert_allclose(img.to_numpy(), np.arange(3.0) * 10.0)
+    original = globals()["_c1_helper"]
+
+    def _c1_helper_v2(v):
+        return v * 100.0
+
+    globals()["_c1_helper"] = _c1_helper_v2
+    try:
+        k(img)
+        np.testing.assert_allclose(img.to_numpy(), np.arange(3.0) * 100.0)
+    finally:
+        globals()["_c1_helper"] = original
