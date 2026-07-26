@@ -255,6 +255,57 @@ def _escape_kernel(f, img):
     img[y, x] = f(y * 0.5 - 1.0, x * 0.5 - 1.0)
 
 
+def test_liftable_fn_args_inline_with_zero_oracle_dispatch():
+    """240 C5.3: the LIFTABLE class inlines — the pipeline's own scalar
+    region splices into the kernel region as pointwise rows over
+    arg-rooted abi slots, with NO launch-rebind markers and NO
+    per-element oracle dispatch; capture values ride the
+    extract->pack->launch channel fresh each launch."""
+    from pdum.tl.dialect import walk_region
+    from pdum.tl.kernel import _arg_fp, _code_fp, _env_fp
+
+    img = T(np.zeros((3, 4)), ("y", "x"))
+    f = twill(4.0, 3.0) | zoom(0.5)
+    shader(f, img)
+    key = (_code_fp(shader.fn), _env_fp(shader.fn), (_arg_fp(f), _arg_fp(img)), ())
+    art = KERNELS.peek(key)
+    assert art.fn_markers == {} and [b[0] for b in art.arg_slots] == ["f"]
+    slots = [dict(n.attrs) for n in walk_region(art.region) if n.op == "abi.slot"]
+    assert [(s["src"], s["offset"]) for s in slots] == [
+        (("arg", "f", 0, 0), 0),  # twill's a
+        (("arg", "f", 0, 1), 8),  # twill's b
+        (("arg", "f", 1, 0), 16),  # zoom's s
+    ]
+    rows = [dict(n.attrs)["f"] for n in walk_region(art.region) if n.op == "tl.pointwise"]
+    assert not any(str(r).startswith("kernel.fn.") for r in rows)
+
+
+def test_all_scalar_subtrees_stay_value_dialect():
+    """A spliced fn whose interior op never meets a tensor (a*b) keeps
+    that op in the VALUE dialect inside the kernel region — run_region
+    has its rows (the markers compute on host scalars by law) — and the
+    values still ride per launch."""
+
+    def gain(a, b):
+        @jit()
+        def g(x):
+            return x * (a * b)
+
+        return g
+
+    @compute
+    def apply_gain(f, img):
+        (y,) = thread_idx("y")
+        img[y] = f(y)
+
+    img = T(np.zeros(3), ("y",))
+    apply_gain(gain(2.0, 3.0), img)
+    np.testing.assert_allclose(img.to_numpy(), np.arange(3.0) * 6.0)
+    with events.forbid("kernel.miss"):  # fresh values, warm artifact
+        apply_gain(gain(5.0, -1.0), img)
+    np.testing.assert_allclose(img.to_numpy(), np.arange(3.0) * -5.0)
+
+
 def test_fn_arg_with_loops_and_module_global_name():
     """Two pins: (a) per-pixel LOOPS/BRANCHES live in @jit device functions
     (the value language) — the kernel body stays straight-line plumbing;

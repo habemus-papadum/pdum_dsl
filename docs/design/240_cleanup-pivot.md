@@ -699,3 +699,39 @@ fingerprints; staleness is a MISS, not a guard trip), the I.1
 "guards" row's yes-by-different-mechanism. 616 passed at land.
 *Remaining C5:* fn-arg inlining (the per-element oracle retires;
 combinator taps live), consumers optionally off the migration view.
+
+**C5.3 — fn-arg inlining (landed).** The I.3 seam 4 closes: a
+function-valued argument's LIFTABLE class (straight-line value bodies
+— the overwhelmingly common case) now INLINES instead of dispatching
+per element. The mechanism is three reuses and one splice, zero new
+lowering logic: (1) the fn-argument lowers through the dsl's OWN
+machinery (`lower_handle` + `NORMALIZE_ENV`) to a scalar region —
+pipelines compose via their Derived template, staged transforms build
+(value_and_grad in-kernel inlines its generated body), captures
+become prefixed env paths, coherence checked, all for free; (2) the
+fn's own pack plan (`plan_from_types`/`build_extractor`) assigns its
+capture block's offsets/fmts; (3) launch extends the C5.1 channel —
+extract the CURRENT binding's captures (replaying staged recipes
+first), `pack_into` the block's slice of the staging bytes; and (4)
+the SPLICE maps the scalar region into the kernel region: params
+bind the coordinate tensors, value ops become `tl.pointwise` rows
+when a tensor is in play, ALL-SCALAR subtrees stay in the value
+dialect (run_region grew their rows — the markers compute on host
+scalars by law), `core.env` becomes `abi.slot` at
+`("arg", pname, *path)`, and stores learned the scalar-broadcast law
+(a scalar-typed value broadcasts over the target, pointwise's law —
+the value_and_grad dy-is-a-capture case). The destructure pattern is
+now CHECKED against the fn's actual result shape (seam 4's second
+complaint), refusing with the arity mismatch named. The ORACLE class
+remains for exactly what cannot lift: bounded control flow (the
+escape-time kernel — per-element trip counts need predication, an
+L4-adjacent arrival) and tuple-shaped coordinates — a DECLARED
+boundary (`_liftable`), not a convention. Pinned: the twill|zoom
+pipeline's region carries the real computation over arg-rooted slots
+at plan offsets with ZERO oracle markers; all-scalar subtrees ride
+the value dialect warm across value changes; the loops kernel keeps
+its oracle row. The whole existing battery (S.3, key discipline,
+compile-once thesis, staged compose/restage) passed UNCHANGED on the
+switch. 618 passed at land. *Remaining C5:* combinator taps
+(record-in-combinators is a skipped spec test — it arrives with its
+own slice), consumers optionally off the migration view.

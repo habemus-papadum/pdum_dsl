@@ -53,11 +53,12 @@ import numpy as np
 from pdum.dsl import events
 from pdum.dsl.cache import ArtifactCache, Memo
 from pdum.dsl.ir import Node, Region
-from pdum.dsl.lower import Lowerer, check_coherence
+from pdum.dsl.lower import Lowerer, check_coherence, lower_handle
 from pdum.dsl.ops import CORE_OPS
-from pdum.dsl.pack import _FMTS, ABI_OPS
+from pdum.dsl.pack import _FMTS, ABI_OPS, NORMALIZE_ENV, build_extractor, pack_into, plan_from_types
 from pdum.dsl.registry import DEFAULT
-from pdum.dsl.types import LiteralValue
+from pdum.dsl.rewrite import run_stage
+from pdum.dsl.types import LiteralValue, f64
 from pdum.dsl.value import _assign as _value_assign
 from pdum.dsl.value import _name as _value_name
 from pdum.dsl.value import _subscript as _value_subscript
@@ -73,6 +74,7 @@ from .dialect import (
     capture_shim,
     run_region,
     tensor_type,
+    walk_region,
 )
 from .lifting import _Intrinsic
 from .markers import Marker
@@ -316,15 +318,150 @@ def _resolve_staged(ctx, obj):
     return found[0], replay
 
 
+# the scalar value-dialect ops a spliced fn-argument may contain; anything
+# else (bounded control flow above all) stays on the ORACLE path — per-element
+# dispatch through the spelled reference, until tl grows predication
+_LIFT = {"core.add": "add", "core.sub": "sub", "core.mul": "mul", "core.div": "div", "core.neg": "neg"}
+_LIFT["core.select"] = "where"
+_STRUCTURAL_OPS = {"core.param", "core.env", "core.const", "core.yield", "core.tuple", "core.extract"}
+
+
+def _scalar_region(handle, nargs):
+    """The fn-argument lowered by the dsl's OWN machinery to a scalar
+    region: pipelines compose, staged/derived transforms build, captures
+    become env paths — zero kernel-side lowering logic (240 C5.3)."""
+    ops = {**CORE_OPS, **ABI_OPS, **DEFAULT.ops}
+    rules, ctx = dict(DEFAULT.lower_rules), {"registry": DEFAULT}
+    region = lower_handle(handle, rules, ops, arg_types=(f64,) * nargs, derived=DEFAULT.derived, context=ctx)
+    return run_stage(region, NORMALIZE_ENV, ops)
+
+
+def _liftable(region) -> bool:
+    """Is this scalar region pointwise-liftable over the thread lattice?
+    Straight-line value ops only — a region-carrying op (if/for) is the
+    oracle class."""
+    for n in walk_region(region):
+        if n.regions:
+            return False
+        if not (n.op in _STRUCTURAL_OPS or n.op in _LIFT or n.op == "core.cmp" or n.op.startswith("pw.")):
+            return False
+    return True
+
+
 def _fn_arg(ctx, handle, args, out_spec, node):
-    """A function-valued argument applied at the thread coordinates:
-    pointwise instrs over launch-rebindable markers — per-element dispatch
-    through the spelled oracle (oracle-grade by doctrine). Tuple arguments
-    flatten per spec; tuple RESULTS flatten per ``out_spec`` (from the
-    destructuring pattern). Staged transforms of a parameter replay their
-    recipe chain on the CURRENT launch binding."""
-    c = ctx.context
+    """A function-valued argument applied at the thread coordinates.
+    The LIFTABLE class (straight-line value bodies) INLINES: the fn's own
+    scalar region splices into the kernel region as pointwise rows, its
+    captures riding arg-rooted abi slots re-extracted per launch (240
+    C5.3 — the compile-once thesis holds with zero per-element dispatch,
+    and the destructure pattern is CHECKED against the fn's actual result
+    shape). Bodies with bounded control flow stay on the per-element
+    ORACLE path (oracle-grade by doctrine) until tl grows predication.
+    Staged transforms of a parameter replay their recipe chain on the
+    CURRENT launch binding — both classes."""
     pname, wrap = _resolve_staged(ctx, handle)
+    if all(isinstance(a, Node) for a in args) and hasattr(handle, "fntype"):
+        region = _scalar_region(handle, len(args))
+        if _liftable(region):
+            return _splice_fn(ctx, handle, region, args, out_spec, node, pname, wrap)
+    return _fn_arg_oracle(ctx, handle, args, out_spec, node, pname, wrap)
+
+
+def _splice_fn(ctx, handle, region, args, out_spec, node, pname, wrap):
+    """Scalar region -> kernel region: params bind the coordinate tensors,
+    value ops become pointwise rows when a tensor is in play (all-scalar
+    subtrees stay in the value dialect — run_region has their rows), and
+    env reads become abi slots at ("arg", pname, *path) with offsets from
+    the fn's OWN pack plan, block-based into the kernel staging bytes."""
+    c = ctx.context
+    key = (pname, handle.fp)
+    block = c["k.arg_plans"].get(key)
+    if block is None:
+        plan = plan_from_types(handle.env_types, (), DEFAULT.table)
+        base = c["k.uniform_size"]
+        c["k.uniform_size"] = base + plan.staging_size
+        block = c["k.arg_plans"][key] = {
+            "pname": pname,
+            "fixed": None if pname is not None else handle,
+            "wrap": wrap,
+            "base": base,
+            "plan": plan,
+            "extract": build_extractor(handle.env_types, (), plan, DEFAULT.table),
+            "by_path": {(s.source.index, *s.source.sub): s for s in plan.slots},
+            "slots": {},
+        }
+    memo: dict[int, object] = {}
+
+    def go(nd):
+        if id(nd) not in memo:
+            memo[id(nd)] = _one(nd)
+        return memo[id(nd)]
+
+    def _one(nd):
+        attrs = dict(nd.attrs)
+        if nd.op == "core.param":
+            return args[attrs["index"]]
+        if nd.op == "core.const":
+            return attrs["value"]
+        if nd.op == "core.env":
+            path = attrs["slot"]
+            cached = block["slots"].get(path)
+            if cached is None:
+                spec = block["by_path"][path]
+                cached = block["slots"][path] = ctx.emit(
+                    "abi.slot",
+                    node=node,
+                    type=nd.type,
+                    src=("arg", pname or handle.fntype.template.label, *path),
+                    offset=block["base"] + spec.dest.offset,
+                    fmt=spec.dest.fmt,
+                )
+            return cached
+        if nd.op == "core.tuple":
+            return tuple(go(a) for a in nd.args)
+        if nd.op == "core.extract":
+            return go(nd.args[0])[attrs["index"]]
+        ops_v = [go(a) for a in nd.args]
+
+        def lift(o):
+            return o if isinstance(o, Node) else ctx.emit("core.const", node=node, type=f64, value=float(o))
+
+        lifted = [lift(o) for o in ops_v]
+        if any(isinstance(o, Node) and isinstance(o.type, TensorType) for o in ops_v):
+            f = _LIFT.get(nd.op) or (attrs["pred"] if nd.op == "core.cmp" else nd.op[3:])
+            return ctx.emit("tl.pointwise", *lifted, node=node, f=f)
+        return ctx.emit(nd.op, *lifted, node=node, **attrs)  # an all-scalar subtree stays value-dialect
+
+    result = go(region.body[-1].args[0])
+    if out_spec is None:
+        if isinstance(result, tuple):
+            raise ValueError(
+                f"the function returns {len(result)} values — destructure them (the pattern declares the outputs)"
+            )
+        return result
+    if not isinstance(result, tuple) or len(result) != len(out_spec):
+        got = len(result) if isinstance(result, tuple) else 1
+        raise ValueError(f"the destructuring pattern names {len(out_spec)} outputs but the function returns {got}")
+    flat = []
+    for s, part in zip(out_spec, result):
+        if s is None:
+            if isinstance(part, tuple):
+                raise ValueError("the destructuring pattern binds one name where the function returns a tuple")
+            flat.append(part)
+        else:
+            if not isinstance(part, tuple) or len(part) != s:
+                got = len(part) if isinstance(part, tuple) else 1
+                raise ValueError(f"the destructuring pattern names {s} grouped outputs but the function returns {got}")
+            flat.extend(part)
+    return tuple(flat)
+
+
+def _fn_arg_oracle(ctx, handle, args, out_spec, node, pname, wrap):
+    """The per-element ORACLE path: pointwise instrs over launch-rebindable
+    markers dispatching through the spelled reference. The oracle class is
+    exactly what cannot lift yet (bounded control flow, tuple-shaped
+    coordinates); everything else inlines (240 C5.3)."""
+    c = ctx.context
     flat, spec = [], []
     for a in args:
         if isinstance(a, Node):
@@ -497,6 +634,8 @@ class _Artifact:
     executor: object  # tier-2 artifact: (values, staging) -> effect; shared by content key
     fn: object  # the kernel fn — abi slots re-read its environment per launch
     uniforms: tuple  # (name, offset, fmt) abi slots (DATA: extracted + packed fresh every launch)
+    arg_slots: tuple  # spliced fn-arg capture blocks: (pname, fixed, wrap, base, plan, extract)
+    staging_size: int  # total staging bytes (kernel env slots + fn-arg blocks)
     params: tuple  # kernel parameter names, in order
     tensor_params: tuple  # tensor parameter names, region-param order
     writable: tuple  # parameter names that are stored to (incl. tap buffers)
@@ -524,11 +663,16 @@ class _Artifact:
                 _ARG_BINDINGS[mname] = bound[name]
         values = [bound[n] for n in self.tensor_params] + [bound[f"tap:{n}"] for n in self.requested_taps]
         staging = b""
-        if self.uniforms:  # extract -> pack -> launch (the dsl's hit-path shape)
-            env = _captured(self.fn)
-            staging = bytearray(sum(struct.calcsize(f) for _, _, f in self.uniforms))
+        if self.staging_size:  # extract -> pack -> launch (the dsl's hit-path shape)
+            staging = bytearray(self.staging_size)
+            env = _captured(self.fn) if self.uniforms else {}
             for name, off, fmt in self.uniforms:
                 struct.pack_into(fmt, staging, off, env[name])
+            for pname, fixed, wrap, base, plan, extract in self.arg_slots:
+                f = bound[pname] if pname is not None else fixed
+                if wrap is not None:  # replay the recipe chain on the CURRENT binding
+                    f = wrap(f)
+                pack_into(plan, memoryview(staging)[base : base + plan.staging_size], extract(f.captures, ()))
             staging = bytes(staging)
         self.executor(values, staging)
         return None  # stores are the effect; kernels return nothing (taps included)
@@ -560,6 +704,7 @@ def _compile(fn, args, tap_names=()) -> _Artifact:
             "k.pname_of": {},
             "k.uniforms": {},
             "k.uniform_size": 0,
+            "k.arg_plans": {},
         }
     )
     names = fn.__code__.co_varnames[: fn.__code__.co_argcount]
@@ -610,6 +755,10 @@ def _compile(fn, args, tap_names=()) -> _Artifact:
         executor=ARTIFACTS.get_or_compile((region.key, _EXECUTOR_FP), lambda: _executor(region)),
         fn=fn,
         uniforms=tuple((n, dict(nd.attrs)["offset"], dict(nd.attrs)["fmt"]) for n, nd in c["k.uniforms"].items()),
+        arg_slots=tuple(
+            (b["pname"], b["fixed"], b["wrap"], b["base"], b["plan"], b["extract"]) for b in c["k.arg_plans"].values()
+        ),
+        staging_size=c["k.uniform_size"],
         params=tuple(names),
         tensor_params=tuple(tensor_names),
         writable=tuple(dict.fromkeys(c["k.stored"])),

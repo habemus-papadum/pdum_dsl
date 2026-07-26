@@ -143,8 +143,10 @@ def _r_store(args, attrs, regions):
     tok, dst, val = args
     if not isinstance(tok, TokenType):
         raise TypeError("tl.store threads the ordering token first")
-    if frozenset(dst.dims) != frozenset(val.dims):
-        raise TypeError(f"tl.store wants the value aligned to the target: {dst!r} vs {val!r}")
+    if isinstance(val, TensorType):
+        if frozenset(dst.dims) != frozenset(val.dims):
+            raise TypeError(f"tl.store wants the value aligned to the target: {dst!r} vs {val!r}")
+    # a scalar-typed value broadcasts over the target lattice (pointwise's law)
     return TokenType()
 
 
@@ -870,6 +872,12 @@ def derive_step_vjp(step: Region, ops=None) -> Region:
 
 # --- the evaluation column (ir.run's successor for this dialect) -------------
 
+# scalar value-dialect ops that can ride inside a kernel region (a spliced
+# fn-argument's all-scalar subtrees, 240 C5.3): evaluated by THE markers,
+# which compute on host scalars by law
+_HOST_OPS = {"core.add": "add", "core.sub": "sub", "core.mul": "mul", "core.div": "div", "core.neg": "neg"}
+_HOST_OPS["core.select"] = "where"
+
 
 def run_region(region: Region, values: list, uniforms: bytes | None = None):
     """Evaluate a dialect region over tl Tensors — fields slice at ABSOLUTE
@@ -910,8 +918,14 @@ def run_region(region: Region, values: list, uniforms: bytes | None = None):
             ops_v = [v if isinstance(v, Tensor) else const_like(ref, float(v)) for v in ops_v]
             return _eager_pw(pw_marker(attrs["f"]), *ops_v)
         if n.op == "tl.store":
-            tok, dst, val = n.args
-            return _store(ev(tok), ev(dst), ev(val))
+            tok, dst, val = (ev(a) for a in n.args)
+            if not isinstance(val, Tensor):  # scalars broadcast (pointwise's law)
+                val = const_like(dst, float(val))
+            return _store(tok, dst, val)
+        if n.op == "core.cmp":  # scalar value-dialect rows: spliced fn-arg
+            return pw_marker(attrs["pred"])(*(ev(a) for a in n.args))  # subtrees (240 C5.3)
+        if n.op in _HOST_OPS or n.op.startswith("pw."):
+            return pw_marker(_HOST_OPS.get(n.op, n.op[3:]))(*(ev(a) for a in n.args))
         if n.op.startswith("tl.") and n.op[3:] in _BRIDGED:
             ops_v = [ev(a) for a in n.args]
             names = tuple(f"a{i}" for i in range(len(ops_v)))
