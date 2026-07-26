@@ -578,3 +578,26 @@ branch + staging door from the kernel pack into the shared dialect
 pack, then switch `lift_step` onto lower_body+export behind its
 existing API (message-parity work: the step tier's pinned refusal
 voices), then assemblage, deleting `_Lifter` when both are off it.
+
+**C4.3d — the step switch (landed).** `lift_step` now lowers through
+the ONE dsl Lowerer with the tl pack and renders back through the
+migration view — same signature, same refusal voices, every consumer
+untouched: the whole zoo (heat2d included), the recompute theorem,
+fold/transforms, memory counts, and the naming-law pin (binding names
+become SSA names — recorded during lowering in a names ledger the
+exporter consumes) all green through the new path. What the flip
+forced into the SHARED pack, each an incumbent semantic honored:
+helper inlining with kwargs/kw-only/defaults and host-first argument
+binding (strings, extents with host math like `max(delta, 0)`,
+**splat dicts); the staging door and citizen refusals (moved from the
+kernel pack — one door, both tiers); the full recognized S.1 set by
+object identity (`iota`/`extent`/`contract` joined; multi-operand
+record-state reduces spread); a guard refusing to inline tensor-
+library machinery ("lowers by recognition, not inlining");
+**constants are HOST values in tl bodies** (the incumbent semantics —
+they lift only on meeting tensors; scalar stores broadcast via a
+bridged const); unary minus on tensors; lambdas via the incumbent
+extractor. The kernel pack slimmed to its genuine layer (ambient
+iota-recording + fn-args) over the shared pack. `_Lifter`'s step
+entry point is superseded; the class survives ONLY for the assemblage
+unit lowerer — deleted when that switches. 611 passed at land.

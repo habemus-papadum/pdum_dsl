@@ -38,7 +38,6 @@ from __future__ import annotations
 import ast as pyast
 from dataclasses import dataclass, field
 
-from pdum.dsl.capture import make_handle
 from pdum.dsl.derivative import TABLE, Const, Prim
 from pdum.dsl.ir import Builder, Region
 from pdum.dsl.lower import Lowerer, check_coherence
@@ -48,14 +47,16 @@ from pdum.dsl.types import Type, f64
 from pdum.dsl.value import LOWER_RULES, _assign, _binop, _call, _compare
 
 from .compute import const_like
+from .compute import contract as _eager_contract
+from .compute import extent as _eager_extent
 from .compute import iota as _eager_iota
 from .compute import pointwise as _eager_pw
 from .compute import reduce as _eager_reduce
 from .compute import repeat_like as _eager_repeat_like
 from .compute import scan as _eager_scan
 from .ir import _LAYOUT_OPS, Instr, Token, _store, eval_instr, infer_instr, pw_marker
-from .lifting import _METHODS, _STRUCTURAL_SLOT, _Intrinsic
-from .markers import Marker, Reducer
+from .lifting import _HOST_BIN, _HOST_CMP, _METHODS, _STRUCTURAL_SLOT, _Intrinsic
+from .markers import Marker
 from .tensor import Tensor
 
 # --- types -------------------------------------------------------------------
@@ -81,8 +82,11 @@ def tensor_type(t: Tensor) -> TensorType:
     return TensorType(tuple((d.name, d.start, d.stop) for d in t.layout.dims), layout=t.layout)
 
 
-def _of_layout(lay) -> TensorType:
+def tensor_type_of_layout(lay) -> TensorType:
     return TensorType(tuple((d.name, d.start, d.stop) for d in lay.dims), layout=lay)
+
+
+_of_layout = tensor_type_of_layout
 
 
 def _minus_dim(tt: TensorType, name: str) -> TensorType:
@@ -152,7 +156,7 @@ def _r_bridge(base):
     return rule
 
 
-_BRIDGED = ("reduce", "scan", "materialize", "round_to", "repeat_like", "random", "with_value_units") + tuple(
+_BRIDGED = ("reduce", "scan", "materialize", "round_to", "repeat_like", "random", "with_value_units", "const") + tuple(
     _LAYOUT_OPS
 )
 
@@ -179,15 +183,20 @@ def _typed_rule(table, base_rule, pick):
     serves the node unchanged."""
 
     def rule(ctx, node):
+        operands = [ctx.lower(a) for a in _operands_of(node)]
+        tensorish = any(hasattr(o, "type") and isinstance(o.type, TensorType) for o in operands)
         f = table.get(type(pick(node)))
-        if f is not None:
-            operands = [ctx.lower(a) for a in _operands_of(node)]
-            if any(hasattr(o, "type") and isinstance(o.type, TensorType) for o in operands):
-                lifted = [
-                    o if hasattr(o, "type") else ctx.emit("core.const", node=node, type=f64, value=float(o))
-                    for o in operands
-                ]
-                return ctx.emit("tl.pointwise", *lifted, node=node, f=f)
+        if tensorish:
+            if f is None:
+                raise ValueError(f"operator {type(pick(node)).__name__} has no pointwise primitive")
+            lifted = [
+                o if hasattr(o, "type") else ctx.emit("core.const", node=node, type=f64, value=float(o))
+                for o in operands
+            ]
+            return ctx.emit("tl.pointwise", *lifted, node=node, f=f)
+        if not any(hasattr(o, "type") for o in operands):  # pure host math folds on the host
+            host = _HOST_BIN if isinstance(node, pyast.BinOp) else _HOST_CMP
+            return host[type(pick(node))](*operands)
         return base_rule(ctx, node)
 
     return rule
@@ -211,6 +220,45 @@ def _globals_of(ctx):
     return ctx.handle.pyfunc.__globals__
 
 
+def capture_shim(fn):
+    """The kernel/step capture SHIM: a Handle's snapshot/coherence surface
+    with closure values kept RAW — bodies close over helpers, markers, and
+    staged transforms (compile-time CITIZENS), and host scalars (DATA);
+    neither is a typed env slot."""
+    from types import SimpleNamespace
+
+    from pdum.dsl import capture as _cap
+
+    snap = _cap._SNAPSHOTS.get(fn.__code__)
+    if snap is None:
+        snap = _cap._SNAPSHOTS[fn.__code__] = _cap._take_snapshot(fn)
+    env = {}
+    for name, cell in zip(fn.__code__.co_freevars, fn.__closure__ or ()):
+        try:
+            env[name] = cell.cell_contents
+        except ValueError:
+            pass
+    return SimpleNamespace(
+        snapshot=snap,
+        pyfunc=fn,
+        env=env,
+        freevars=fn.__code__.co_freevars,
+        fntype=SimpleNamespace(template=SimpleNamespace(label=fn.__qualname__)),
+        table=None,
+    )
+
+
+def _lookup(ctx, name):
+    """One resolution order everywhere: locals -> closure freevars (raw) ->
+    the body's globals."""
+    v = ctx.locals.get(name)
+    if v is None and isinstance(ctx.handle.env, dict):
+        v = ctx.handle.env.get(name)
+    if v is None:
+        v = _globals_of(ctx).get(name)
+    return v
+
+
 class NotHost(Exception):
     """An AST node is not a host (structural) value."""
 
@@ -225,18 +273,42 @@ def _host(ctx, node):
         return tuple(_host(ctx, e) for e in node.elts)
     if isinstance(node, pyast.UnaryOp) and isinstance(node.op, pyast.USub):
         return -_host(ctx, node.operand)
+    if isinstance(node, pyast.BinOp) and type(node.op) in _HOST_BIN:  # host math (n - 1 in an extent)
+        return _HOST_BIN[type(node.op)](_host(ctx, node.left), _host(ctx, node.right))
     if isinstance(node, pyast.Name):
-        v = ctx.locals.get(node.id)
-        if v is None:
-            v = ctx.handle.env.get(node.id) if isinstance(ctx.handle.env, dict) else None
-        if v is None:
-            v = _globals_of(ctx).get(node.id)
+        v = _lookup(ctx, node.id)
         if v is None or hasattr(v, "type") or isinstance(v, tuple) and any(hasattr(x, "type") for x in v):
             raise NotHost()
         return v
     if isinstance(node, pyast.Attribute):
         return getattr(_host(ctx, node.value), node.attr)
+    if isinstance(node, pyast.Dict):
+        return {_host(ctx, k): _host(ctx, v) for k, v in zip(node.keys, node.values)}
+    if isinstance(node, pyast.Call) and isinstance(node.func, pyast.Name):
+        import builtins
+
+        fn = _lookup(ctx, node.func.id)
+        if fn is None:
+            fn = getattr(builtins, node.func.id, None)
+        if callable(fn) and not hasattr(fn, "fp"):
+            args = [_host(ctx, a) for a in node.args]
+            kwargs = _host_kwargs(ctx, node.keywords)
+            return fn(*args, **kwargs)  # host evaluation in a structural position
     raise NotHost()
+
+
+def _host_kwargs(ctx, keywords):
+    out = {}
+    for kw in keywords:
+        if kw.arg is None:  # a **splat of a host dict
+            out.update(_host(ctx, kw.value))
+        else:
+            out[kw.arg] = _host(ctx, kw.value)
+    return out
+
+
+def _scalar_lift(ctx, node, v):
+    return v if hasattr(v, "type") else ctx.emit("core.const", node=node, type=f64, value=float(v))
 
 
 def _tl_call(ctx, node):
@@ -246,47 +318,161 @@ def _tl_call(ctx, node):
     DECORATOR, the P5 shadowing lesson); markers via the registry;
     everything else is the base pack."""
     if isinstance(node.func, pyast.Name):
-        obj = _globals_of(ctx).get(node.func.id)
+        obj = _lookup(ctx, node.func.id)
         if isinstance(obj, _Intrinsic) and obj.name == "thread_idx":
             lattice = ctx.root.params[-1]  # the writable target (S.3 convention)
             names = [c.value for c in node.args]
             return tuple(ctx.emit("tl.iota", lattice, node=node, name=n) for n in names)  # ALWAYS a tuple
         if obj is _eager_pw:  # the S.1 STEP-tier spelling
-            marker = _globals_of(ctx).get(node.args[0].id) or ctx.context["registry"].overloads.get(node.args[0].id)
-            rest = [ctx.lower(a) for a in node.args[1:]]
+            marker = _lookup(ctx, node.args[0].id) or ctx.context["registry"].overloads.get(node.args[0].id)
+            if marker is None or not hasattr(marker, "name"):
+                raise ValueError(f"pointwise wants a marker first, got {node.args[0].id!r}")
+            rest = [_scalar_lift(ctx, node, ctx.lower(a)) for a in node.args[1:]]
             return ctx.emit("tl.pointwise", *rest, node=node, f=marker.name)
         if obj is const_like:  # scalar broadcast: the const IS the operand
             return ctx.lower(node.args[1])
         if obj is _eager_reduce or obj is _eager_scan:  # the S.1 spellings
             f = _host(ctx, node.args[0])
-            fname = f.name if isinstance(f, (Marker, Reducer)) else f
-            operand = ctx.lower(node.args[1])
-            if isinstance(operand, tuple):
-                raise TypeError("record-state reducers arrive with a later slice (240 C4.3)")
+            fname = f if isinstance(f, str) else f.name
+            arg1 = node.args[1]
+            if isinstance(arg1, pyast.Tuple):
+                operands = tuple(ctx.lower(e) for e in arg1.elts)
+            else:
+                operand = ctx.lower(arg1)
+                operands = operand if isinstance(operand, tuple) else (operand,)
             dims = _host(ctx, node.args[2]) if len(node.args) > 2 else _host(ctx, node.keywords[0].value)
             key = "dims" if obj is _eager_reduce else "dim"
             op = "tl.reduce" if obj is _eager_reduce else "tl.scan"
-            return ctx.emit(op, operand, node=node, f=fname, **{key: dims})
+            return ctx.emit(op, *operands, node=node, f=fname, **{key: dims})
         if obj is _eager_repeat_like:  # THE alignment primitive (S.1)
             x, like = (ctx.lower(a) for a in node.args)
             return ctx.emit("tl.repeat_like", x, like, node=node)
-        impl = ctx.context["registry"].overloads.get(node.func.id)
-        if isinstance(impl, Marker):
-            args = [ctx.lower(a) for a in node.args]
-            if any(isinstance(a.type, TensorType) for a in args):
-                return ctx.emit("tl.pointwise", *args, node=node, f=impl.name)
+        if obj is _eager_iota:
+            src = ctx.lower(node.args[0])
+            extra = {"unit": _host(ctx, node.args[2])} if len(node.args) > 2 else {}
+            return ctx.emit("tl.iota", src, node=node, name=_host(ctx, node.args[1]), **extra)
+        if obj is _eager_extent:  # a structural READ: host data from the TYPE
+            t = ctx.lower(node.args[0])
+            want = _host(ctx, node.args[1])
+            return next(hi - lo for (n_, lo, hi) in t.type.dims if n_ == want)
+        if obj is _eager_contract:  # ONE visible line over the primitives (S.1)
+            a, bb = (ctx.lower(x) for x in node.args)
+            axis = _host(ctx, node.keywords[0].value) if node.keywords else _host(ctx, node.args[2])
+            names = (axis,) if isinstance(axis, str) else tuple(axis)
+            ra = ctx.emit("tl.repeat_like", a, bb, node=node)
+            rb = ctx.emit("tl.repeat_like", bb, a, node=node)
+            prod = ctx.emit("tl.pointwise", ra, rb, node=node, f="mul")
+            return ctx.emit("tl.reduce", prod, node=node, f="sum", dims=names)
+        obj2 = obj if obj is not None else ctx.context["registry"].overloads.get(node.func.id)
+        if isinstance(obj2, Marker) or type(obj2).__name__ == "CompositeMarker":
+            args = [_scalar_lift(ctx, node, ctx.lower(a)) for a in node.args]
+            if any(hasattr(a, "type") and isinstance(a.type, TensorType) for a in args):
+                if ctx.context.get("tl.kind") != "compute":  # the STEP tier spells pointwise
+                    raise ValueError(
+                        f"{obj2.name} is a marker — tensor-tier application is spelled "
+                        f"pointwise({obj2.name}, ...) (bare names lower only inside "
+                        f"scalar marker bodies)"
+                    )
+                return ctx.emit("tl.pointwise", *args, node=node, f=obj2.name)
+        if callable(obj) and not isinstance(obj, (Marker, _Intrinsic)):
+            try:
+                h_args = [_host(ctx, a) for a in node.args]
+                h_kwargs = _host_kwargs(ctx, node.keywords)
+            except NotHost:
+                h_args = None
+            if h_args is not None:
+                if getattr(obj, "__staged__", False):  # the declared staging door (C1/C2)
+                    result = obj(*h_args, **h_kwargs)
+                    if getattr(result, "fp", None) is None:
+                        raise ValueError(
+                            f"staged transform {node.func.id!r} returned "
+                            f"{type(result).__name__!r}, not a function citizen — staged "
+                            f"transforms produce fp-carrying values"
+                        )
+                    ctx.context.setdefault("tl.recipes", {})[id(result)] = (obj, tuple(h_args), dict(h_kwargs))
+                    return result
+                result = obj(*h_args, **h_kwargs)  # structural host evaluation (implicit)
+                if getattr(result, "fp", None) is not None:
+                    raise ValueError(
+                        f"{node.func.id!r} returned a function value at lower time without "
+                        f"being a declared staged transform — decorate it with @staged "
+                        f"(pdum.dsl.staged), or build the value outside the body"
+                    )
+                return result
+            if hasattr(obj, "__code__"):  # a captured helper over lowered values: INLINE
+                if getattr(obj, "__module__", "") in ("pdum.tl.compute", "pdum.tl.ir"):
+                    raise ValueError(
+                        f"{node.func.id!r} is tensor-library machinery — it lowers by "
+                        f"recognition, not inlining; the recognized set is the primitive set"
+                    )
+                args_l = tuple(_arg_value(ctx, a) for a in node.args)
+                kwargs_l = {}
+                for kw in node.keywords:
+                    if kw.arg is None:
+                        kwargs_l.update(_host(ctx, kw.value))
+                    else:
+                        kwargs_l[kw.arg] = _arg_value(ctx, kw.value)
+                return _inline_plain(ctx, obj, args_l, node, kwargs_l)
     if isinstance(node.func, pyast.Attribute):  # the frozen layout-method family
         base = ctx.lower(node.func.value)
         name = node.func.attr
-        if hasattr(base, "type") and isinstance(base.type, TensorType) and name in _METHODS:
+        if hasattr(base, "type") and isinstance(base.type, TensorType):
+            if name not in _METHODS:
+                raise ValueError(f"tensors have no method {name!r} in step bodies")
             try:
                 args = [_host(ctx, a) for a in node.args]
-                kwargs = {kw.arg: _host(ctx, kw.value) for kw in node.keywords}
+                kwargs = _host_kwargs(ctx, node.keywords)
             except NotHost:
                 raise ValueError(_STRUCTURAL_SLOT.format(what=f".{name}(...)")) from None
             op, pack = _METHODS[name]
             return ctx.emit(f"tl.{op}", base, node=node, **pack(args, kwargs))
     return _call(ctx, node)
+
+
+def _arg_value(ctx, a):
+    """An argument for helper inlining: host values (strings, tuples with
+    host math, captured objects) stay host; everything else lowers.
+    Tuples of lowered values ride as tuples."""
+    try:
+        return _host(ctx, a)
+    except NotHost:
+        if isinstance(a, pyast.Tuple):
+            return tuple(_arg_value(ctx, e) for e in a.elts)
+        return ctx.lower(a)
+
+
+def _inline_plain(ctx, fn, args, node, kwargs=None):
+    """Capture-and-call: a plain helper inlines through a CHILD lowerer over
+    the same rules and the same build context — its bindings claim, and its
+    claims collide honestly (the naming law reaches inlined bodies).
+    Keyword-only parameters bind from the call's kwargs, then defaults."""
+    handle = capture_shim(fn)
+    check_coherence(handle)
+    child = Lowerer(handle, ctx.rules, ctx.ops, ctx.derived, wrap=ctx.loc(node), context=ctx.context, root=ctx.root)
+    code = fn.__code__
+    pos = list(code.co_varnames[: code.co_argcount])
+    kwonly = list(code.co_varnames[code.co_argcount : code.co_argcount + code.co_kwonlyargcount])
+    kwargs = dict(kwargs or {})
+    if len(args) > len(pos):
+        raise TypeError(f"{fn.__qualname__} takes {len(pos)} positional arguments, got {len(args)}")
+    child.locals.update(zip(pos, args))
+    for name in pos[len(args) :]:
+        if name in kwargs:
+            child.locals[name] = kwargs.pop(name)
+        elif fn.__defaults__ and name in pos[len(pos) - len(fn.__defaults__) :]:
+            child.locals[name] = fn.__defaults__[pos.index(name) - (len(pos) - len(fn.__defaults__))]
+        else:
+            raise TypeError(f"{fn.__qualname__} missing argument {name!r}")
+    for name in kwonly:
+        if name in kwargs:
+            child.locals[name] = kwargs.pop(name)
+        elif fn.__kwdefaults__ and name in fn.__kwdefaults__:
+            child.locals[name] = fn.__kwdefaults__[name]
+        else:
+            raise TypeError(f"{fn.__qualname__} missing keyword-only argument {name!r}")
+    if kwargs:
+        raise TypeError(f"{fn.__qualname__} got unexpected keyword arguments {sorted(kwargs)}")
+    return child.run_body()
 
 
 def _tl_assign(ctx, node):
@@ -300,43 +486,149 @@ def _tl_assign(ctx, node):
     if isinstance(tgt, pyast.Tuple) and isinstance(value, tuple):  # y, x = thread_idx(...)
         for e, v in zip(tgt.elts, value):
             ctx.locals[e.id] = v
+            _record_name(ctx, e.id, v)
         return None
     if isinstance(tgt, pyast.Name):
         ctx.locals[tgt.id] = value
+        _record_name(ctx, tgt.id, value)
         return None
     return _assign(ctx, node)
 
 
+def _record_name(ctx, name, value):
+    """The naming law: binding names become SSA names — recorded here,
+    consumed by the exporter (first binding wins)."""
+    if hasattr(value, "op"):
+        ctx.context.setdefault("tl.names", {}).setdefault(id(value), name)
+
+
+def _tl_name(ctx, node):
+    """Locals first; captured host values return RAW (the incumbent step
+    semantics — scalars bake; the literal-doctrine uniform channel reaches
+    the step tier with its own slice, recorded in 240); unknown names speak
+    the step voice."""
+    if node.id in ctx.locals:
+        return ctx.locals[node.id]
+    v = _lookup(ctx, node.id)
+    if v is not None:
+        return v
+    raise ValueError(f"unknown name {node.id!r} in a step body")
+
+
+def _refuse_straightline(ctx, node):
+    raise ValueError(
+        f"step bodies are straight-line: a {type(node).__name__} statement cannot be "
+        f"lowered — bounded control flow exists only in the value language (S.2)"
+    )
+
+
+def _refuse_branch_expr(ctx, node):
+    raise ValueError(
+        "step bodies are straight-line: if/and/or cannot be lowered — "
+        "use where(cond, a, b); the branch is data flow here"
+    )
+
+
+def _tl_subscript(ctx, node):
+    base = ctx.lower(node.value)
+    if hasattr(base, "type") and isinstance(base.type, TensorType):
+        raise ValueError("tensor subscripts do not exist here — use .slice()/.select()")
+    from pdum.dsl.value import _subscript as _base_subscript
+
+    return _base_subscript(ctx, node)
+
+
+def _tl_attribute(ctx, node):
+    base = ctx.lower(node.value)
+    if hasattr(base, "type") and isinstance(base.type, TensorType):
+        raise ValueError(f"tensors have no attribute access in step bodies (.{node.attr})")
+    if not hasattr(base, "type"):
+        return getattr(base, node.attr)  # host attribute (red.mean, cfg.d)
+    from pdum.dsl.value import _attribute as _base_attribute
+
+    return _base_attribute(ctx, node)
+
+
+def _tl_constant(ctx, node):
+    """tl bodies: constants are HOST values (the incumbent semantics) —
+    they lift to IR only on meeting tensors (scalar broadcast)."""
+    return node.value
+
+
+def _tl_unary(ctx, node):
+    if isinstance(node.op, pyast.USub):
+        v = ctx.lower(node.operand)
+        if hasattr(v, "type") and isinstance(v.type, TensorType):
+            return ctx.emit("tl.pointwise", v, node=node, f="neg")
+        if not hasattr(v, "type"):
+            return -v
+    from pdum.dsl.value import _unary as _base_unary
+
+    return _base_unary(ctx, node)
+
+
 TL_RULES = {
     **LOWER_RULES,
+    pyast.Constant: _tl_constant,
+    pyast.UnaryOp: _tl_unary,
     pyast.Assign: _tl_assign,
     pyast.BinOp: _typed_rule(_BIN_MARKER, _binop, _pick_binop),
     pyast.Compare: _typed_rule(_CMP_MARKER, _compare, _pick_cmp),
     pyast.Call: _tl_call,
+    pyast.Name: _tl_name,
+    pyast.Subscript: _tl_subscript,
+    pyast.Attribute: _tl_attribute,
+    pyast.If: _refuse_straightline,
+    pyast.For: _refuse_straightline,
+    pyast.While: _refuse_straightline,
+    pyast.IfExp: _refuse_branch_expr,
+    pyast.BoolOp: _refuse_branch_expr,
 }
 
 
 # --- the per-kind yield protocol + the body driver ---------------------------
 
 
-def lower_body(fn, arg_types: tuple, *, kind: str, registry=None, host: dict | None = None) -> Region:
+def lower_body(
+    fn, arg_types: tuple, *, kind: str, registry=None, host: dict | None = None, out_names: dict | None = None
+) -> Region:
     """Lower a body through the DSL Lowerer with the tl pack. WHAT the
     region yields is the KIND's declaration (the per-kind yield protocol):
     a ``step`` yields its returned value; a ``compute`` kernel yields the
     final ordering token — and a kernel ``return`` refuses."""
-    handle = make_handle(fn, "device")
+    handle = capture_shim(fn)
     check_coherence(handle)
     ctx = Lowerer(handle, TL_RULES, {**CORE_OPS, **TL_OPS}, {}, context={"registry": registry or DEFAULT})
+    ctx.context["tl.kind"] = kind
+    if out_names is not None:
+        ctx.context["tl.names"] = out_names  # the naming law's ledger, for the exporter
     params = tuple(ctx.builder.param(i, t) for i, t in enumerate(arg_types))
     ctx.params = params
     names = fn.__code__.co_varnames[: fn.__code__.co_argcount]
     ctx.locals.update(zip(names, params))
     ctx.locals.update(host or {})  # structural/kw bindings (dim names, scalars)
+    from .producer import _fn_ast
+
+    tree = _fn_ast(fn)  # a def OR a lambda (the incumbent extractor)
     if kind == "step":
-        return Region(params=params, body=(ctx.builder.emit("core.yield", ctx.run_body()),))
+        if isinstance(tree, pyast.Lambda):
+            result = ctx.lower(tree.body)
+            flat = result.args if getattr(result, "op", None) == "core.tuple" else (result,)
+            if not all(hasattr(v, "type") and isinstance(v.type, TensorType) for v in flat):
+                raise ValueError(f"a step must return tensors, got {flat!r}")
+            return Region(params=params, body=(ctx.builder.emit("core.yield", result),))
+        for stmt in tree.body[:-1]:
+            ctx.lower(stmt)
+        last = tree.body[-1]
+        if not isinstance(last, pyast.Return) or last.value is None:
+            raise ValueError("a step body must end in `return <tensor(s)>`")
+        result = ctx.lower(last.value)
+        flat = result.args if getattr(result, "op", None) == "core.tuple" else (result,)
+        if not all(hasattr(v, "type") and isinstance(v.type, TensorType) for v in flat):
+            raise ValueError(f"a step must return tensors, got {flat!r}")
+        return Region(params=params, body=(ctx.builder.emit("core.yield", result),))
     if kind != "compute":
         raise ValueError(f"unknown body kind {kind!r} — kinds declare their yields here")
-    tree = next(n for n in pyast.parse(handle.snapshot.text).body if isinstance(n, pyast.FunctionDef))
     for stmt in tree.body:
         if isinstance(stmt, pyast.Return):
             raise ValueError("kernels return nothing — stores into writable arguments are the effect")
@@ -617,7 +909,7 @@ def fold_grad(step: Region, vjp: Region, init, src, dim: str, *, slots: int | No
 # --- the migration view: regions rendered as incumbent Programs --------------
 
 
-def export_program(region: Region, param_names: tuple):
+def export_program(region: Region, param_names: tuple, names_of: dict | None = None):
     """The MIGRATION VIEW (240 C4.3c): render a dialect region as an
     incumbent ``Program``, so every Program consumer — autodiff (max/scan/
     layout adjoints included), signatures, opcount, memory — serves regions
@@ -629,6 +921,7 @@ def export_program(region: Region, param_names: tuple):
     from .ir import Program
 
     names = Namer()
+    names_of = names_of or {}
     instrs: list = []
     var_of: dict[int, str] = {}
     for pname, p in zip(param_names, region.params):
@@ -681,6 +974,7 @@ def export_program(region: Region, param_names: tuple):
                 operands.append(const_for(dict(a.attrs)["value"], ref))
             else:
                 operands.append(var_of[id(a)])
-        var_of[id(n)] = emit(base, operands, base.rsplit(".", 1)[-1], **dict(n.attrs))
+        hint = names_of.get(id(n), base.rsplit(".", 1)[-1])  # binding names become SSA names
+        var_of[id(n)] = emit(base, operands, hint, **dict(n.attrs))
     outs = tuple(var_of[id(a)] for a in yielded.args) if yielded.op == "core.tuple" else (var_of[id(yielded)],)
     return Program(tuple(instrs)), outs

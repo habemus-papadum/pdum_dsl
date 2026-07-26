@@ -47,7 +47,6 @@ from __future__ import annotations
 import ast
 import hashlib
 from dataclasses import dataclass
-from types import SimpleNamespace
 
 import numpy as np
 from pdum.dsl import events
@@ -62,10 +61,19 @@ from pdum.dsl.value import _name as _value_name
 from pdum.dsl.value import _subscript as _value_subscript
 from pdum.dsl.valuekind import typeof
 
-from .dialect import TL_OPS, TL_RULES, TensorType, _globals_of, _tl_call, run_region, tensor_type
+from .dialect import (
+    TL_OPS,
+    TL_RULES,
+    TensorType,
+    _globals_of,
+    _lookup,
+    _tl_call,
+    capture_shim,
+    run_region,
+    tensor_type,
+)
 from .lifting import _Intrinsic
 from .markers import Marker
-from .mdsl import CompositeMarker
 from .producer import _captured
 from .tensor import Tensor
 
@@ -222,61 +230,6 @@ def _arg_fp(a) -> tuple:
 # ---- the kernel rule pack: a layer over the dialect pack --------------------
 
 
-def _kernel_handle(fn):
-    """A capture SHIM for kernel-tier lowering: the same snapshot/coherence
-    surface as a Handle, but closure values stay RAW — kernel bodies close
-    over helpers, markers, and staged transforms, which are compile-time
-    CITIZENS, not typed env slots (they never marshal; the env fingerprint
-    keys them instead)."""
-    from pdum.dsl import capture as _cap
-
-    snap = _cap._SNAPSHOTS.get(fn.__code__)
-    if snap is None:
-        snap = _cap._SNAPSHOTS[fn.__code__] = _cap._take_snapshot(fn)
-    env = {}
-    for name, cell in zip(fn.__code__.co_freevars, fn.__closure__ or ()):
-        try:
-            env[name] = cell.cell_contents
-        except ValueError:
-            pass
-    return SimpleNamespace(
-        snapshot=snap,
-        pyfunc=fn,
-        env=env,
-        freevars=fn.__code__.co_freevars,
-        fntype=SimpleNamespace(template=SimpleNamespace(label=fn.__qualname__)),
-        table=None,
-    )
-
-
-def _lookup(ctx, name):
-    """Kernel name resolution order: locals -> closure freevars (raw) ->
-    the body's globals."""
-    v = ctx.locals.get(name)
-    if v is None:
-        v = ctx.handle.env.get(name)
-    if v is None:
-        v = _globals_of(ctx).get(name)
-    return v
-
-
-class _NotHost(Exception):
-    """An AST argument is not a host value (it involves lowered IR)."""
-
-
-def _host_value(ctx, node):
-    if isinstance(node, ast.Constant):
-        return node.value
-    if isinstance(node, ast.Tuple):
-        return tuple(_host_value(ctx, e) for e in node.elts)
-    if isinstance(node, ast.Name):
-        v = _lookup(ctx, node.id)
-        if v is None or isinstance(v, Node) or (isinstance(v, tuple) and any(isinstance(x, Node) for x in v)):
-            raise _NotHost()
-        return v
-    raise _NotHost()
-
-
 def _claim(ctx, name, value):
     """The naming law IS the claiming mechanism (tagless, S.4 amendment):
     every uniquely-named binding is a site; a name bound more than once is
@@ -300,9 +253,9 @@ def _lower_args(ctx, call):
 
 
 def _k_call(ctx, node):
-    """Kernel call resolution, object-identity-first: the ambient, markers,
-    function-valued arguments (with staged recipes), the C1/C2 staging
-    door, and captured-helper inlining; the dialect pack serves the rest."""
+    """The kernel layer of call resolution: the ambient (iota-recording)
+    and function-valued arguments; everything else — markers, the staging
+    door, helper inlining, the S.1 vocabulary — is the shared dialect pack."""
     c = ctx.context
     if isinstance(node.func, ast.Name):
         name = node.func.id
@@ -312,54 +265,9 @@ def _k_call(ctx, node):
             out = tuple(ctx.emit("tl.iota", lattice, node=node, name=cst.value) for cst in node.args)
             c["k.iotas"].extend(out)
             return out  # ALWAYS a tuple
-        if isinstance(obj, (Marker, CompositeMarker)):
-            args = [ctx.lower(a) for a in node.args]
-            if any(isinstance(a, Node) and isinstance(a.type, TensorType) for a in args):
-                return ctx.emit("tl.pointwise", *args, node=node, f=obj.name)
         if obj is not None and getattr(obj, "fp", None) is not None:
             return _fn_arg(ctx, obj, _lower_args(ctx, node), None, node)
-        if callable(obj) and not isinstance(obj, (Marker, CompositeMarker, _Intrinsic)):
-            try:
-                h_args = [_host_value(ctx, a) for a in node.args]
-                h_kwargs = {kw.arg: _host_value(ctx, kw.value) for kw in node.keywords}
-            except _NotHost:
-                h_args = None
-            if h_args is not None:
-                # the declared staging door (240 C1/C2), kernel-side
-                if getattr(obj, "__staged__", False):
-                    result = obj(*h_args, **h_kwargs)
-                    if getattr(result, "fp", None) is None:
-                        raise ValueError(
-                            f"staged transform {name!r} returned {type(result).__name__!r}, not a "
-                            f"function citizen — staged transforms produce fp-carrying values"
-                        )
-                    c["k.recipes"][id(result)] = (obj, tuple(h_args), dict(h_kwargs))
-                    return result
-                result = obj(*h_args, **h_kwargs)  # structural host evaluation (implicit)
-                if getattr(result, "fp", None) is not None:
-                    raise ValueError(
-                        f"{name!r} returned a function value at lower time without being a "
-                        f"declared staged transform — decorate it with @staged "
-                        f"(pdum.dsl.staged), or build the value outside the body"
-                    )
-                return result
-            if hasattr(obj, "__code__"):  # a captured helper over lowered values: INLINE
-                return _k_inline(ctx, obj, _lower_args(ctx, node), node)
     return _tl_call(ctx, node)
-
-
-def _k_inline(ctx, fn, args, node):
-    """Capture-and-call: a plain helper inlines through a CHILD lowerer over
-    the same rules and the same build context — its bindings claim, and its
-    claims collide honestly (the naming law reaches inlined bodies)."""
-    handle = _kernel_handle(fn)
-    check_coherence(handle)
-    child = Lowerer(handle, ctx.rules, ctx.ops, ctx.derived, wrap=ctx.loc(node), context=ctx.context, root=ctx.root)
-    names = fn.__code__.co_varnames[: fn.__code__.co_argcount]
-    if len(names) != len(args):
-        raise TypeError(f"{fn.__qualname__} takes {len(names)} arguments, got {len(args)}")
-    child.locals.update(zip(names, args))
-    return child.run_body()
 
 
 def _resolve_staged(ctx, obj):
@@ -369,7 +277,7 @@ def _resolve_staged(ctx, obj):
     pname = next((n for n, v in c["k.fn_params"].items() if v is obj), None)
     if pname is not None:
         return pname, lambda cur: cur
-    rec = c["k.recipes"].get(id(obj))
+    rec = c.get("tl.recipes", {}).get(id(obj))
     if rec is None:
         return None, None
     fn, args, kwargs = rec
@@ -476,6 +384,9 @@ def _k_assign(ctx, node):
             raise ValueError("stores write into a tensor argument")
         _check_indices(ctx, tgt)
         value = _k_call(ctx, node.value) if isinstance(node.value, ast.Call) else ctx.lower(node.value)
+        if not hasattr(value, "type"):  # a scalar store broadcasts over the target lattice
+            dims = tuple((d.name, (d.start, d.stop)) for d in target.type.layout.dims)
+            value = ctx.emit("tl.const", node=node, value=float(value), dims=dims)
         tok = c.get("tl.token") or ctx.emit("tl.token", node=node)
         c["tl.token"] = ctx.emit("tl.store", tok, target, value, node=node)
         c["k.stored"].append(c["k.pname_of"][id(target)])
@@ -604,16 +515,15 @@ class _Artifact:
 
 
 def _compile(fn, args, tap_names=()) -> _Artifact:
-    handle = _kernel_handle(fn)
+    handle = capture_shim(fn)
     check_coherence(handle)
-    ctx = Lowerer(handle, KERNEL_RULES, {**CORE_OPS, **TL_OPS}, {}, context={"registry": DEFAULT})
+    ctx = Lowerer(handle, KERNEL_RULES, {**CORE_OPS, **TL_OPS}, {}, context={"registry": DEFAULT, "tl.kind": "compute"})
     c = ctx.context
     c.update(
         {
             "k.claims": {},
             "k.invalid": {},
             "k.claimed": set(),
-            "k.recipes": {},
             "k.fn_params": {},
             "k.fn_markers": {},
             "k.iotas": [],

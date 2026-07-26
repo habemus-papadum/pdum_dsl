@@ -138,12 +138,17 @@ class LiftedStep:
 def lift_step(fn, **bindings) -> LiftedStep:
     """Lift ``fn`` to a step Program. Bind every tensor parameter to a
     Layout (or Tensor, whose layout is taken) and every ``Literal``-annotated
-    parameter to a build-time value."""
+    parameter to a build-time value.
+
+    Since the pivot's step switch (240 C4.3d), the body lowers through the
+    ONE dsl Lowerer with the tl dialect pack and is rendered back as a
+    Program through the migration view — every consumer unchanged."""
+    from .dialect import export_program, lower_body, tensor_type_of_layout
+
     tree = _fn_ast(fn)
     anns = getattr(fn, "__annotations__", {})
-    lifter = _Lifter(_captured(fn))
     params = [a.arg for a in tree.args.args]
-    inputs = []
+    inputs, arg_types, host = [], [], {}
     for p in params:
         if p not in bindings:
             raise ValueError(f"parameter {p!r} is unbound — lift_step binds every parameter by name")
@@ -154,7 +159,7 @@ def lift_step(fn, **bindings) -> LiftedStep:
         if isinstance(ann, LiteralAnnotation):
             if not isinstance(v, ann.base):
                 raise ValueError(f"parameter {p!r} is Literal[{ann.base.__name__}]; got {v!r}")
-            lifter.env[p] = v
+            host[p] = v
             continue
         if isinstance(v, Tensor):
             v = v.layout
@@ -163,14 +168,14 @@ def lift_step(fn, **bindings) -> LiftedStep:
                 f"parameter {p!r} is tensor-typed (unannotated) but received {v!r} — "
                 f"structural parameters declare themselves: annotate `{p}: Literal[{type(v).__name__}]`"
             )
-        lifter.b.input(p)
-        lifter.shadows[p] = v
-        lifter.env[p] = _T(p, v)
+        arg_types.append(tensor_type_of_layout(v))
         inputs.append(p)
     if bindings:
         raise ValueError(f"unknown parameters bound: {sorted(bindings)}")
-    outs = lifter.run_body(tree)
-    return LiftedStep(lifter.b.program(), tuple(inputs), outs)
+    bound_names: dict = {}
+    region = lower_body(fn, tuple(arg_types), kind="step", host=host, out_names=bound_names)
+    program, outs = export_program(region, tuple(inputs), names_of=bound_names)
+    return LiftedStep(program, tuple(inputs), outs)
 
 
 class _Lifter:
