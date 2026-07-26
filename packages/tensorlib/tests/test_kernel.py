@@ -506,6 +506,39 @@ def test_uniform_slots_ride_the_dsl_marshaling_dialect():
     assert not any(n.op == "tl.uniform" for n in ops)
 
 
+def test_block_idx_default_geometry_and_split_geometry_warmth():
+    """P8 ambient raws: under the DEFAULT geometry one block spans the
+    lattice — block_idx is the zero field and thread_idx IS the global
+    coordinate; under explicit geometry the raws are iotas of the split
+    target's (block, thread) dim pairs, and the same geometry stays
+    WARM."""
+    from pdum.tl.kernel import block_idx  # noqa: F401 — resolved from the body's globals
+
+    @compute
+    def k_default(img):
+        (by,) = block_idx("y")
+        (ty,) = thread_idx("y")
+        img[ty] = by + ty  # by == 0 everywhere
+
+    img = T(np.zeros(4), ("y",))
+    k_default(img)
+    np.testing.assert_allclose(img.to_numpy(), np.arange(4.0))
+    with events.forbid("kernel.miss"):  # same (default) geometry: warm
+        k_default(img)
+
+    @compute
+    def k_split(tiled):
+        (by,) = block_idx("y")
+        (ty,) = thread_idx("y")
+        tiled[by, ty] = by * 4.0 + ty
+
+    base = T(np.zeros(8), ("y",))
+    k_split[config(blocks=(2,), threads=(4,))](base.split("y", by=2, ty=4))
+    with events.forbid("kernel.miss"):  # same geometry, same lattice: warm
+        k_split[config(blocks=(2,), threads=(4,))](base.split("y", by=2, ty=4))
+    np.testing.assert_allclose(base.to_numpy(), np.arange(8.0))
+
+
 def test_identical_ir_shares_one_executor_across_kernels():
     """240 C5.2: the content tier. Two kernels, two templates, ONE
     artifact — the second lowers (a spec miss: new code fp) but its

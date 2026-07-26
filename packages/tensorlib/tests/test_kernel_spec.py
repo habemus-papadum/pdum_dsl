@@ -25,7 +25,7 @@ import numpy as np
 import pytest
 from pdum.dsl.intrinsics import clamp
 from pdum.dsl.markers import sqrt
-from pdum.tl import Tensor, compute, thread_idx
+from pdum.tl import Tensor, block_idx, compute, thread_idx  # noqa: F401 — ambient vocabulary in bodies
 from pdum.tl.kernel import config
 
 P8 = pytest.mark.skip(reason="specified now; lands at P8 (graphics + the value-tier derivative engine)")
@@ -71,7 +71,6 @@ def test_raw_block_thread_ambient_and_derived_global():
     np.testing.assert_allclose(img.to_numpy(), 0.0)
 
 
-@P8
 def test_split_aligned_tensors_index_by_raw_coordinates():
     """A tensor already split to the (block, thread) lattice is indexed
     by the RAW pair directly — respecting the split, no global round
@@ -81,7 +80,7 @@ def test_split_aligned_tensors_index_by_raw_coordinates():
 
     @compute
     def k(tiled):
-        (by,) = block_idx("y")  # noqa: F821
+        (by,) = block_idx("y")
         (ty,) = thread_idx("y")
         tiled[by, ty] = by * 8.0 + ty  # the global coordinate, via raws alone
 

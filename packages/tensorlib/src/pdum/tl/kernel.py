@@ -90,6 +90,7 @@ _EXECUTOR_FP = ("run_region", "numpy")
 _ARG_BINDINGS: dict[str, object] = {}  # marker name -> the CURRENT handle (per launch)
 
 thread_idx = _Intrinsic("thread_idx")
+block_idx = _Intrinsic("block_idx")  # the RAW pair's other half (S.3: raws are the primitives)
 
 
 @dataclass(frozen=True)
@@ -148,8 +149,14 @@ class ComputeKernel:
                 "slot is reserved; see test_kernel_spec for the committed syntax"
             )
         tap_names = tuple(n for n, _ in cfg.taps)
+        geom = (cfg.blocks, cfg.threads) if cfg.blocks is not None or cfg.threads is not None else None
         key = (_code_fp(self.fn), _env_fp(self.fn), tuple(_arg_fp(a) for a in args), tap_names)
-        art = KERNELS.get_or_compile(key, lambda: _compile(self.fn, args, tap_names))
+        art = KERNELS.get_or_compile(key, lambda: _compile(self.fn, args, tap_names, geom))
+        if art.geom_used and art.geometry != geom:
+            # the value-specialized carve-out (S.3): a geometry-consuming body
+            # re-renders per geometry; identity (the entry above) never changes
+            gkey = (*key, ("geom", geom))
+            art = KERNELS.get_or_compile(gkey, lambda: _compile(self.fn, args, tap_names, geom))
         return art.launch(args, dict(cfg.taps))
 
     def taps(self, *args) -> dict:
@@ -263,6 +270,43 @@ def _lower_args(ctx, call):
     return tuple(tuple(ctx.lower(e) for e in a.elts) if isinstance(a, ast.Tuple) else ctx.lower(a) for a in call.args)
 
 
+def _axis_pairs(ctx, lattice):
+    """The launch geometry's per-axis (block dim, thread dim) pairs on the
+    writable lattice: consecutive dims whose extents match config(blocks,
+    threads). The raws are iotas of these dims — a tensor already split to
+    the launch lattice is indexed by the raw pair directly (S.3)."""
+    blocks, threads = ctx.context["k.geom"]
+    dims = lattice.type.dims
+    pairs, i = [], 0
+    for b, t in zip(blocks or (), threads or ()):
+        if i + 1 < len(dims) and dims[i][2] - dims[i][1] == b and dims[i + 1][2] - dims[i + 1][1] == t:
+            pairs.append((dims[i][0], dims[i + 1][0]))
+            i += 2
+        else:
+            raise ValueError(
+                f"config(blocks={blocks}, threads={threads}) wants the writable lattice split "
+                f"per axis into (block, thread) dim pairs; its dims are "
+                f"{tuple(d[0] for d in dims)} — split the target to the launch geometry"
+            )
+    return pairs
+
+
+def _ambient_iota(ctx, kind, axis, name, lattice, node):
+    """One raw coordinate. Geometry ENGAGES only when the body names
+    block_idx: under the default geometry one block spans the lattice
+    (thread_idx IS the global coordinate — why every plain kernel reads
+    unchanged — and block_idx is the zero field); under explicit geometry
+    the raws are iotas of the split target's per-axis dim pairs, bound
+    positionally in call order."""
+    if ctx.context["k.geom"] is None:  # the default: ONE block spans the lattice
+        if kind == "block_idx":
+            dims = tuple((d[0], (d[1], d[2])) for d in lattice.type.dims)
+            return ctx.emit("tl.const", node=node, value=0.0, dims=dims)
+        return ctx.emit("tl.iota", lattice, node=node, name=name)
+    b_dim, t_dim = _axis_pairs(ctx, lattice)[axis]
+    return ctx.emit("tl.iota", lattice, node=node, name=b_dim if kind == "block_idx" else t_dim)
+
+
 def _k_call(ctx, node):
     """The kernel layer of call resolution: the ambient (iota-recording)
     and function-valued arguments; everything else — markers, the staging
@@ -271,9 +315,15 @@ def _k_call(ctx, node):
     if isinstance(node.func, ast.Name):
         name = node.func.id
         obj = _lookup(ctx, name)
-        if isinstance(obj, _Intrinsic) and obj.name == "thread_idx":
+        if isinstance(obj, _Intrinsic) and obj.name in ("thread_idx", "block_idx"):
             lattice = ctx.root.params[-1]  # the writable target (S.3 convention)
-            out = tuple(ctx.emit("tl.iota", lattice, node=node, name=cst.value) for cst in node.args)
+            if obj.name == "block_idx" or c["k.geom_engaged"]:
+                c["k.geom_used"] = True
+                out = tuple(
+                    _ambient_iota(ctx, obj.name, i, cst.value, lattice, node) for i, cst in enumerate(node.args)
+                )
+            else:  # no block_idx anywhere: thread_idx IS the global coordinate, config inert
+                out = tuple(ctx.emit("tl.iota", lattice, node=node, name=cst.value) for cst in node.args)
             c["k.iotas"].extend(out)
             return out  # ALWAYS a tuple
         if obj is not None and getattr(obj, "fp", None) is not None:
@@ -643,6 +693,8 @@ class _Artifact:
     tap_sites: dict  # site name -> lattice dim names (valid sites)
     invalid_taps: dict  # site name -> reason (the naming law met inlining)
     requested_taps: tuple = ()  # the name set this artifact was built for
+    geom_used: bool = False  # the body reads raws whose meaning depends on geometry
+    geometry: tuple | None = None  # the (blocks, threads) this artifact was built under
 
     def launch(self, args, taps=None):
         bound = dict(zip(self.params, args))
@@ -685,7 +737,7 @@ def _executor(region: Region):
     return lambda values, staging: run_region(region, values, uniforms=staging)
 
 
-def _compile(fn, args, tap_names=()) -> _Artifact:
+def _compile(fn, args, tap_names=(), geom=None) -> _Artifact:
     handle = capture_shim(fn)
     check_coherence(handle)
     ctx = Lowerer(
@@ -705,6 +757,9 @@ def _compile(fn, args, tap_names=()) -> _Artifact:
             "k.uniforms": {},
             "k.uniform_size": 0,
             "k.arg_plans": {},
+            "k.geom": geom,
+            "k.geom_engaged": "block_idx" in fn.__code__.co_names + fn.__code__.co_freevars,
+            "k.geom_used": False,
         }
     )
     names = fn.__code__.co_varnames[: fn.__code__.co_argcount]
@@ -766,7 +821,9 @@ def _compile(fn, args, tap_names=()) -> _Artifact:
         tap_sites=tap_sites,
         invalid_taps=dict(c["k.invalid"]),
         requested_taps=tuple(tap_names),
+        geom_used=c["k.geom_used"],
+        geometry=geom,
     )
 
 
-__all__ = ["ComputeKernel", "Config", "compute", "config", "shared", "thread_idx"]
+__all__ = ["ComputeKernel", "Config", "block_idx", "compute", "config", "shared", "thread_idx"]
