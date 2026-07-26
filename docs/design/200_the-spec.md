@@ -1683,9 +1683,15 @@ masks, cancellation, non-divisible tails), never random draws alone.
 Assurance tier and input-domain coverage are recorded fields of every
 registry entry. The mma selection question (pattern-match vs stated
 annotation) carries the §6.6b GPT-2 worked case. Scheduled inside the
-L4 runway: the **Program-normalization pass** (the precondition of the
-registry's cross-model payoff; until it lands the content-addressed
-tiers stay declared-private), **stream/overlap semantics** (no
+L4 runway: **the tensor tier's retarget to regions — the FIRST L4 act,
+before any rewrite-driver work** (the step/assemblage consumers move
+off the migration view one at a time: signatures/opcount/memory first,
+the transforms next, autodiff last, gated by the partition-law
+differential; `export_program` and the Program IR die together at its
+end — building descent machinery over the dying representation is the
+failure mode this ordering forbids); the **Program-normalization
+pass** (the precondition of the registry's cross-model payoff; until
+it lands the content-addressed tiers stay declared-private), **stream/overlap semantics** (no
 `stream=` appears in any sample until this design exists), the warp
 vocabulary, the external-oracle fixtures, and the per-type
 operator-extension door (geometric algebra's registration surface).
