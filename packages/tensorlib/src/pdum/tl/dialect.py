@@ -612,3 +612,75 @@ def fold_grad(step: Region, vjp: Region, init, src, dim: str, *, slots: int | No
         for q in reversed(range(base, end)):
             ds = run_region(vjp, [states[q - base], src.select(**{dim: q}), ds])
     return ds
+
+
+# --- the migration view: regions rendered as incumbent Programs --------------
+
+
+def export_program(region: Region, param_names: tuple):
+    """The MIGRATION VIEW (240 C4.3c): render a dialect region as an
+    incumbent ``Program``, so every Program consumer — autodiff (max/scan/
+    layout adjoints included), signatures, opcount, memory — serves regions
+    UNCHANGED while lowering moves onto the one engine. Adjoint knowledge
+    stays single-copy (the incumbent's, battle-tested); this view dies when
+    the last consumer retargets. Returns ``(program, output_vars)``."""
+    from pdum.dsl.naming import Namer
+
+    from .ir import Program
+
+    names = Namer()
+    instrs: list = []
+    var_of: dict[int, str] = {}
+    for pname, p in zip(param_names, region.params):
+        names.claim(pname)
+        instrs.append(Instr(pname, "input", (), {}))
+        var_of[id(p)] = pname
+
+    def emit(op, operands, hint, **params):
+        var = names.derive(hint)
+        instrs.append(Instr(var, op, tuple(operands), params))
+        return var
+
+    def const_for(value, ref):
+        """A scalar const materialized over the REFERENCE operand's layout,
+        charts/labels/placement restamped so eager alignment holds (the
+        incumbent const_like discipline, ported)."""
+        lay = ref.type.layout
+        if lay is None:
+            raise TypeError("export_program needs layout shadows on tensor operands")
+        dims = tuple((d.name, (d.start, d.stop)) for d in lay.dims)
+        v = emit("const", (), "c", value=float(value), dims=dims)
+        charts = {d.name: d.chart for d in lay.dims if d.labels is None}
+        labels = {d.name: d.labels for d in lay.dims if d.labels is not None}
+        if any(c is not None for c in charts.values()):
+            v = emit("with_charts", (v,), "c", charts=charts)
+        if labels:
+            v = emit("with_labels", (v,), "c", labels=labels)
+        levels = {d.name: d.level for d in lay.dims}
+        if any(lv is not None for lv in levels.values()):
+            v = emit("bind", (v,), "c", levels=levels)
+        return v
+
+    yielded = region.body[-1].args[0]
+    for n in walk_region(region):
+        if id(n) in var_of or n.op in ("core.yield", "core.const"):
+            continue  # consts materialize at their use sites, with a reference layout
+        if n.op == "tl.fold":
+            raise TypeError("export_program: fold regions arrive with the assemblage slice")
+        if n.op == "core.tuple":
+            if n is not yielded:
+                raise TypeError("export_program: interior tuples have no Program spelling")
+            continue
+        if not n.op.startswith("tl."):
+            raise TypeError(f"export_program: {n.op!r} has no Program spelling")
+        base = n.op[3:]
+        ref = next((a for a in n.args if isinstance(a.type, TensorType)), None)
+        operands = []
+        for a in n.args:
+            if a.op == "core.const":
+                operands.append(const_for(dict(a.attrs)["value"], ref))
+            else:
+                operands.append(var_of[id(a)])
+        var_of[id(n)] = emit(base, operands, base.rsplit(".", 1)[-1], **dict(n.attrs))
+    outs = tuple(var_of[id(a)] for a in yielded.args) if yielded.op == "core.tuple" else (var_of[id(yielded)],)
+    return Program(tuple(instrs)), outs

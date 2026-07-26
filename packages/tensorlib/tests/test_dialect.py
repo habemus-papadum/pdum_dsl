@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from pdum.dsl.ir import Builder, Region
 from pdum.tl import Tensor, compute, thread_idx  # noqa: F401 — thread_idx: bodies' global
-from pdum.tl.compute import const_like, pointwise, reduce  # noqa: F401 — S.1 spellings in bodies
+from pdum.tl.compute import const_like, pointwise, reduce, repeat_like  # noqa: F401 — S.1 spellings in bodies
 from pdum.tl.dialect import (
     CORE_OPS,
     TL_OPS,
@@ -294,3 +294,81 @@ def test_vjp_pass1_refuses_unsupported_reducers():
     region = lower_body(peak, (tensor_type(x),), kind="step")
     with pytest.raises(TypeError, match=r"reducer 'max' adjoint arrives.*sum/mean today"):
         check_vjp_supported(region)
+
+
+# --- C4.3c: the migration view (region -> Program) ---------------------------
+
+
+def test_export_round_trips_the_theorem_step():
+    """A dialect region rendered as an incumbent Program runs bit-identical
+    to the incumbent lift_step of the same function."""
+    from pdum.tl.dialect import export_program
+    from pdum.tl.ir import run
+    from pdum.tl.lifting import lift_step
+
+    s0, mask, _ = _theorem_setup()
+    m = Tensor.from_numpy(np.zeros(4), ("x",))
+    region = lower_body(_theorem_step, (tensor_type(s0), tensor_type(m)), kind="step")
+    prog, outs = export_program(region, ("s", "m"))
+    got = run(prog, {"s": s0, "m": m})[outs[0]]
+    ls = lift_step(_theorem_step, s=s0.layout, m=m.layout)
+    want = run(ls.program, {"s": s0, "m": m})[ls.outputs[0]]
+    np.testing.assert_array_equal(got.to_numpy(order=("x",)), want.to_numpy(order=("x",)))
+
+
+def test_export_grad_max_reduce_and_layout_ops_bit_identical():
+    """THE C4.3c crown: the INCUMBENT autodiff — first-occurrence masks
+    (the partition law, ties included), layout-op adjoints — runs over an
+    EXPORTED region and matches the incumbent-lifted path bit-for-bit.
+    Adjoint knowledge stays single-copy; regions get it through the view."""
+    from pdum.tl.autodiff import grad
+    from pdum.tl.dialect import export_program
+    from pdum.tl.ir import Instr, Program, run
+    from pdum.tl.lifting import lift_step
+
+    def spiky(x):
+        m = reduce(red.max, x, "d")  # ties below: the partition law must hold
+        e = x - repeat_like(m, x)
+        s = e.shift(d=1).slice(d=(1, 8)).pad(d=(0, 8), fill=0.0)
+        return s * 2.0
+
+    arr = np.arange(40.0).reshape(5, 8)
+    arr[2, 3] = arr[2, 7] = 99.0  # a TIE along the reduced dim
+    x = Tensor.from_numpy(arr, ("t", "d"))
+
+    def with_loss(prog, out):
+        return Program((*prog.instrs, Instr("zloss", "reduce", (out,), {"f": "sum", "dims": ("t", "d")})))
+
+    region = lower_body(spiky, (tensor_type(x),), kind="step")
+    prog_a, outs = export_program(region, ("x",))
+    ja, ga = grad(with_loss(prog_a, outs[0]), "zloss", {"x": x})
+    got = run(ja, {"x": x})[ga["x"]]
+    ls = lift_step(spiky, x=x.layout)
+    jb, gb = grad(with_loss(ls.program, ls.outputs[0]), "zloss", {"x": x})
+    want = run(jb, {"x": x})[gb["x"]]
+    np.testing.assert_array_equal(got.to_numpy(order=("t", "d")), want.to_numpy(order=("t", "d")))
+    assert not np.array_equal(got.to_numpy(), np.zeros((5, 8)))
+
+
+def test_export_multi_output_step():
+    """A two-output step (the FDTD shape) exports with both outputs and
+    runs bit-identical to the incumbent lift."""
+    from pdum.tl.dialect import export_program
+    from pdum.tl.ir import run
+    from pdum.tl.lifting import lift_step
+
+    def leap(E, H):
+        H1 = H + E.shift(x=-1).slice(x=(0, 9)).pad(x=(0, 10), fill=0.0) * 0.5
+        E1 = E + H1 * 0.25
+        return E1, H1
+
+    rng = np.random.default_rng(9)
+    E = Tensor.from_numpy(rng.standard_normal(10), ("x",))
+    H = Tensor.from_numpy(rng.standard_normal(10), ("x",))
+    region = lower_body(leap, (tensor_type(E), tensor_type(H)), kind="step")
+    prog, outs = export_program(region, ("E", "H"))
+    env = run(prog, {"E": E, "H": H})
+    ls = lift_step(leap, E=E.layout, H=H.layout)
+    env_b = run(ls.program, {"E": E, "H": H})
+    for got_v, want_v in zip(outs, ls.outputs):
+        np.testing.assert_array_equal(env[got_v].to_numpy(order=("x",)), env_b[want_v].to_numpy(order=("x",)))

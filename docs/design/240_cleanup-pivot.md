@@ -553,3 +553,28 @@ L4; B: tl.uniform→abi at C5) recorded on their steps above,
 owner-acked. 608 passed at land. *Next slices:* first-occurrence-mask
 reducers + scan + layout-op adjoints, then the lift_step/assemblage
 switch (deleting the incumbent lowering as superseded).
+
+**C4.3c — the migration view (landed; ROUTE CHANGE, recorded
+honestly).** The plan said "refactor the incumbent's adjoint rules
+against an emitter protocol." Reading the max/min partition chain
+(closures over the Program builder, ~60 intricate lines) showed that
+transcription or extraction both risk the most delicate knowledge in
+the codebase for no consumer's benefit yet. The cheaper, safer route
+per the pivot's own bridge philosophy: **`export_program(region,
+names)`** — a dialect region rendered as an incumbent `Program`
+(generic op mapping, consts materialized at use sites with the
+incumbent's chart/label/placement restamp discipline, multi-output
+tuples → output lists) — so every Program consumer serves regions
+UNCHANGED: autodiff with its max/scan/layout adjoints, signatures,
+opcount, memory. Adjoint knowledge stays SINGLE-COPY (the incumbent's,
+battle-tested); the region-native `derive_vjp` remains for its live
+uses and grows opportunistically; the view dies when the last
+consumer retargets. **Crown pin:** the incumbent autodiff — the
+partition law with a TIE in the reduced dim, plus shift/slice/pad
+adjoints — runs over an exported region bit-identical to the
+incumbent-lifted path. Plus round-trip and two-output (FDTD-shaped)
+export pins. 611 passed at land. *Next:* move the plain-helper inline
+branch + staging door from the kernel pack into the shared dialect
+pack, then switch `lift_step` onto lower_body+export behind its
+existing API (message-parity work: the step tier's pinned refusal
+voices), then assemblage, deleting `_Lifter` when both are off it.
