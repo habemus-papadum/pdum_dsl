@@ -394,9 +394,10 @@ def test_staged_transforms_compose_and_restage():
 _C1_SCALE = 2.0
 
 
-def test_rebound_captured_global_misses_never_stale():
-    """The env fingerprint (240 C1): a rebound global the body reads is a
-    MISS with the new value — the dsl guards' kernel-tier answer."""
+def test_unmarked_captured_scalar_is_data_warm_hit_fresh_value():
+    """THE LITERAL DOCTRINE (240 C4.2b, owner-ruled): an unmarked captured
+    scalar is DATA — a per-launch uniform slot. Rebinding it is a WARM HIT
+    with the fresh value: no recompile, never stale."""
 
     @compute
     def k(img):
@@ -408,10 +409,39 @@ def test_rebound_captured_global_misses_never_stale():
     np.testing.assert_allclose(img.to_numpy(), np.arange(3.0) * 2.0)
     globals()["_C1_SCALE"] = 7.0
     try:
-        k(img)  # a different environment IS a different kernel
+        with events.forbid("kernel.miss"):  # data changed, the PROGRAM did not
+            k(img)
         np.testing.assert_allclose(img.to_numpy(), np.arange(3.0) * 7.0)
     finally:
         globals()["_C1_SCALE"] = 2.0
+
+
+from pdum.dsl import literal  # noqa: E402
+
+_C4_GAIN = literal(3.0)
+
+
+def test_literal_wrapped_capture_bakes_and_recompiles_by_choice():
+    """The declared door: literal(...) bakes the value into the program and
+    keys identity — changing it RECOMPILES, because the user chose that."""
+
+    @compute
+    def k(img):
+        (y,) = thread_idx("y")
+        img[y] = y * _C4_GAIN
+
+    img = T(np.zeros(3), ("y",))
+    k(img)
+    np.testing.assert_allclose(img.to_numpy(), np.arange(3.0) * 3.0)
+    globals()["_C4_GAIN"] = literal(5.0)
+    try:
+        with pytest.raises(events.EventForbidden):
+            with events.forbid("kernel.miss"):  # a different literal IS a different program
+                k(img)
+        k(img)  # and the recompiled program computes with the new literal
+        np.testing.assert_allclose(img.to_numpy(), np.arange(3.0) * 5.0)
+    finally:
+        globals()["_C4_GAIN"] = literal(3.0)
 
 
 def _c1_helper(v):

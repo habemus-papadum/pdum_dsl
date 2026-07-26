@@ -24,7 +24,7 @@ from .pipe import op  # noqa: E402
 from .reference import reference  # noqa: E402
 from .registry import DEFAULT, Registry  # noqa: E402
 from .staging import macro, staged  # noqa: E402
-from .types import Literal  # noqa: E402 — the §1.5 annotation door
+from .types import Literal, literal  # noqa: E402 — the literal doctrine's doors
 
 __version__ = "0.0.0+dev"
 
@@ -67,6 +67,7 @@ __all__ = [
     "__version__",
     "install",
     "Literal",
+    "literal",
     "jit",
     "no_compile",
     "op",

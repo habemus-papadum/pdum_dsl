@@ -466,3 +466,28 @@ tier (reduce/scan, the layout family, charts/labels/levels + dtype in
 TensorType, autodiff/signatures/opcount retarget), then C5 (dispatch
 alignment: coherence + guards + two-tier caches for kernels), C6
 graduation.
+
+**C4.2b — THE LITERAL DOCTRINE (owner-ruled, landed).** The C4.2
+scalar treatment was convicted as an anti-pattern and replaced.
+The rule: **untagged is data, always** — an unmarked scalar reaching
+a body (captured global, closure value) is runtime data: it becomes a
+per-launch UNIFORM SLOT (`tl.uniform`, re-read from the environment
+at every launch), warm on change, its value never entering identity
+(the env fingerprint keys its name and TYPE only). A value becomes a
+compile-time constant only through a DECLARED door, of which there
+are three with one meaning: the operator-definition annotation
+(`n: Literal[int]` — everything passed there is structural; the
+already-settled §1.5 door), the call site (`f(literal(k), ...)`), and
+the value's definition site (`C = literal(0.79...)` — new
+`pdum.dsl.literal`/`LiteralValue`). Declared literals bake and
+value-key — recompiling on change is then CHOSEN. Source-text
+constants are code, not captures: inside the code fingerprint,
+unaffected. Machinery (fold/reduce) gets NO scalar special cases:
+operators declare their structural slots and pass-1 CHECKS that
+incoming IR is compile-time constant, refusing with the reason.
+Pinned both ways: rebinding an unmarked global is a warm hit with the
+fresh value under `forbid("kernel.miss")`; rebinding a
+`literal(...)`-wrapped one is a refused miss under forbid and
+computes the new value on recompile. Budget: owner raised the total
+cap 3000 → 3400 for the migration ("don't bang your head");
+re-measure at C6. 603 passed at land.

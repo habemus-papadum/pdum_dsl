@@ -28,18 +28,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 KERNEL = ROOT / "packages" / "dsl" / "src" / "pdum" / "dsl"
 
-KERNEL_TOTAL_CAP = 3000  # P1 redraw: measured 2253 at the move + headroom for the
+KERNEL_TOTAL_CAP = 3400  # P1 redraw: measured 2253 at the move + headroom for the
 # P4-P7 installments (random fields, scope, stores); each future raise is a
 # conscious act with the reason recorded here.
 # P8 raise (owner-ruled, 2026-07-25): 2600 -> 3000 after the derivative engine
 # + numpy-authority vocabulary landed at 2594 — "the cap must not drive design
 # too hard here"; the tripwire stays, the headroom funds the P8 installments.
+# Pivot raise (owner-ruled, 2026-07-26): 3000 -> 3400 for the C4+ migration —
+# "don't bang your head trying to fit everything into the budget"; the
+# tripwire stays, and C6 graduation is the natural point to re-measure.
 
 # Per-file caps. Engine files carry their pre-move caps (same code, same
 # discipline); the P1 arrivals were capped at their measured size + slack.
 FILE_CAPS = {
-    "__init__.py": 45,  # install + version anchor (P8: +value_and_grad API + derivative install, was 40)
-    "types.py": 115,  # P4: +Literal/LiteralAnnotation — the §1.5 annotation door (was 100)
+    "__init__.py": 50,  # install + version anchor (P8/pivot: +value_and_grad/staged/macro/literal API, was 45)
+    "types.py": 125,  # C4.2b: +literal()/LiteralValue — the value-site doors (was 115)
     "valuekind.py": 95,
     "capture.py": 85,
     "api.py": 50,

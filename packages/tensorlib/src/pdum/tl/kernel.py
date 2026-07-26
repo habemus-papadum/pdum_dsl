@@ -56,6 +56,7 @@ from pdum.dsl.ir import Node, Region
 from pdum.dsl.lower import Lowerer, check_coherence
 from pdum.dsl.ops import CORE_OPS
 from pdum.dsl.registry import DEFAULT
+from pdum.dsl.types import LiteralValue
 from pdum.dsl.value import _assign as _value_assign
 from pdum.dsl.value import _name as _value_name
 from pdum.dsl.value import _subscript as _value_subscript
@@ -190,7 +191,11 @@ def _env_fp(fn, _seen=None) -> tuple:
             out.append((n, "marker", v.name))
         elif getattr(v, "fp", None) is not None:
             out.append((n, "fn", v.fp))
-        elif isinstance(v, (int, float, bool, str, bytes, type(None))):
+        elif isinstance(v, LiteralValue):  # declared structural: the VALUE keys
+            out.append((n, "lit", v.value))
+        elif isinstance(v, (int, float, bool)):  # unmarked scalars are DATA: type keys, value flows
+            out.append((n, "data", type(v).__name__))
+        elif isinstance(v, (str, bytes, type(None))):
             out.append((n, "val", v))
         elif callable(v) and hasattr(v, "__code__"):
             mod = getattr(v, "__module__", "") or ""
@@ -524,18 +529,27 @@ def _k_subscript(ctx, node):
 
 
 def _k_name(ctx, node):
-    """Names resolve locals-first; a HOST SCALAR freevar or global
-    const-lifts (module constants are kernel vocabulary — keyed by the env
-    fingerprint, so rebinding one is a miss, never staleness). Host
-    CITIZENS (helpers, markers, staged results) are consumed at call
-    sites, never as expression values."""
+    """Names resolve locals-first. The LITERAL DOCTRINE (240 C4.2b,
+    owner-ruled): an UNMARKED host scalar is DATA — it becomes a per-launch
+    uniform slot, warm on change, its value never entering identity; only a
+    ``literal(...)``-wrapped value bakes as a compile-time constant (and
+    then recompiling on change is chosen). Host CITIZENS (helpers, markers,
+    staged results) are consumed at call sites, never as expression
+    values."""
     if node.id in ctx.locals:
         return ctx.locals[node.id]  # Nodes and host bindings alike
     v = ctx.handle.env.get(node.id, None)
     if v is None:
         v = _globals_of(ctx).get(node.id)
-    if isinstance(v, (int, float, bool)):
-        return ctx.emit("core.const", node=node, type=typeof(v), value=v)
+    if isinstance(v, LiteralValue):  # declared structural: bake, value-keyed
+        return ctx.emit("core.const", node=node, type=typeof(v.value), value=v.value)
+    if isinstance(v, (int, float, bool)):  # unmarked: DATA — a uniform slot
+        c = ctx.context
+        cached = c["k.uniforms"].get(node.id)
+        if cached is None:
+            cached = ctx.emit("tl.uniform", node=node, type=typeof(v), name=node.id)
+            c["k.uniforms"][node.id] = cached
+        return cached
     if v is not None:
         raise ValueError(f"{node.id!r} is a host citizen here — kernels use it at a call site, not as a value")
     return _value_name(ctx, node)  # the proper refusal voice
@@ -556,6 +570,8 @@ KERNEL_RULES = {
 @dataclass(frozen=True)
 class _Artifact:
     region: Region
+    fn: object  # the kernel fn — uniform slots re-read its environment per launch
+    uniforms: tuple  # captured-scalar slot names (DATA: fresh every launch)
     params: tuple  # kernel parameter names, in order
     tensor_params: tuple  # tensor parameter names, region-param order
     writable: tuple  # parameter names that are stored to (incl. tap buffers)
@@ -582,7 +598,8 @@ class _Artifact:
             for mname in mnames:
                 _ARG_BINDINGS[mname] = bound[name]
         values = [bound[n] for n in self.tensor_params] + [bound[f"tap:{n}"] for n in self.requested_taps]
-        run_region(self.region, values)
+        env = _captured(self.fn) if self.uniforms else {}
+        run_region(self.region, values, uniforms={n: env[n] for n in self.uniforms})
         return None  # stores are the effect; kernels return nothing (taps included)
 
 
@@ -602,6 +619,7 @@ def _compile(fn, args, tap_names=()) -> _Artifact:
             "k.iotas": [],
             "k.stored": [],
             "k.pname_of": {},
+            "k.uniforms": {},
         }
     )
     names = fn.__code__.co_varnames[: fn.__code__.co_argcount]
@@ -649,6 +667,8 @@ def _compile(fn, args, tap_names=()) -> _Artifact:
     tap_sites = {n: tuple(d[0] for d in v.type.dims) for n, v in c["k.claims"].items()}
     return _Artifact(
         region=region,
+        fn=fn,
+        uniforms=tuple(sorted(c["k.uniforms"])),
         params=tuple(names),
         tensor_params=tuple(tensor_names),
         writable=tuple(dict.fromkeys(c["k.stored"])),

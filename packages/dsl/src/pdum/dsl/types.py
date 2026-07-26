@@ -146,6 +146,24 @@ class Literal:
         return LiteralAnnotation(base)
 
 
+@dataclass(frozen=True, slots=True)
+class LiteralValue:
+    """A VALUE declared structural at its definition or call site."""
+
+    value: object
+
+
+def literal(value) -> LiteralValue:
+    """The literal doctrine's other two doors (240 C4.2b): ``C =
+    literal(0.79)`` at a definition site, or ``f(literal(k), ...)`` at a
+    call site, declares the value a COMPILE-TIME CONSTANT — it bakes into
+    the program and enters identity (changing it recompiles, by choice).
+    UNMARKED values are always DATA: typed, channel-riding, warm on
+    change. The annotation door (``n: Literal[int]``) declares the same
+    thing at an operator's definition site, per parameter."""
+    return value if isinstance(value, LiteralValue) else LiteralValue(value)
+
+
 # --- template identity -------------------------------------------------------
 
 

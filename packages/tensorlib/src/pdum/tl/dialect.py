@@ -126,6 +126,7 @@ def _r_fold(args, attrs, regions):
 
 TL_OPS = {
     "tl.token": OpDef("tl.token", lambda a, at, r: TokenType(), PURE),
+    "tl.uniform": OpDef("tl.uniform", None, PURE),  # a per-launch scalar slot (type passed explicitly)
     "tl.iota": OpDef("tl.iota", _r_iota, PURE),
     "tl.pointwise": OpDef("tl.pointwise", _r_pointwise, PURE),
     "tl.store": OpDef("tl.store", _r_store, PURE),  # the effect rides the token
@@ -356,10 +357,12 @@ def derive_step_vjp(step: Region, ops=None) -> Region:
 # --- the evaluation column (ir.run's successor for this dialect) -------------
 
 
-def run_region(region: Region, values: list):
+def run_region(region: Region, values: list, uniforms: dict | None = None):
     """Evaluate a dialect region over tl Tensors — fields slice at ABSOLUTE
     coordinates, so closed-form random fields regenerate exactly. Stores
-    write through the target's buffer (the ONE effect, token-ordered)."""
+    write through the target's buffer (the ONE effect, token-ordered);
+    ``uniforms`` binds per-launch scalar slots (unmarked captures are DATA
+    — the literal doctrine, 240 C4.2b)."""
     memo: dict[int, object] = {}
     by_param = {id(p): v for p, v in zip(region.params, values)}
 
@@ -378,6 +381,8 @@ def run_region(region: Region, values: list):
             return ev(n.args[0])
         if n.op == "tl.token":
             return Token()
+        if n.op == "tl.uniform":
+            return (uniforms or {})[attrs["name"]]
         if n.op == "tl.iota":
             return _eager_iota(ev(n.args[0]), attrs["name"])
         if n.op == "tl.pointwise":
