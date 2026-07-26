@@ -184,3 +184,57 @@ def test_b_pass1_refuses_unsupported_shapes_with_the_reason():
     bad = Region(params=(p, b.param(("st", 1), tt)), body=(b.emit("core.yield", rogue),))
     with pytest.raises(TypeError, match=r"contains 'tl.iota'.*does not support yet.*no region rule"):
         check_fold_step_supported(bad)
+
+
+# --- C4.3a: the step-tier op families, bridged -------------------------------
+
+
+def test_step_layernorm_differential_single_source():
+    """THE flagship C4.3a differential: the ZOO's layernorm — verbatim,
+    untouched — lowered through the dialect (reduce/repeat_like/pointwise
+    bridged onto infer_instr/eval_instr) vs the same function run EAGERLY
+    on tensors (the S.1 denotational reference). Identical bytes."""
+    from pdum.tl.zoo.zoo_common import layernorm
+
+    rng = np.random.default_rng(7)
+    x = Tensor.from_numpy(rng.standard_normal((5, 8)), ("t", "d"))
+    g = Tensor.from_numpy(rng.standard_normal(8), ("d",))
+    b = Tensor.from_numpy(rng.standard_normal(8), ("d",))
+    want = layernorm(x, g, b, feat="d", eps=1e-5)  # eager: the reference
+    region = lower_body(
+        layernorm,
+        (tensor_type(x), tensor_type(g), tensor_type(b)),
+        kind="step",
+        host={"feat": "d", "eps": 1e-5},
+    )
+    got = run_region(region, [x, g, b])
+    np.testing.assert_array_equal(got.to_numpy(order=("t", "d")), want.to_numpy(order=("t", "d")))
+
+
+def test_step_layout_chain_differential():
+    """The layout-method family through the dialect: shift/slice/pad as
+    tl.* ops whose type rules ARE the incumbent shadow inference — vs the
+    same chain evaluated eagerly. Identical bytes."""
+
+    def stencil(E):
+        dE = E.shift(x=-1).slice(x=(0, 9)) - E.slice(x=(0, 9))
+        return dE.pad(x=(0, 10), fill=0.0)
+
+    rng = np.random.default_rng(3)
+    E = Tensor.from_numpy(rng.standard_normal(10), ("x",))
+    want = stencil(E)  # eager: Tensor methods
+    region = lower_body(stencil, (tensor_type(E),), kind="step")
+    got = run_region(region, [E])
+    np.testing.assert_array_equal(got.to_numpy(order=("x",)), want.to_numpy(order=("x",)))
+
+
+def test_structural_slots_refuse_tensors_with_the_annotation_fix():
+    """A tensor reaching a structural slot (a method parameter) refuses
+    with the lifting doctrine's message — the same law, the new engine."""
+
+    def bad(E):
+        return E.slice(x=(0, E))  # a tensor in a structural slot
+
+    E = Tensor.from_numpy(np.zeros(4), ("x",))
+    with pytest.raises(ValueError, match="STRUCTURAL slot"):
+        lower_body(bad, (tensor_type(E),), kind="step")

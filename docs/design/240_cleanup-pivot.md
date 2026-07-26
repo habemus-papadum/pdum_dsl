@@ -491,3 +491,25 @@ fresh value under `forbid("kernel.miss")`; rebinding a
 computes the new value on recompile. Budget: owner raised the total
 cap 3000 → 3400 for the migration ("don't bang your head");
 re-measure at C6. 603 passed at land.
+
+**C4.3a — the step-tier op families, bridged (landed).** The dialect
+now covers the WHOLE tl op inventory through two migration bridges
+with one source of truth: type rules for
+reduce/scan/materialize/round_to/repeat_like/random/with_value_units
+and the entire layout-method family are `_r_bridge(base)` — build the
+instruction, ask the incumbent `infer_instr`; evaluation is the
+extracted `ir.eval_instr` (the run loop refactored into a
+per-instruction evaluator both engines share — a pure refactor under
+the C0 battery). `TensorType` gained the full Layout as a
+NON-IDENTITY shadow payload (identity stays the dims lattice —
+alignment is by NAME, order-free, per tl's law; charts/strides ride
+for inference; dtype still deferred). The pack gained the S.1
+spellings (`reduce`/`scan`/`repeat_like` by object identity), the
+frozen layout-method family (reusing `lifting._METHODS` packers and
+the STRUCTURAL-slot refusal verbatim), and `lower_body(host=...)`
+for structural/kw bindings. **Flagship pin:** the zoo's `layernorm` —
+verbatim, untouched — lowers through the dialect and matches its own
+eager execution bit-for-bit; plus a shift/slice/pad chain
+differential and the structural-slot refusal. NOT yet switched: every
+consumer (lift_step, assemblage, autodiff, the zoo) still runs the
+incumbent Program world — C4.3b+ moves them. 606 passed at land.

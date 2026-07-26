@@ -36,7 +36,7 @@ finding); an L4 certified descent may bake one later.
 from __future__ import annotations
 
 import ast as pyast
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from pdum.dsl.capture import make_handle
 from pdum.dsl.derivative import TABLE, Const, Prim
@@ -50,9 +50,12 @@ from pdum.dsl.value import LOWER_RULES, _assign, _binop, _call, _compare
 from .compute import const_like
 from .compute import iota as _eager_iota
 from .compute import pointwise as _eager_pw
-from .ir import Token, _store, pw_marker
-from .lifting import _Intrinsic
-from .markers import Marker
+from .compute import reduce as _eager_reduce
+from .compute import repeat_like as _eager_repeat_like
+from .compute import scan as _eager_scan
+from .ir import _LAYOUT_OPS, Instr, Token, _store, eval_instr, infer_instr, pw_marker
+from .lifting import _METHODS, _STRUCTURAL_SLOT, _Intrinsic
+from .markers import Marker, Reducer
 from .tensor import Tensor
 
 # --- types -------------------------------------------------------------------
@@ -60,9 +63,13 @@ from .tensor import Tensor
 
 @dataclass(frozen=True)
 class TensorType(Type):
-    """A tensor-typed SSA value: the layout lattice IS the type."""
+    """A tensor-typed SSA value: the layout LATTICE is the identity (dims —
+    what alignment and keys compare), and the full Layout rides along as a
+    non-identity SHADOW payload for inference (charts, strides, labels —
+    C4.3; dtype joins later)."""
 
-    dims: tuple  # ((name, start, stop), ...)
+    dims: tuple  # ((name, start, stop), ...) — identity
+    layout: object = field(default=None, compare=False, repr=False)  # the shadow
 
 
 @dataclass(frozen=True)
@@ -71,7 +78,11 @@ class TokenType(Type):
 
 
 def tensor_type(t: Tensor) -> TensorType:
-    return TensorType(tuple((d.name, d.start, d.stop) for d in t.layout.dims))
+    return TensorType(tuple((d.name, d.start, d.stop) for d in t.layout.dims), layout=t.layout)
+
+
+def _of_layout(lay) -> TensorType:
+    return TensorType(tuple((d.name, d.start, d.stop) for d in lay.dims), layout=lay)
 
 
 def _minus_dim(tt: TensorType, name: str) -> TensorType:
@@ -85,9 +96,9 @@ def _r_pointwise(args, attrs, regions):
     ts = [a for a in args if isinstance(a, TensorType)]
     if not ts:
         raise TypeError("tl.pointwise wants at least one tensor operand")
-    if any(t != ts[0] for t in ts):
+    if any(frozenset(t.dims) != frozenset(ts[0].dims) for t in ts):
         raise TypeError(f"tl.pointwise wants ALIGNED operands, got {ts[0]!r} vs a mismatch")
-    return ts[0]  # scalars broadcast (the const-lift discipline)
+    return ts[0]  # alignment is by NAME, order-free (tl's law); scalars broadcast
 
 
 def _r_iota(args, attrs, regions):
@@ -103,7 +114,7 @@ def _r_store(args, attrs, regions):
     tok, dst, val = args
     if not isinstance(tok, TokenType):
         raise TypeError("tl.store threads the ordering token first")
-    if dst != val:
+    if frozenset(dst.dims) != frozenset(val.dims):
         raise TypeError(f"tl.store wants the value aligned to the target: {dst!r} vs {val!r}")
     return TokenType()
 
@@ -124,6 +135,27 @@ def _r_fold(args, attrs, regions):
     return init
 
 
+def _r_bridge(base):
+    """The migration bridge (240 C4.3): the type rule IS the incumbent
+    shadow inference — build the instruction, ask ``infer_instr``. One
+    source of truth for layout semantics while both worlds coexist."""
+
+    def rule(args, attrs, regions):
+        names = tuple(f"a{i}" for i in range(len(args)))
+        shadows = {}
+        for n, t in zip(names, args):
+            if not isinstance(t, TensorType) or t.layout is None:
+                raise TypeError(f"tl.{base} wants tensor operands with layout shadows, got {t!r}")
+            shadows[n] = t.layout
+        return _of_layout(infer_instr(Instr("out", base, names, dict(attrs)), shadows))
+
+    return rule
+
+
+_BRIDGED = ("reduce", "scan", "materialize", "round_to", "repeat_like", "random", "with_value_units") + tuple(
+    _LAYOUT_OPS
+)
+
 TL_OPS = {
     "tl.token": OpDef("tl.token", lambda a, at, r: TokenType(), PURE),
     "tl.uniform": OpDef("tl.uniform", None, PURE),  # a per-launch scalar slot (type passed explicitly)
@@ -131,6 +163,7 @@ TL_OPS = {
     "tl.pointwise": OpDef("tl.pointwise", _r_pointwise, PURE),
     "tl.store": OpDef("tl.store", _r_store, PURE),  # the effect rides the token
     "tl.fold": OpDef("tl.fold", _r_fold, PURE, nregions=1),
+    **{f"tl.{base}": OpDef(f"tl.{base}", _r_bridge(base), PURE) for base in _BRIDGED},
 }
 
 
@@ -149,8 +182,12 @@ def _typed_rule(table, base_rule, pick):
         f = table.get(type(pick(node)))
         if f is not None:
             operands = [ctx.lower(a) for a in _operands_of(node)]
-            if any(isinstance(o.type, TensorType) for o in operands):
-                return ctx.emit("tl.pointwise", *operands, node=node, f=f)
+            if any(hasattr(o, "type") and isinstance(o.type, TensorType) for o in operands):
+                lifted = [
+                    o if hasattr(o, "type") else ctx.emit("core.const", node=node, type=f64, value=float(o))
+                    for o in operands
+                ]
+                return ctx.emit("tl.pointwise", *lifted, node=node, f=f)
         return base_rule(ctx, node)
 
     return rule
@@ -174,6 +211,34 @@ def _globals_of(ctx):
     return ctx.handle.pyfunc.__globals__
 
 
+class NotHost(Exception):
+    """An AST node is not a host (structural) value."""
+
+
+def _host(ctx, node):
+    """Structural extraction: constants, tuples, host-bound names, and
+    attribute chains — never lowered IR (a tensor reaching a structural
+    slot refuses with the annotation fix, per the lifting doctrine)."""
+    if isinstance(node, pyast.Constant):
+        return node.value
+    if isinstance(node, pyast.Tuple):
+        return tuple(_host(ctx, e) for e in node.elts)
+    if isinstance(node, pyast.UnaryOp) and isinstance(node.op, pyast.USub):
+        return -_host(ctx, node.operand)
+    if isinstance(node, pyast.Name):
+        v = ctx.locals.get(node.id)
+        if v is None:
+            v = ctx.handle.env.get(node.id) if isinstance(ctx.handle.env, dict) else None
+        if v is None:
+            v = _globals_of(ctx).get(node.id)
+        if v is None or hasattr(v, "type") or isinstance(v, tuple) and any(hasattr(x, "type") for x in v):
+            raise NotHost()
+        return v
+    if isinstance(node, pyast.Attribute):
+        return getattr(_host(ctx, node.value), node.attr)
+    raise NotHost()
+
+
 def _tl_call(ctx, node):
     """Call resolution, OBJECT-IDENTITY-FIRST: the tl intrinsics and the S.1
     vocabulary are recognized as the objects the body's globals actually
@@ -192,11 +257,35 @@ def _tl_call(ctx, node):
             return ctx.emit("tl.pointwise", *rest, node=node, f=marker.name)
         if obj is const_like:  # scalar broadcast: the const IS the operand
             return ctx.lower(node.args[1])
+        if obj is _eager_reduce or obj is _eager_scan:  # the S.1 spellings
+            f = _host(ctx, node.args[0])
+            fname = f.name if isinstance(f, (Marker, Reducer)) else f
+            operand = ctx.lower(node.args[1])
+            if isinstance(operand, tuple):
+                raise TypeError("record-state reducers arrive with a later slice (240 C4.3)")
+            dims = _host(ctx, node.args[2]) if len(node.args) > 2 else _host(ctx, node.keywords[0].value)
+            key = "dims" if obj is _eager_reduce else "dim"
+            op = "tl.reduce" if obj is _eager_reduce else "tl.scan"
+            return ctx.emit(op, operand, node=node, f=fname, **{key: dims})
+        if obj is _eager_repeat_like:  # THE alignment primitive (S.1)
+            x, like = (ctx.lower(a) for a in node.args)
+            return ctx.emit("tl.repeat_like", x, like, node=node)
         impl = ctx.context["registry"].overloads.get(node.func.id)
         if isinstance(impl, Marker):
             args = [ctx.lower(a) for a in node.args]
             if any(isinstance(a.type, TensorType) for a in args):
                 return ctx.emit("tl.pointwise", *args, node=node, f=impl.name)
+    if isinstance(node.func, pyast.Attribute):  # the frozen layout-method family
+        base = ctx.lower(node.func.value)
+        name = node.func.attr
+        if hasattr(base, "type") and isinstance(base.type, TensorType) and name in _METHODS:
+            try:
+                args = [_host(ctx, a) for a in node.args]
+                kwargs = {kw.arg: _host(ctx, kw.value) for kw in node.keywords}
+            except NotHost:
+                raise ValueError(_STRUCTURAL_SLOT.format(what=f".{name}(...)")) from None
+            op, pack = _METHODS[name]
+            return ctx.emit(f"tl.{op}", base, node=node, **pack(args, kwargs))
     return _call(ctx, node)
 
 
@@ -230,7 +319,7 @@ TL_RULES = {
 # --- the per-kind yield protocol + the body driver ---------------------------
 
 
-def lower_body(fn, arg_types: tuple, *, kind: str, registry=None) -> Region:
+def lower_body(fn, arg_types: tuple, *, kind: str, registry=None, host: dict | None = None) -> Region:
     """Lower a body through the DSL Lowerer with the tl pack. WHAT the
     region yields is the KIND's declaration (the per-kind yield protocol):
     a ``step`` yields its returned value; a ``compute`` kernel yields the
@@ -242,6 +331,7 @@ def lower_body(fn, arg_types: tuple, *, kind: str, registry=None) -> Region:
     ctx.params = params
     names = fn.__code__.co_varnames[: fn.__code__.co_argcount]
     ctx.locals.update(zip(names, params))
+    ctx.locals.update(host or {})  # structural/kw bindings (dim names, scalars)
     if kind == "step":
         return Region(params=params, body=(ctx.builder.emit("core.yield", ctx.run_body()),))
     if kind != "compute":
@@ -393,6 +483,10 @@ def run_region(region: Region, values: list, uniforms: dict | None = None):
         if n.op == "tl.store":
             tok, dst, val = n.args
             return _store(ev(tok), ev(dst), ev(val))
+        if n.op.startswith("tl.") and n.op[3:] in _BRIDGED:
+            ops_v = [ev(a) for a in n.args]
+            names = tuple(f"a{i}" for i in range(len(ops_v)))
+            return eval_instr(Instr("out", n.op[3:], names, attrs), dict(zip(names, ops_v)))
         if n.op == "tl.fold":
             init, src = ev(n.args[0]), ev(n.args[1])
             dim = attrs["dim"]

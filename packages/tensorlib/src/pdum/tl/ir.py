@@ -349,58 +349,66 @@ def run(prog: Program, inputs: dict[str, Tensor]) -> dict[str, Tensor]:
     full environment (every SSA var's value)."""
     env: dict[str, Tensor] = {}
     for ins in prog.instrs:
-        if ins.op == "input":
-            if ins.var not in inputs:
-                raise KeyError(
-                    f"missing input {ins.var!r} — virtual leaves analyze for free but "
-                    f"execute only once provisioned: provision(root, source=init(...)"
-                    f"|safetensors(...)) (200 §1.7)"
-                )
-            env[ins.var] = inputs[ins.var]
-        elif ins.op == "const":
-            env[ins.var] = _const(ins.params)
-        elif ins.op == "iota":
-            env[ins.var] = iota(env[ins.operands[0]], ins.params["name"], ins.params.get("unit"))
-        elif ins.op == "random":
-            from .random import _field
+        env[ins.var] = eval_instr(ins, env, inputs)
+    return env
 
-            env[ins.var] = _field(ins.params["dist"], ins.params["key"], env[ins.operands[0]])
-        elif ins.op == "pointwise":
-            env[ins.var] = pointwise(pw_marker(ins.params["f"]), *[env[o] for o in ins.operands])
-        elif ins.op == "reduce":
-            vals = tuple(env[o] for o in ins.operands)
-            env[ins.var] = reduce(
-                reducer(ins.params["f"]),
-                vals[0] if len(vals) == 1 else vals,
-                ins.params["dims"],
-                ins.params.get("zero"),
-            )
-        elif ins.op == "scan":
-            vals = tuple(env[o] for o in ins.operands)
-            env[ins.var] = scan(
-                reducer(ins.params["f"]),
-                vals[0] if len(vals) == 1 else vals,
-                ins.params["dim"],
-                ins.params.get("zero"),
-            )
-        elif ins.op == "materialize":
-            env[ins.var] = _materialize(env[ins.operands[0]], ins.params)
-        elif ins.op == "round_to":
-            env[ins.var] = _round_to(env[ins.operands[0]], ins.params["encoding"])
-        elif ins.op == "repeat_like":
-            from .compute import repeat_like
 
-            env[ins.var] = repeat_like(env[ins.operands[0]], env[ins.operands[1]])
-        elif ins.op == "token":
-            env[ins.var] = Token()
-        elif ins.op == "store":
-            env[ins.var] = _store(env[ins.operands[0]], env[ins.operands[1]], env[ins.operands[2]])
-        elif ins.op == "fold":
-            env[ins.var] = _run_fold(ins, env)
-        elif ins.op == "with_value_units":
-            env[ins.var] = env[ins.operands[0]].with_value_units(ins.params["value_units"])
-        else:
-            env[ins.var] = _LAYOUT_OPS[ins.op](env[ins.operands[0]], ins.params)
+def eval_instr(ins: Instr, env: dict, inputs: dict | None = None):
+    """ONE instruction over the reference compute layer — the single source
+    of execution semantics, shared by ``run`` and the dialect's
+    ``run_region`` bridge (240 C4.3)."""
+    if ins.op == "input":
+        if inputs is None or ins.var not in inputs:
+            raise KeyError(
+                f"missing input {ins.var!r} — virtual leaves analyze for free but "
+                f"execute only once provisioned: provision(root, source=init(...)"
+                f"|safetensors(...)) (200 §1.7)"
+            )
+        return inputs[ins.var]
+    elif ins.op == "const":
+        return _const(ins.params)
+    elif ins.op == "iota":
+        return iota(env[ins.operands[0]], ins.params["name"], ins.params.get("unit"))
+    elif ins.op == "random":
+        from .random import _field
+
+        return _field(ins.params["dist"], ins.params["key"], env[ins.operands[0]])
+    elif ins.op == "pointwise":
+        return pointwise(pw_marker(ins.params["f"]), *[env[o] for o in ins.operands])
+    elif ins.op == "reduce":
+        vals = tuple(env[o] for o in ins.operands)
+        return reduce(
+            reducer(ins.params["f"]),
+            vals[0] if len(vals) == 1 else vals,
+            ins.params["dims"],
+            ins.params.get("zero"),
+        )
+    elif ins.op == "scan":
+        vals = tuple(env[o] for o in ins.operands)
+        return scan(
+            reducer(ins.params["f"]),
+            vals[0] if len(vals) == 1 else vals,
+            ins.params["dim"],
+            ins.params.get("zero"),
+        )
+    elif ins.op == "materialize":
+        return _materialize(env[ins.operands[0]], ins.params)
+    elif ins.op == "round_to":
+        return _round_to(env[ins.operands[0]], ins.params["encoding"])
+    elif ins.op == "repeat_like":
+        from .compute import repeat_like
+
+        return repeat_like(env[ins.operands[0]], env[ins.operands[1]])
+    elif ins.op == "token":
+        return Token()
+    elif ins.op == "store":
+        return _store(env[ins.operands[0]], env[ins.operands[1]], env[ins.operands[2]])
+    elif ins.op == "fold":
+        return _run_fold(ins, env)
+    elif ins.op == "with_value_units":
+        return env[ins.operands[0]].with_value_units(ins.params["value_units"])
+    else:
+        return _LAYOUT_OPS[ins.op](env[ins.operands[0]], ins.params)
     return env
 
 
