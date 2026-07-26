@@ -21,6 +21,7 @@ nav:
   - "Backend notes (210)": design/210_backend-notes.md
   - "The principles (220)": design/220_principles.md
   - "The syntax tour (230)": design/230_syntax-tour.md
+  - "The cleanup pivot (240, transient)": design/240_cleanup-pivot.md
   - Design: design/README.md
 
 docs_dir: docs
