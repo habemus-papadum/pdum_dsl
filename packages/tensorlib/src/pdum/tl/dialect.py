@@ -37,6 +37,7 @@ may bake one later.
 from __future__ import annotations
 
 import ast as pyast
+import struct
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
@@ -44,6 +45,7 @@ from pdum.dsl.derivative import TABLE, Const, Prim
 from pdum.dsl.ir import Builder, Region
 from pdum.dsl.lower import Lowerer, check_coherence
 from pdum.dsl.ops import CORE_OPS, PURE, OpDef
+from pdum.dsl.pack import ABI_OPS
 from pdum.dsl.registry import DEFAULT
 from pdum.dsl.types import Type, f64
 from pdum.dsl.value import LOWER_RULES, _assign, _binop, _call, _compare
@@ -184,8 +186,9 @@ _BRIDGED = ("reduce", "scan", "materialize", "round_to", "repeat_like", "random"
 )
 
 TL_OPS = {
+    # per-launch scalar slots are abi.slot — the dsl's marshaling dialect,
+    # ONE concept both tiers (240 C5; the uniform channel is its kernel face)
     "tl.token": OpDef("tl.token", lambda a, at, r: TokenType(), PURE),
-    "tl.uniform": OpDef("tl.uniform", None, PURE),  # a per-launch scalar slot (type passed explicitly)
     "tl.iota": OpDef("tl.iota", _r_iota, PURE),
     "tl.pointwise": OpDef("tl.pointwise", _r_pointwise, PURE),
     "tl.store": OpDef("tl.store", _r_store, PURE),  # the effect rides the token
@@ -649,7 +652,7 @@ def lower_body(
     final ordering token — and a kernel ``return`` refuses."""
     handle = capture_shim(fn)
     check_coherence(handle)
-    ctx = Lowerer(handle, TL_RULES, {**CORE_OPS, **TL_OPS}, {}, context={"registry": registry or DEFAULT})
+    ctx = Lowerer(handle, TL_RULES, {**CORE_OPS, **TL_OPS, **ABI_OPS}, {}, context={"registry": registry or DEFAULT})
     ctx.context["tl.kind"] = kind
     if out_names is not None:
         ctx.context["tl.names"] = out_names  # the naming law's ledger, for the exporter
@@ -868,12 +871,13 @@ def derive_step_vjp(step: Region, ops=None) -> Region:
 # --- the evaluation column (ir.run's successor for this dialect) -------------
 
 
-def run_region(region: Region, values: list, uniforms: dict | None = None):
+def run_region(region: Region, values: list, uniforms: bytes | None = None):
     """Evaluate a dialect region over tl Tensors — fields slice at ABSOLUTE
     coordinates, so closed-form random fields regenerate exactly. Stores
     write through the target's buffer (the ONE effect, token-ordered);
-    ``uniforms`` binds per-launch scalar slots (unmarked captures are DATA
-    — the literal doctrine, 240 C4.2b)."""
+    ``uniforms`` is the launch's packed staging bytes, read by ``abi.slot``
+    at its offset/fmt (unmarked captures are DATA — the literal doctrine,
+    240 C4.2b — riding the dsl's marshaling discipline since C5)."""
     memo: dict[int, object] = {}
     by_param = {id(p): v for p, v in zip(region.params, values)}
 
@@ -896,8 +900,8 @@ def run_region(region: Region, values: list, uniforms: dict | None = None):
             return ev(n.args[0])[attrs["index"]]
         if n.op == "tl.token":
             return Token()
-        if n.op == "tl.uniform":
-            return (uniforms or {})[attrs["name"]]
+        if n.op == "abi.slot":
+            return struct.unpack_from(attrs["fmt"], uniforms, attrs["offset"])[0]
         if n.op == "tl.iota":
             return _eager_iota(ev(n.args[0]), attrs["name"])
         if n.op == "tl.pointwise":

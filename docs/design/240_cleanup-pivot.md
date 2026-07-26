@@ -656,3 +656,24 @@ to the compute layer"), the shadow-inference authority is layout-only,
 and dtype already rides the kernel arg fingerprint — it joins
 TensorType when a backend column (C5+) brings actual dtype semantics
 to honor, not before. 614 passed at land.
+
+**C5.1 — the uniform→abi merge (DO-NOT-FORGET B, discharged;
+landed).** `tl.uniform` is DELETED — it never coexists with `abi.*`
+past C5, as acked. An unmarked captured scalar now lowers to the dsl's
+own marshaling op, `abi.slot(src=("env", <name>), offset, fmt)`, with
+offsets assigned contiguously at emission and fmts from the ONE
+kind→fmt vocabulary (`pack._FMTS` — the same table the dsl's byte-slot
+planner uses). The launch channel took the dsl's hit-path SHAPE with
+it: extract (`_captured` re-reads the environment by name) → pack
+(`struct.pack_into` a real staging byte buffer at each slot's
+offset/fmt) → launch (`run_region` reads `struct.unpack_from` at the
+slot's offset — the physical attrs are HONORED, not decorative, so
+the marshaling discipline is exercised by every launch before any
+device backend exists). The literal doctrine is mechanically
+unchanged: warm on change, name+TYPE in the env fingerprint, values
+never in identity — the C4.2b pins passed untouched. Pinned: the slot
+node's full attrs (`src/offset/fmt`) and the absence of `tl.uniform`.
+615 passed at land. *Remaining C5 slices:* the two-tier cache +
+backend-column seam (tier 2 on `(region.key, backend.fp)`), then
+fn-arg inlining replacing per-element oracle dispatch (combinator
+taps live), consumers optionally stepping off the migration view.

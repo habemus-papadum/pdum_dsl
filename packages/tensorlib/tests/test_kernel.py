@@ -434,6 +434,27 @@ def test_unmarked_captured_scalar_is_data_warm_hit_fresh_value():
         globals()["_C1_SCALE"] = 2.0
 
 
+def test_uniform_slots_ride_the_dsl_marshaling_dialect():
+    """240 C5 (do-not-forget B): tl.uniform is GONE — an unmarked captured
+    scalar is an ``abi.slot`` node (src/offset/fmt, the dsl's marshaling
+    dialect), extracted and byte-packed fresh at every launch."""
+    from pdum.tl.dialect import walk_region
+    from pdum.tl.kernel import _arg_fp, _code_fp, _env_fp
+
+    @compute
+    def k(img):
+        (y,) = thread_idx("y")
+        img[y] = y * _C1_SCALE
+
+    img = T(np.zeros(3), ("y",))
+    k(img)
+    key = (_code_fp(k.fn), _env_fp(k.fn), (_arg_fp(img),), ())
+    ops = list(walk_region(KERNELS.peek(key).region))
+    (slot,) = [n for n in ops if n.op == "abi.slot"]
+    assert dict(slot.attrs) == {"src": ("env", "_C1_SCALE"), "offset": 0, "fmt": "<d"}
+    assert not any(n.op == "tl.uniform" for n in ops)
+
+
 from pdum.dsl import literal  # noqa: E402
 
 _C4_GAIN = literal(3.0)

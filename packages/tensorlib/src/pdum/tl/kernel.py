@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import struct
 from dataclasses import dataclass
 
 import numpy as np
@@ -54,6 +55,7 @@ from pdum.dsl.cache import Memo
 from pdum.dsl.ir import Node, Region
 from pdum.dsl.lower import Lowerer, check_coherence
 from pdum.dsl.ops import CORE_OPS
+from pdum.dsl.pack import _FMTS, ABI_OPS
 from pdum.dsl.registry import DEFAULT
 from pdum.dsl.types import LiteralValue
 from pdum.dsl.value import _assign as _value_assign
@@ -456,11 +458,15 @@ def _k_name(ctx, node):
         v = _globals_of(ctx).get(node.id)
     if isinstance(v, LiteralValue):  # declared structural: bake, value-keyed
         return ctx.emit("core.const", node=node, type=typeof(v.value), value=v.value)
-    if isinstance(v, (int, float, bool)):  # unmarked: DATA — a uniform slot
+    if isinstance(v, (int, float, bool)):  # unmarked: DATA — an abi slot (ONE marshaling dialect, 240 C5)
         c = ctx.context
         cached = c["k.uniforms"].get(node.id)
         if cached is None:
-            cached = ctx.emit("tl.uniform", node=node, type=typeof(v), name=node.id)
+            t = typeof(v)
+            fmt = _FMTS[t.kind]
+            off = c["k.uniform_size"]
+            cached = ctx.emit("abi.slot", node=node, type=t, src=("env", node.id), offset=off, fmt=fmt)
+            c["k.uniform_size"] = off + struct.calcsize(fmt)
             c["k.uniforms"][node.id] = cached
         return cached
     if v is not None:
@@ -483,8 +489,8 @@ KERNEL_RULES = {
 @dataclass(frozen=True)
 class _Artifact:
     region: Region
-    fn: object  # the kernel fn — uniform slots re-read its environment per launch
-    uniforms: tuple  # captured-scalar slot names (DATA: fresh every launch)
+    fn: object  # the kernel fn — abi slots re-read its environment per launch
+    uniforms: tuple  # (name, offset, fmt) abi slots (DATA: extracted + packed fresh every launch)
     params: tuple  # kernel parameter names, in order
     tensor_params: tuple  # tensor parameter names, region-param order
     writable: tuple  # parameter names that are stored to (incl. tap buffers)
@@ -511,15 +517,23 @@ class _Artifact:
             for mname in mnames:
                 _ARG_BINDINGS[mname] = bound[name]
         values = [bound[n] for n in self.tensor_params] + [bound[f"tap:{n}"] for n in self.requested_taps]
-        env = _captured(self.fn) if self.uniforms else {}
-        run_region(self.region, values, uniforms={n: env[n] for n in self.uniforms})
+        staging = b""
+        if self.uniforms:  # extract -> pack -> launch (the dsl's hit-path shape)
+            env = _captured(self.fn)
+            staging = bytearray(sum(struct.calcsize(f) for _, _, f in self.uniforms))
+            for name, off, fmt in self.uniforms:
+                struct.pack_into(fmt, staging, off, env[name])
+            staging = bytes(staging)
+        run_region(self.region, values, uniforms=staging)
         return None  # stores are the effect; kernels return nothing (taps included)
 
 
 def _compile(fn, args, tap_names=()) -> _Artifact:
     handle = capture_shim(fn)
     check_coherence(handle)
-    ctx = Lowerer(handle, KERNEL_RULES, {**CORE_OPS, **TL_OPS}, {}, context={"registry": DEFAULT, "tl.kind": "compute"})
+    ctx = Lowerer(
+        handle, KERNEL_RULES, {**CORE_OPS, **TL_OPS, **ABI_OPS}, {}, context={"registry": DEFAULT, "tl.kind": "compute"}
+    )
     c = ctx.context
     c.update(
         {
@@ -532,6 +546,7 @@ def _compile(fn, args, tap_names=()) -> _Artifact:
             "k.stored": [],
             "k.pname_of": {},
             "k.uniforms": {},
+            "k.uniform_size": 0,
         }
     )
     names = fn.__code__.co_varnames[: fn.__code__.co_argcount]
@@ -580,7 +595,7 @@ def _compile(fn, args, tap_names=()) -> _Artifact:
     return _Artifact(
         region=region,
         fn=fn,
-        uniforms=tuple(sorted(c["k.uniforms"])),
+        uniforms=tuple((n, dict(nd.attrs)["offset"], dict(nd.attrs)["fmt"]) for n, nd in c["k.uniforms"].items()),
         params=tuple(names),
         tensor_params=tuple(tensor_names),
         writable=tuple(dict.fromkeys(c["k.stored"])),
