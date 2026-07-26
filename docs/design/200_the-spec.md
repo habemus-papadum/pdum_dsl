@@ -255,6 +255,22 @@ uniform: captured CITIZENS (helpers, markers, staged transforms) are
 code, keyed by fingerprint; captured VALUES are data, typed and
 channeled; `literal` is the sole bridge between the worlds.
 
+**The keying ladder (P8, owner-ruled).** What may enter identity, from
+always to never: dtype ALWAYS; dimension NAMES and rank ALWAYS (names
+are the contract surface — the IR's structure depends on them);
+EXTENTS key by default — an extent-generic artifact is a future
+LICENSED relaxation, the literal doctrine's mirror (structure moved to
+launch data by declaration), granted only when a checker proves the
+lowered IR never consumed the extent structurally (no baked divisor,
+unroll count, or split factor), and carried by a guard function on the
+warm path; launch GEOMETRY never (validated launcher data, §S.3);
+VALUES never (the uniform channel), except through the literal doors.
+Out-of-bounds splits along the same line: the REFERENCE executor
+refuses OOB — an oracle has no undefined behavior, and every
+differential against it would be meaningless in a UB region — while
+device backends need not check; running the program on reference IS
+the undefined-behavior detector.
+
 **The derivation request.** The training step is derived by one request
 carrying three name-pattern selection sets, all identity-bearing:
 
@@ -1008,9 +1024,15 @@ remains the separate altitude above.
 
 *The invocation config.* `kernel[config(...)](args)` brackets the
 launch; each component has its own specialization regime, stated
-per component rather than blanket: **blocks/streams** are pure launcher
-data (no key contact); **threads** is the value-specialized carve-out
-(re-render on change, no identity change); **taps** specialize by NAME
+per component rather than blanket: **blocks/threads** — the geometry —
+are VALIDATED LAUNCHER DATA (P8 owner ruling): one entry binds one
+geometry and every launch is checked against it (all-ones blocks IS
+the default one-block geometry; an explicit one-block launch must
+COVER the writable lattice — over-provisioned threads idle, like a
+device's guarded excess, and under-provisioning refuses); geometry
+never enters identity and never re-renders, and
+specialization-on-geometry is a DECLARED policy door for the backend
+era; **streams** are pure launcher data; **taps** specialize by NAME
 SET only — the tap tensors are invocation data; **shared_mem** is
 structural (the slot is reserved and refuses until the tile tier, L4).
 *Taps:* a site is any uniquely-named BINDING — the naming law is the

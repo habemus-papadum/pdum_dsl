@@ -32,9 +32,10 @@ sanctioned oracle-grade execution. A body may also host-STAGE a declared
 the recipe replays on the CURRENT binding every launch.
 
 **Invocation is the bracket** — ``kernel[config(blocks, threads,
-taps={...})](args)``; geometry is invocation-only and never enters any
-key (threads-per-block becomes the value-specialized carve-out when
-device backends exist); the tap NAME SET specializes, tap tensors are
+taps={...})](args)``; geometry is VALIDATED LAUNCHER DATA: one entry
+binds one geometry, launches are checked against it, and it never
+enters identity (specialization-on-geometry is a declared policy door
+for the backend era); the tap NAME SET specializes, tap tensors are
 invocation data.
 
 Day-one contract (210): a writable argument overlapping any READABLE
@@ -108,12 +109,13 @@ def shared(**layouts) -> Shared:
 class Config:
     """The bracket config (040 §3c's contract, 200-era): each component
     declares its SPECIALIZATION REGIME, defaulting to invocation-only —
-    blocks/threads are invocation data (threads-per-block is the recorded
-    value-specialized carve-out when device backends declare it); the tap
-    NAME SET specializes (a different tap set is a different artifact,
-    the P5 identity law) while the tap TENSORS are invocation data;
-    shared_mem is structural (specializes) and arrives with the tile
-    tier."""
+    blocks/threads are VALIDATED LAUNCHER DATA (owner-ruled, P8): one
+    entry binds one geometry, every launch is checked against it, and
+    geometry never enters identity — specialization-on-geometry is a
+    declared policy door for the backend era; the tap NAME SET
+    specializes (a different tap set is a different artifact, the P5
+    identity law) while the tap TENSORS are invocation data; shared_mem
+    is structural (specializes) and arrives with the tile tier."""
 
     blocks: tuple | None = None
     threads: tuple | None = None
@@ -152,11 +154,17 @@ class ComputeKernel:
         geom = (cfg.blocks, cfg.threads) if cfg.blocks is not None or cfg.threads is not None else None
         key = (_code_fp(self.fn), _env_fp(self.fn), tuple(_arg_fp(a) for a in args), tap_names)
         art = KERNELS.get_or_compile(key, lambda: _compile(self.fn, args, tap_names, geom))
-        if art.geom_used and art.geometry != geom:
-            # the value-specialized carve-out (S.3): a geometry-consuming body
-            # re-renders per geometry; identity (the entry above) never changes
-            gkey = (*key, ("geom", geom))
-            art = KERNELS.get_or_compile(gkey, lambda: _compile(self.fn, args, tap_names, geom))
+        if _norm_geom(geom) != _norm_geom(art.geometry):
+            # geometry is VALIDATED LAUNCHER DATA (owner-ruled): it never keys
+            # and never re-renders — one entry binds one geometry, checked here;
+            # a specialization POLICY is a declared door for the backend era
+            raise ValueError(
+                f"this kernel entry was built under geometry {art.geometry!r} and the launch "
+                f"presents {geom!r} — geometry is validated launcher data, never identity; "
+                f"launch with the geometry the entry was built under"
+            )
+        if geom is not None and _norm_geom(geom) is None:  # an explicit one-block launch
+            _check_coverage(geom, art, args)
         return art.launch(args, dict(cfg.taps))
 
     def taps(self, *args) -> dict:
@@ -270,6 +278,37 @@ def _lower_args(ctx, call):
     return tuple(tuple(ctx.lower(e) for e in a.elts) if isinstance(a, ast.Tuple) else ctx.lower(a) for a in call.args)
 
 
+def _norm_geom(geom):
+    """Geometry, semantically: all-ones blocks (or no blocks) IS the
+    default one-block geometry — identical meaning, identical IR — so
+    both bind one entry. Multi-block geometry compares verbatim."""
+    if geom is None:
+        return None
+    blocks, _ = geom
+    if not blocks or all(b == 1 for b in blocks):
+        return None
+    return geom
+
+
+def _check_coverage(geom, art, args):
+    """Launcher-data validation for an explicit one-block launch: the
+    block's threads must COVER the writable lattice (over-provisioned
+    threads idle, like a device's guarded excess; under-provisioning
+    would silently write nothing, so it refuses)."""
+    _, threads = geom
+    if not threads or not art.tensor_params:
+        return
+    target = args[art.params.index(art.tensor_params[-1])]
+    dims = target.layout.dims
+    for i, thr in enumerate(threads):
+        if i < len(dims) and thr < dims[i].size:
+            raise ValueError(
+                f"config(threads={threads}) does not cover the writable lattice "
+                f"{tuple((d.name, d.size) for d in dims)} — a one-block launch spans it "
+                f"(over-provisioned threads idle; under-provisioning writes nothing)"
+            )
+
+
 def _axis_pairs(ctx, lattice):
     """The launch geometry's per-axis (block dim, thread dim) pairs on the
     writable lattice: consecutive dims whose extents match config(blocks,
@@ -284,21 +323,27 @@ def _axis_pairs(ctx, lattice):
             i += 2
         else:
             raise ValueError(
-                f"config(blocks={blocks}, threads={threads}) wants the writable lattice split "
-                f"per axis into (block, thread) dim pairs; its dims are "
-                f"{tuple(d[0] for d in dims)} — split the target to the launch geometry"
+                f"config(blocks={blocks}, threads={threads}): the raw pair indexes a launch-"
+                f"lattice-shaped target, and this writable's dims {tuple(d[0] for d in dims)} "
+                f"are not split to the geometry — split the target (raw indexing then aligns "
+                f"for free), or compute global indices explicitly via "
+                f"global_thread_idx(block_idx(...), thread_idx(...), grid_layout())"
             )
     return pairs
 
 
 def _ambient_iota(ctx, kind, axis, name, lattice, node):
-    """One raw coordinate. Geometry ENGAGES only when the body names
-    block_idx: under the default geometry one block spans the lattice
-    (thread_idx IS the global coordinate — why every plain kernel reads
-    unchanged — and block_idx is the zero field); under explicit geometry
-    the raws are iotas of the split target's per-axis dim pairs, bound
-    positionally in call order."""
-    if ctx.context["k.geom"] is None:  # the default: ONE block spans the lattice
+    """One raw coordinate — NO MAGIC (owner-ruled): the raws mean ONE
+    thing always. thread_idx is the within-block coordinate; block_idx is
+    the block coordinate. Under the DEFAULT geometry one block spans the
+    lattice, so thread_idx EQUALS the global coordinate structurally (not
+    modally) and block_idx is the zero field. Under explicit geometry the
+    raws are iotas of the launch lattice — served by the writable's
+    per-axis (block, thread) dim pairs when it is split to the geometry
+    (the smart-user case: raw indexing aligns for free, never a
+    requirement); a global index is always the EXPLICIT spelling,
+    global_thread_idx(block, thread, grid)."""
+    if _norm_geom(ctx.context["k.geom"]) is None:  # ONE block spans the lattice (default, or all-ones blocks)
         if kind == "block_idx":
             dims = tuple((d[0], (d[1], d[2])) for d in lattice.type.dims)
             return ctx.emit("tl.const", node=node, value=0.0, dims=dims)
@@ -317,13 +362,7 @@ def _k_call(ctx, node):
         obj = _lookup(ctx, name)
         if isinstance(obj, _Intrinsic) and obj.name in ("thread_idx", "block_idx"):
             lattice = ctx.root.params[-1]  # the writable target (S.3 convention)
-            if obj.name == "block_idx" or c["k.geom_engaged"]:
-                c["k.geom_used"] = True
-                out = tuple(
-                    _ambient_iota(ctx, obj.name, i, cst.value, lattice, node) for i, cst in enumerate(node.args)
-                )
-            else:  # no block_idx anywhere: thread_idx IS the global coordinate, config inert
-                out = tuple(ctx.emit("tl.iota", lattice, node=node, name=cst.value) for cst in node.args)
+            out = tuple(_ambient_iota(ctx, obj.name, i, cst.value, lattice, node) for i, cst in enumerate(node.args))
             c["k.iotas"].extend(out)
             return out  # ALWAYS a tuple
         if obj is not None and getattr(obj, "fp", None) is not None:
@@ -693,8 +732,7 @@ class _Artifact:
     tap_sites: dict  # site name -> lattice dim names (valid sites)
     invalid_taps: dict  # site name -> reason (the naming law met inlining)
     requested_taps: tuple = ()  # the name set this artifact was built for
-    geom_used: bool = False  # the body reads raws whose meaning depends on geometry
-    geometry: tuple | None = None  # the (blocks, threads) this artifact was built under
+    geometry: tuple | None = None  # the (blocks, threads) this entry binds; launches validate against it
 
     def launch(self, args, taps=None):
         bound = dict(zip(self.params, args))
@@ -758,8 +796,6 @@ def _compile(fn, args, tap_names=(), geom=None) -> _Artifact:
             "k.uniform_size": 0,
             "k.arg_plans": {},
             "k.geom": geom,
-            "k.geom_engaged": "block_idx" in fn.__code__.co_names + fn.__code__.co_freevars,
-            "k.geom_used": False,
         }
     )
     names = fn.__code__.co_varnames[: fn.__code__.co_argcount]
@@ -821,7 +857,6 @@ def _compile(fn, args, tap_names=(), geom=None) -> _Artifact:
         tap_sites=tap_sites,
         invalid_taps=dict(c["k.invalid"]),
         requested_taps=tuple(tap_names),
-        geom_used=c["k.geom_used"],
         geometry=geom,
     )
 

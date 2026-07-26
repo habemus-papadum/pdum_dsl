@@ -127,7 +127,12 @@ def test_key_discipline_shape_miss_value_hit_launch_never_keys_fn_swap_miss():
     with events.forbid("kernel.miss"):
         # VALUE HIT: new captured values, same pipeline shape
         shader(twill(9.0, -2.0) | zoom(3.0), img)
-        # LAUNCH NEVER KEYS: any launch config, same entry
+        # TAP TENSORS NEVER KEY: config carries invocation data, same entry
+        shader[config()](twill(1.0, 0.0) | zoom(1.0), img)
+    # GEOMETRY IS VALIDATED LAUNCHER DATA (owner-ruled): it never keys and
+    # never re-renders — this entry was built under the default geometry, so
+    # presenting an explicit one REFUSES rather than silently meaning nothing
+    with pytest.raises(ValueError, match="validated launcher data"):
         shader[config(blocks=(9, 9), threads=(2, 2))](twill(1.0, 0.0) | zoom(1.0), img)
     with pytest.raises(events.EventForbidden):
         with events.forbid("kernel.miss"):  # SHAPE MISS: a new lattice is a new artifact
@@ -346,14 +351,17 @@ def test_config_bracket_taps_write_into_caller_tensors():
 
 def test_tap_name_set_specializes_tensors_do_not():
     """The config contract: the tap NAME SET is identity-bearing (a
-    different set is a different artifact); the tap TENSORS and the launch
-    GEOMETRY are pure invocation data."""
+    different set is a different artifact); the tap TENSORS are pure
+    invocation data; GEOMETRY is validated launcher data — it never keys,
+    and an incoherent geometry refuses instead of silently meaning
+    nothing."""
     img = T(np.zeros((2, 2)), ("y", "x"))
     t1, t2 = T(np.zeros((2, 2)), ("y", "x")), T(np.zeros((2, 2)), ("y", "x"))
     tapped_kernel[config(taps={"dist": t1})](img)
     with events.forbid("kernel.miss"):
         tapped_kernel[config(taps={"dist": t2})](img)  # new TENSOR: warm hit
-        tapped_kernel[config(taps={"dist": t1}, blocks=(9, 9), threads=(2, 2))](img)  # geometry never keys
+    with pytest.raises(ValueError, match="validated launcher data"):
+        tapped_kernel[config(taps={"dist": t1}, blocks=(9, 9), threads=(2, 2))](img)
     with pytest.raises(events.EventForbidden):
         with events.forbid("kernel.miss"):
             tapped_kernel(img2 := T(np.zeros((5, 5)), ("y", "x")))  # noqa: F841 — shape miss still misses
@@ -525,6 +533,9 @@ def test_block_idx_default_geometry_and_split_geometry_warmth():
     np.testing.assert_allclose(img.to_numpy(), np.arange(4.0))
     with events.forbid("kernel.miss"):  # same (default) geometry: warm
         k_default(img)
+        k_default[config(blocks=(1,), threads=(8,))](img)  # all-ones blocks IS the default: same entry
+    with pytest.raises(ValueError, match="does not cover"):
+        k_default[config(threads=(2,))](img)  # an under-provisioned one-block launch refuses
 
     @compute
     def k_split(tiled):
@@ -537,6 +548,8 @@ def test_block_idx_default_geometry_and_split_geometry_warmth():
     with events.forbid("kernel.miss"):  # same geometry, same lattice: warm
         k_split[config(blocks=(2,), threads=(4,))](base.split("y", by=2, ty=4))
     np.testing.assert_allclose(base.to_numpy(), np.arange(8.0))
+    with pytest.raises(ValueError, match="validated launcher data"):
+        k_split[config(blocks=(4,), threads=(2,))](base.split("y", by=2, ty=4))
 
 
 def test_identical_ir_shares_one_executor_across_kernels():
