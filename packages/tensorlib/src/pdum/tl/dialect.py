@@ -285,9 +285,22 @@ def _typed_rule(table, base_rule, pick):
         if not any(hasattr(o, "type") for o in operands):  # pure host math folds on the host
             host = _HOST_BIN if isinstance(node, pyast.BinOp) else _HOST_CMP
             return host[type(pick(node))](*operands)
+        if any(not hasattr(o, "type") for o in operands):  # a scalar NODE (a uniform slot)
+            # mixed with host scalars: the all-scalar subtree stays in the
+            # VALUE dialect (the C5.3 law), hosts lifted to consts
+            lifted = [
+                o if hasattr(o, "type") else ctx.emit("core.const", node=node, type=f64, value=float(o))
+                for o in operands
+            ]
+            if isinstance(node, pyast.BinOp):
+                return ctx.emit(_CORE_BIN[type(node.op)], *lifted, node=node)
+            return ctx.emit("core.cmp", *lifted, node=node, pred=f)
         return base_rule(ctx, node)
 
     return rule
+
+
+_CORE_BIN = {pyast.Add: "core.add", pyast.Sub: "core.sub", pyast.Mult: "core.mul", pyast.Div: "core.div"}
 
 
 def _operands_of(node):
