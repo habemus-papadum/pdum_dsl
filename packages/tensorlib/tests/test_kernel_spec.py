@@ -436,7 +436,6 @@ def test_flat_is_the_sole_interpolation_annotation():
     assert vs.varyings() is not None  # both sites listed; flat-ness not in the type
 
 
-@P8
 def test_fragment_taps_bind_render_buffers_mrt():
     """A claimed binding in the fragment — or inside the f it calls — binds
     to a second render target at the pass: MRT, G-buffers for free. The

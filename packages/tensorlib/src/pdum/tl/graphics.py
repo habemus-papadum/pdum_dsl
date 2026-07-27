@@ -199,11 +199,27 @@ def fragment(fn) -> FragmentShader:
 @dataclass(frozen=True)
 class PSO:
     """The PAIR is the artifact unit (real APIs compile PSOs whole).
-    Pairing is its own composition — never ``|``."""
+    Pairing is its own composition — never ``|``. ``pso[config(taps=...)]``
+    binds fragment taps to render buffers at the pass — MRT."""
 
     vs: VertexShader
     fs: FragmentShader
     required: frozenset  # the fragment's inferred interface (names only)
+
+    def __getitem__(self, cfg) -> "_BoundPSO":
+        from .kernel import Config
+
+        if not isinstance(cfg, Config):
+            raise TypeError("pso[...] takes a config(...) object")
+        if cfg.blocks is not None or cfg.threads is not None or cfg.shared_mem is not None:
+            raise ValueError("a render pass takes taps only — the draw defines its own geometry")
+        return _BoundPSO(self, cfg)
+
+
+@dataclass(frozen=True)
+class _BoundPSO:
+    pso: PSO
+    cfg: object
 
 
 # The fragment ARTIFACT tier: the interface, content-keyed by the fragment's
@@ -345,7 +361,7 @@ class _VaryingProbe:
         return self._fields[name]
 
 
-def _lower_fragment(fs: FragmentShader, fn_args: tuple, varying_types: dict):
+def _lower_fragment(fs: FragmentShader, fn_args: tuple, varying_types: dict, tap_names: tuple = ()):
     """The fragment IS a step-kind body over the pixel lattice: params
     are the varying fields; fn-valued arguments splice exactly as in
     compute kernels; the return is color0 (mandatory)."""
@@ -375,7 +391,16 @@ def _lower_fragment(fs: FragmentShader, fn_args: tuple, varying_types: dict):
     if result is None:
         raise ValueError(f"{fn.__qualname__}: a fragment shader must return color0 — return is MANDATORY")
     lift = _scalar_lift(ctx, tree)
-    region = Region(params=tuple(params.values()), body=(ctx.builder.emit("core.yield", lift(result)),))
+    c = ctx.context
+    tap_nodes = []
+    for tname in tap_names:  # fragment taps: claimed sites sunk to render buffers (MRT)
+        if tname in c["k.invalid"]:
+            raise ValueError(f"tap {tname!r} is invalid: {c['k.invalid'][tname]}")
+        if tname not in c["k.claims"]:
+            raise ValueError(f"the fragment has no site named {tname!r} (sites: {sorted(c['k.claims'])})")
+        tap_nodes.append(lift(c["k.claims"][tname]))
+    yielded = lift(result) if not tap_nodes else ctx.builder.emit("core.tuple", lift(result), *tap_nodes)
+    region = Region(params=tuple(params.values()), body=(ctx.builder.emit("core.yield", yielded),))
     return region, ctx.context, frozenset(touched), tuple(fparams)
 
 
@@ -406,11 +431,17 @@ def _rasterize(px, py, varys: dict, flats: frozenset, target: Tensor):
     return covered, fields
 
 
-def render(pso: PSO, *args, target: Tensor):
+def render(pso, *args, target: Tensor):
     """One draw into the target: run the vertex stage over the vid
     lattice, rasterize through the reference interpolator, run the
     fragment stage over the covered pixel lattice, compose. The host
-    owns the pass; this is the encodable's reference semantics."""
+    owns the pass; this is the encodable's reference semantics. A bound
+    PSO's taps write additional render targets (MRT), coverage-masked
+    like color0; the buffers are invocation data."""
+    taps = {}
+    if isinstance(pso, _BoundPSO):
+        taps = dict(pso.cfg.taps)
+        pso = pso.pso
     n_vs = pso.vs.fn.__code__.co_argcount
     vs_args, fs_args = args[:n_vs], args[n_vs:]
     region, vnames, flats, count, lattice = _lower_vertex(pso.vs, tuple(vs_args))
@@ -424,7 +455,7 @@ def render(pso: PSO, *args, target: Tensor):
     dim_names = tuple(d.name for d in target.layout.dims)
     f_tensors = {n: Tensor.from_numpy(a, dim_names) for n, a in fields.items()}
     v_types = {n: tensor_type(t) for n, t in f_tensors.items()}
-    f_region, f_ctx, _, fparams = _lower_fragment(pso.fs, tuple(fs_args), v_types)
+    f_region, f_ctx, _, fparams = _lower_fragment(pso.fs, tuple(fs_args), v_types, tuple(taps))
     bound = dict(zip(fparams, fs_args))
     for pname_, mnames in f_ctx["k.fn_markers"].items():  # oracle-class fn-args rebind
         for mname in mnames:
@@ -443,7 +474,11 @@ def render(pso: PSO, *args, target: Tensor):
             view = memoryview(staging)[blk["base"] : blk["base"] + blk["plan"].staging_size]
             pack_into(blk["plan"], view, blk["extract"](f.captures, ()))
         staging = bytes(staging)
-    color = run_region(f_region, [f_tensors[n] for n in v_types], uniforms=staging)
+    out = run_region(f_region, [f_tensors[n] for n in v_types], uniforms=staging)
+    color, tap_vals = (out, ()) if not taps else (out[0], out[1:])
     composed = np.where(covered, color.to_numpy(order=dim_names), target.to_numpy(order=dim_names))
     _store(Token(), target, Tensor.from_numpy(composed, dim_names))
+    for (tname, buf), tv in zip(taps.items(), tap_vals):  # MRT: each tap is a second target
+        merged = np.where(covered, tv.to_numpy(order=dim_names), buf.to_numpy(order=dim_names))
+        _store(Token(), buf, Tensor.from_numpy(merged, dim_names))
     return None

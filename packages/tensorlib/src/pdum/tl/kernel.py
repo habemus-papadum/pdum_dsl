@@ -548,9 +548,15 @@ def _scalar_region(handle, nargs):
 
 def _liftable(region) -> bool:
     """Is this scalar region pointwise-liftable over the thread lattice?
-    Straight-line value ops only — a region-carrying op (if/for) is the
-    oracle class."""
+    Straight-line value ops, plus ``core.if`` whose branches are
+    themselves liftable — an if-expression splices as ``where`` (both
+    branches evaluated: safe under the IEEE non-trapping policy; the
+    simple case of predication). Loops stay the oracle class."""
     for n in walk_region(region):
+        if n.op == "core.if":
+            if not all(_liftable(r) for r in n.regions):
+                return False
+            continue
         if n.regions:
             return False
         if not (n.op in _STRUCTURAL_OPS or n.op in _LIFT or n.op == "core.cmp" or n.op.startswith("pw.")):
@@ -694,6 +700,19 @@ def _splice_fn(ctx, handle, region, named, args, out_spec, node, pname, wrap):
             return tuple(go(a) for a in nd.args)
         if nd.op == "core.extract":
             return go(nd.args[0])[attrs["index"]]
+        if nd.op == "core.if":  # if-as-select: both branches evaluate, where picks
+            cond = go(nd.args[0])
+            t_v, e_v = (go(r.body[-1].args[0]) for r in nd.regions)
+            if not isinstance(cond, Node):  # a host condition branches on the host
+                return t_v if cond else e_v
+
+            def lift_b(o):
+                return o if isinstance(o, Node) else ctx.emit("core.const", node=node, type=f64, value=float(o))
+
+            picked = (lift_b(cond), lift_b(t_v), lift_b(e_v))
+            if any(isinstance(o, Node) and isinstance(o.type, TensorType) for o in (cond, t_v, e_v)):
+                return ctx.emit("tl.pointwise", *picked, node=node, f="where")
+            return ctx.emit("core.select", *picked, node=node)
         ops_v = [go(a) for a in nd.args]
 
         def lift(o):
