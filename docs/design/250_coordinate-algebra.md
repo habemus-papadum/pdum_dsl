@@ -264,7 +264,11 @@ Layout kwargs methods (`select`/`slice`/`decimate`/`flip`) never change
    numerically identical before and after respelling**.
 5. **Vertex tier + buffers.** `thread_idx("vertex_id", "instance_id")`
    respell, then vertex pulling and records built on the coordinate
-   law rather than retrofitted.
+   law rather than retrofitted. (Landed: the draw-domain ambient;
+   storage-buffer pulling with automatic bind groups; RECORD buffers —
+   `verts[v]` admits the Coordinate, fields by name, WGSL structs on
+   the device; the record-derivative type law; record taps as
+   struct-element tensors.)
 
 ## 8. What the IR does NOT get
 

@@ -410,7 +410,8 @@ def render_wgpu(pso, *args, shape):
     vs_args, fs_args = args[:n_vs], args[n_vs:]
     v_region, vnames, flats, count, lattice, _v_ctx = _lower_vertex(pso.vs, tuple(vs_args))
     _check_pairing(frozenset(vnames), pso.required)  # buffer-taking shaders check here
-    buf_params = list(v_region.params[: len(vs_args)])
+    plan = list(_v_ctx.get("g.param_plan", ()))  # (buffer index, field | None) per region param
+    buf_params = list(v_region.params[: len(plan)])
     used_bufs: set[int] = set()
 
     def _pulled_read(i: int, coords: dict) -> str:
@@ -436,11 +437,17 @@ def render_wgpu(pso, *args, shape):
         if n.op == "tl.iota" and dict(n.attrs).get("name") == "vertex_id":
             return "f32(vid)", False
         if n.op == "tl.select" and n.args and n.args[0] in buf_params:
-            i = buf_params.index(n.args[0])
+            i, f = plan[buf_params.index(n.args[0])]
+            if f is not None:
+                raise Untranslatable("select on a record field param")
             return _pulled_read(i, _thaw_params(dict(n.attrs))["coords"]), False
         if n.op == "core.param":
-            if n in buf_params:  # a 1-D buffer used whole: the per-vertex field
-                return _pulled_read(buf_params.index(n), {}), False
+            if n in buf_params:
+                i, f = plan[buf_params.index(n)]
+                if f is not None:  # a record field: the WGSL struct member, pulled at vid
+                    used_bufs.add(i)
+                    return f"vb{i}[vid].{f}", False
+                return _pulled_read(i, {}), False  # a 1-D buffer used whole
             raise Untranslatable("a vertex-stage param beyond the pulled buffers")
         return None
 
@@ -504,7 +511,13 @@ def render_wgpu(pso, *args, shape):
         "}",
     ]
     for i in sorted(used_bufs):  # only USED buffers declare (layout="auto" prunes)
-        src_lines.append(f"@group(0) @binding({i}) var<storage, read> vb{i}: array<f32>;")
+        b = vs_args[i]
+        if b.dtype.fields is not None:  # a RECORD buffer: a real WGSL struct (flat f32 v1)
+            members = " ".join(f"{f}: f32," for f in b.dtype.names)
+            src_lines.append(f"struct Rec{i} {{ {members} }}")
+            src_lines.append(f"@group(0) @binding({i}) var<storage, read> vb{i}: array<Rec{i}>;")
+        else:
+            src_lines.append(f"@group(0) @binding({i}) var<storage, read> vb{i}: array<f32>;")
     vu_b = len(vs_args)
     if v_slots:
         src_lines.append(f"@group(0) @binding({vu_b}) var<storage, read> VU: array<f32>;")
@@ -564,7 +577,10 @@ def render_wgpu(pso, *args, shape):
     entries = []
     for i in sorted(used_bufs):  # bind groups are OURS to build: automatic, never user-visible
         b = vs_args[i]
-        flat = np.ascontiguousarray(b.to_numpy(order=tuple(d.name for d in b.layout.dims)), dtype=np.float32)
+        if b.dtype.fields is not None:  # pack the record fields f32, dtype order = struct order
+            flat = np.stack([b.field(f).to_numpy() for f in b.dtype.names], axis=-1).astype(np.float32)
+        else:
+            flat = np.ascontiguousarray(b.to_numpy(order=tuple(d.name for d in b.layout.dims)), dtype=np.float32)
         vbuf = device.create_buffer_with_data(data=flat.tobytes(), usage=wgpu.BufferUsage.STORAGE)
         entries.append({"binding": i, "resource": {"buffer": vbuf, "offset": 0, "size": vbuf.size}})
     if v_slots:

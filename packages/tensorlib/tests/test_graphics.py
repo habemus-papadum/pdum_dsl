@@ -108,3 +108,67 @@ def test_multiple_buffers_and_the_draw_count_consistency():
     bad = T([0.0, 1.0], ("vertex_id",))
     with pytest.raises(ValueError, match="disagree on the draw count"):
         render(pair(mesh, shade), tri, bad, target=img)
+
+
+def test_record_vertex_buffers_fields_by_name():
+    """A RECORD vertex buffer: the structured dtype IS the memory shape
+    (200 §4); verts[vid] admits the Coordinate and yields the element,
+    fields by NAME — no anonymous component column."""
+    dt = np.dtype([("x", "<f8"), ("y", "<f8")])
+    tri = Tensor.from_numpy(np.array([(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0)], dtype=dt), ("vertex_id",))
+
+    @vertex
+    def mesh(verts):
+        (vid,) = thread_idx("vertex_id")
+        p = verts[vid]
+        u = p.x * 0.0 + 1.0  # noqa: F841 — a claimed varying (the tagless law)
+        return position(p.x, p.y)
+
+    @fragment
+    def shade(varying):
+        return varying.u
+
+    img = T(np.zeros((8, 8)), ("y", "x"))
+    render(pair(mesh, shade), tri, target=img)
+    assert img.to_numpy().sum() == 36.0  # the same half-plane as the float-buffer case
+
+
+def test_record_buffer_refusals():
+    import pytest
+
+    dt = np.dtype([("x", "<f8"), ("y", "<f8")])
+    tri = Tensor.from_numpy(np.array([(0.0, 0.0)] * 3, dtype=dt), ("vertex_id",))
+    img = T(np.zeros((2, 2)), ("y", "x"))
+
+    @fragment
+    def white(varying):
+        return varying.u
+
+    @vertex
+    def by_value(verts):
+        p = verts[0]  # not a Coordinate: the subscript law holds for records too
+        u = p.x  # noqa: F841
+        return position(p.x, p.y)
+
+    with pytest.raises(TypeError, match="ONE Coordinate"):
+        render(pair(by_value, white), tri, target=img)
+
+    @vertex
+    def wrong_field(verts):
+        (vid,) = thread_idx("vertex_id")
+        u = verts[vid].z  # noqa: F841
+        return position(u, u)
+
+    with pytest.raises(AttributeError, match="no field 'z'"):
+        render(pair(wrong_field, white), tri, target=img)
+
+    nested = Tensor.from_numpy(np.zeros(3, dtype=np.dtype([("p", [("x", "<f8")])])), ("vertex_id",))
+
+    @vertex
+    def uses(verts):
+        (vid,) = thread_idx("vertex_id")
+        u = verts[vid].p  # noqa: F841
+        return position(u, u)
+
+    with pytest.raises(TypeError, match="recorded boundary"):
+        render(pair(uses, white), nested, target=img)

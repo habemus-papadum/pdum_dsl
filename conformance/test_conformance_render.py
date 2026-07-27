@@ -165,12 +165,12 @@ def test_the_cylinder_renders_on_the_device():
     from pdum.dsl.intrinsics import clamp  # noqa: F401 — inlines by capture-and-call
     from pdum.dsl.markers import sqrt  # noqa: F401 — bare in the body
     from pdum.tl.graphics import fragment as _fragment
-    from pdum.tl.zoo.cylinder import TAU, cylinder_mesh, ripple, spun, stripes
+    from pdum.tl.zoo.cylinder import MESH_DT, TAU, cylinder_mesh, ripple, spun, stripes
 
     mesh = cylinder_mesh(16)
     n = mesh.layout.dim("vertex_id").size
-    rippled = T(np.zeros((n, 2)), ("vertex_id", "c"))
-    ripple(mesh, rippled)
+    rippled = Tensor.from_numpy(np.zeros(n, dtype=MESH_DT), ("vertex_id",))
+    ripple(mesh.field("theta"), mesh.field("h"), rippled.field("theta"), rippled.field("h"))
     g = value_and_grad(stripes(3.0 * TAU), wrt=("u", "v"))
 
     @_fragment
@@ -186,3 +186,31 @@ def test_the_cylinder_renders_on_the_device():
     assert np.isfinite(got).all()
     assert (got != 0.0).any()  # the cylinder covers pixels
     np.testing.assert_allclose(got, ref.to_numpy(), atol=2e-3)
+
+
+def test_vertex_pulling_record_quad_differential():
+    """The record face of vertex pulling: a real WGSL struct per record
+    buffer, fields pulled by NAME at the vertex index — pixel-exact
+    against the reference on the aligned quad."""
+    _require_device()
+    dt = np.dtype([("x", "<f8"), ("y", "<f8"), ("w", "<f8")])
+    pts = [(-1.0, -1.0, 0.0), (0.0, -1.0, 1.0), (-1.0, 1.0, 0.5), (0.0, -1.0, 1.0), (0.0, 1.0, 1.0), (-1.0, 1.0, 0.5)]
+    quad = Tensor.from_numpy(np.array(pts, dtype=dt), ("vertex_id",))
+
+    @vertex
+    def mesh(verts):
+        (vid,) = thread_idx("vertex_id")
+        p = verts[vid]
+        u = p.w * 1.0  # noqa: F841 — a claimed varying
+        return position(p.x, p.y)
+
+    @fragment
+    def shade(varying):
+        return varying.u * 2.0 + 0.25
+
+    pso = pair(mesh, shade)
+    ref = T(np.zeros((8, 8)), ("y", "x"))
+    render(pso, quad, target=ref)
+    got = render_wgpu(pso, quad, shape=(8, 8))
+    assert ref.to_numpy().max() > 0.0
+    np.testing.assert_allclose(got, ref.to_numpy(), atol=1e-6)

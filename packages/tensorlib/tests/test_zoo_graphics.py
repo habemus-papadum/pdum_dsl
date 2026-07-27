@@ -26,8 +26,9 @@ def test_the_pattern_is_periodic_across_the_seam():
     assert abs(g(0.0, 0.5) - g(1.0, 0.5)) < 1e-9
 
 
-def test_the_mesh_is_a_closed_side_surface():
+def test_the_mesh_is_a_closed_record_side_surface():
     mesh = cylinder_mesh(segments=8)
-    arr = mesh.to_numpy(order=("vertex_id", "c"))
-    assert arr.shape == (8 * 6, 2)
-    assert abs(arr[:, 0].max() - TAU) < 1e-12 and arr[:, 0].min() == 0.0
+    theta = mesh.field("theta").to_numpy()
+    assert theta.shape == (8 * 6,)
+    assert abs(theta.max() - TAU) < 1e-12 and theta.min() == 0.0
+    assert set(np.unique(mesh.field("h").to_numpy())) == {-1.0, 1.0}

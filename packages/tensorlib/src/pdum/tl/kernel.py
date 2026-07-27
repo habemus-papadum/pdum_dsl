@@ -62,7 +62,7 @@ from pdum.dsl.ops import CORE_OPS
 from pdum.dsl.pack import _FMTS, ABI_OPS, NORMALIZE_ENV, build_extractor, pack_into, plan_from_types
 from pdum.dsl.registry import DEFAULT
 from pdum.dsl.rewrite import run_stage
-from pdum.dsl.types import LiteralValue, f64
+from pdum.dsl.types import LiteralValue, Record, f64
 from pdum.dsl.value import _assign as _value_assign
 from pdum.dsl.value import _name as _value_name
 from pdum.dsl.value import _subscript as _value_subscript
@@ -296,6 +296,8 @@ def _claim(ctx, name, value):
         c["k.claims"][name] = value.args[0]  # tapping a coordinate dumps its iota field
     elif isinstance(value, Node) and isinstance(value.type, TensorType):
         c["k.claims"][name] = value
+    elif isinstance(value, Node) and isinstance(value.type, Record) and value.op == "core.tuple":
+        c["k.claims"][name] = value  # a record OF FIELDS: the struct-tensor tap (200 §4)
     else:
         c["k.invalid"][name] = "not a lattice value (nothing to store)"
 

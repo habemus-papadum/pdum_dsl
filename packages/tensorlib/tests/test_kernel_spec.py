@@ -49,6 +49,12 @@ class _RG:  # the derivative-type-law record (declared per test run, surface C)
     g: float
 
 
+@dataclass(frozen=True)
+class _GBuf:  # the record-tap record: a G-buffer's element
+    lum: float
+    depth: float
+
+
 P8 = pytest.mark.skip(reason="specified now; lands at P8 (graphics + the value-tier derivative engine)")
 P9 = pytest.mark.skip(reason="specified now; lands at P9 (the indexing family)")
 L4 = pytest.mark.skip(reason="specified now; lands with the tile tier (L4)")
@@ -355,10 +361,41 @@ def test_taps_inside_combinator_bodies_with_validity():
     np.testing.assert_allclose(yp.to_numpy(), np.arange(2.0)[:, None] * 2.0 * np.ones((1, 2)))
 
 
-@P8
 def test_record_taps_land_as_struct_tensors():
     """isBits record-valued bindings claim as struct-element tensors —
-    the structured encoding is the memory shape (200 §4)."""
+    the structured encoding is the memory shape (200 §4). THE SPELLING
+    (proposed for ratification): the fragment binds a DECLARED record of
+    its fields — one named site — and the tap buffer is a struct-element
+    tensor whose dtype fields match the record BY NAME; the pass writes
+    each field through its view, coverage-masked. A G-buffer is one tap."""
+    from pdum.dsl.registry import DEFAULT
+    from pdum.dsl.surfaces import record
+    from pdum.tl.graphics import fragment, pair, position, render, vertex
+
+    if not getattr(_GBuf, "__dsl_record__", None):
+        record(DEFAULT, _GBuf)
+
+    @vertex
+    def quad():
+        (vid,) = thread_idx("vertex_id")
+        i = i32(vid)
+        u = 1.0 if (i == 1 or i == 3 or i == 4) else 0.0
+        v = 1.0 if (i == 2 or i == 4 or i == 5) else 0.0
+        return position(u * 2.0 - 1.0, v * 2.0 - 1.0)
+
+    @fragment
+    def shade(varying):
+        lum = varying.u * 0.5
+        g = _GBuf(lum, varying.v)  # noqa: F841 — ONE claimed record site
+        return lum
+
+    dt = np.dtype([("lum", "<f8"), ("depth", "<f8")])
+    gbuf = Tensor.from_numpy(np.zeros((4, 4), dtype=dt), ("y", "x"))
+    img = T(np.zeros((4, 4)), ("y", "x"))
+    render(pair(quad, shade)[config(taps={"g": gbuf})], target=img)
+    # the same field, through the struct — and the second field rode along
+    np.testing.assert_allclose(gbuf.field("lum").to_numpy(), img.to_numpy())
+    assert gbuf.field("depth").to_numpy().max() > 0.8  # v at the top pixel centers
 
 
 # --- P8: the graphics tier (S.4 amendment) -----------------------------------

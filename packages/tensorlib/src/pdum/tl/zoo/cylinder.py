@@ -1,12 +1,13 @@
 """The spinning cylinder — the graphics zoo's first entry (P8).
 
-Every P8 feature in one demo: a MESH as a vertex ARRAY (per-vertex
-attributes theta/h over the vid dim), the geometry RIPPLED by a compute
-kernel (theta read at a computed index; the phase an unmarked capture —
-a WARM uniform across frames, the literal doctrine live), the rotation
-ANGLE as a vertex-shader uniform converted to the world transform IN
-the shader, and an analytic-AA fragment (value_and_grad — fwidth with
-no 2x2 quad) shading a pattern PERIODIC across the vertical seam.
+Every P8 feature in one demo: a MESH as a RECORD vertex buffer (fields
+theta/h over the vertex_id dim — the structured dtype IS the memory
+shape, 200 §4), the geometry RIPPLED by a compute kernel over the
+FIELD VIEWS (the phase an unmarked capture — a WARM uniform across
+frames, the literal doctrine live), the rotation ANGLE as a
+vertex-shader uniform converted to the world transform IN the shader,
+and an analytic-AA fragment (value_and_grad — fwidth with no 2x2 quad)
+shading a pattern PERIODIC across the vertical seam.
 
 Reference-tier render loop: "see it work". Device goldens are the
 conformance executor's job; the reference rasterizer has no depth
@@ -16,8 +17,8 @@ buffer, so the far side overdraws in draw order (BOUNDARIES.md).
 import numpy as np
 from pdum.dsl import jit, value_and_grad
 from pdum.dsl.intrinsics import clamp  # noqa: F401 — inlines by capture-and-call
-from pdum.dsl.markers import cos, ge, sin, sqrt, where  # noqa: F401 — bare in bodies
-from pdum.tl import Tensor, compute, f32, global_idx, i32, thread_idx  # noqa: F401 — bodies' globals
+from pdum.dsl.markers import cos, sin, sqrt  # noqa: F401 — bare in bodies
+from pdum.tl import Tensor, compute, global_idx, thread_idx  # noqa: F401 — bodies' globals
 from pdum.tl.graphics import fragment, pair, position, render, vertex
 
 TAU = 6.283185307179586
@@ -25,24 +26,29 @@ TAU = 6.283185307179586
 _PHASE = 0.0  # the ripple phase: an unmarked capture — warm across frames
 
 
+MESH_DT = np.dtype([("theta", "<f8"), ("h", "<f8")])
+
+
 def cylinder_mesh(segments: int = 32) -> Tensor:
-    """The side surface as a vertex ARRAY: two triangles per segment;
-    attributes per vertex — c=0 is theta, c=1 is h."""
+    """The side surface as a RECORD vertex buffer: two triangles per
+    segment; each element a (theta, h) record — fields by NAME, no
+    anonymous columns."""
     verts = []
     for s in range(segments):
         t0, t1 = s * TAU / segments, (s + 1) * TAU / segments
         verts += [(t0, -1.0), (t1, -1.0), (t0, 1.0), (t1, -1.0), (t1, 1.0), (t0, 1.0)]
-    return Tensor.from_numpy(np.asarray(verts, dtype=np.float64), ("vertex_id", "c"))
+    return Tensor.from_numpy(np.array(verts, dtype=MESH_DT), ("vertex_id",))
 
 
 @compute
-def ripple(src, dst):
-    """The geometry ripple: h gains a phase-shifted sine of theta —
-    theta read at a COMPUTED index (the c=0 column), the phase riding
-    the uniform channel."""
-    i, c = global_idx("vertex_id", "c")
-    theta = src[i32(i), i32(c) * 0.0]  # the theta column, broadcast per vertex row
-    dst[i, c] = src[i, c] + where(ge(f32(c), 0.5), sin(theta * 3.0 + _PHASE) * 0.08, 0.0)
+def ripple(theta_in, h_in, theta_out, h_out):
+    """The geometry ripple over the record's FIELD VIEWS (the 200 §4
+    door): h gains a phase-shifted sine of theta; the phase rides the
+    uniform channel. No computed reads, no column tricks — the fields
+    have names."""
+    (i,) = global_idx("vertex_id")
+    theta_out[i] = theta_in[i]
+    h_out[i] = h_in[i] + sin(theta_in[i] * 3.0 + _PHASE) * 0.08
 
 
 def spun(angle: float):
@@ -51,13 +57,13 @@ def spun(angle: float):
 
     @vertex
     def vs(verts):
-        theta = verts.select(c=0)
-        h = verts.select(c=1)
-        world = theta + angle  # rotation -> world space, in-shader
+        (vid,) = thread_idx("vertex_id")
+        p = verts[vid]  # the record element: fields by name
+        world = p.theta + angle  # rotation -> world space, in-shader
         px = sin(world) * 0.85
-        py = h * 0.7 + cos(world) * 0.12  # a hint of tilt
-        u = theta * (1.0 / TAU)  # noqa: F841 — a claimed varying (the tagless law)
-        v = h * 0.5 + 0.5  # noqa: F841 — a claimed varying
+        py = p.h * 0.7 + cos(world) * 0.12  # a hint of tilt
+        u = p.theta * (1.0 / TAU)  # noqa: F841 — a claimed varying (the tagless law)
+        v = p.h * 0.5 + 0.5  # noqa: F841 — a claimed varying
         return position(px, py)
 
     return vs
@@ -89,8 +95,8 @@ def demo_frames(angles=(0.0, 1.2, 2.4), size=(48, 64)):
     frames = []
     for i, angle in enumerate(angles):
         _PHASE = 0.9 * i  # rebinding the unmarked capture: a WARM relaunch, fresh value
-        rippled = Tensor.from_numpy(np.zeros((n, 2)), ("vertex_id", "c"))
-        ripple(mesh, rippled)
+        rippled = Tensor.from_numpy(np.zeros(n, dtype=MESH_DT), ("vertex_id",))
+        ripple(mesh.field("theta"), mesh.field("h"), rippled.field("theta"), rippled.field("h"))
         img = Tensor.from_numpy(np.zeros(size), ("y", "x"))
         render(pair(spun(angle), shade), rippled, g, target=img)
         frames.append(img.to_numpy())

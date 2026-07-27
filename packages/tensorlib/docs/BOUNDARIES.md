@@ -104,5 +104,11 @@ live in the workspace spec, `docs/design/200_the-spec.md` §8.
   builtin vertex index; bind groups are built automatically — never
   user-visible). Classic vertex attributes are an L4 backend lowering,
   not a semantic. The pulled reads assume dense row-major buffers
-  (from_numpy's layout); exotic strides await a consumer. The
-  component dim ("c") is a stopgap the records arc replaces.
+  (from_numpy's layout); exotic strides await a consumer.
+- **Record vertex buffers are flat float64 fields over exactly
+  (vertex_id,)** — the structured dtype is the memory shape (200 §4),
+  each field a region param (zero new IR), a real WGSL struct on the
+  device (all-f32: no padding). Nested or mixed-carrier records
+  REFUSE toward this entry; instancing (instance_id) and record
+  VARYINGS (a record claimed in the vertex, fields interpolated as
+  one site) arrive with their consumers.

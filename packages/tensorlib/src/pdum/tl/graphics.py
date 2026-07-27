@@ -47,7 +47,8 @@ from pdum.dsl.pack import ABI_OPS, pack_into
 from pdum.dsl.registry import DEFAULT
 from pdum.dsl.types import Type
 
-from .dialect import TL_OPS, TensorType, capture_shim, run_region, tensor_type
+from .coords import admit_frame
+from .dialect import TL_OPS, CoordType, TensorType, capture_shim, run_region, tensor_type
 from .encoding import FormatEncoding
 from .ir import Token, _store
 from .kernel import _ARG_BINDINGS, KERNEL_RULES, _code_fp, _env_fp, _lookup
@@ -176,10 +177,31 @@ def _scalar_lift(ctx, node):
     return lift
 
 
+def _v_subscript(ctx, node):
+    """``verts[v]`` on a RECORD buffer: the subscript law's record face —
+    ONE Coordinate, admitted against the buffer's vertex_id frame (strict
+    identity, containment extent); the element's fields come by NAME."""
+    if isinstance(node.value, ast.Name):
+        base = ctx.locals.get(node.value.id)
+        if isinstance(base, _RecordBuffer):
+            idx = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
+            vals = [ctx.lower(i) for i in idx]
+            if len(vals) != 1 or not (hasattr(vals[0], "type") and isinstance(vals[0].type, CoordType)):
+                raise TypeError(
+                    'a record vertex buffer subscripts by ONE Coordinate — thread_idx("vertex_id")'
+                )
+            admit_frame(base.frame, vals[0].type.frame)
+            return _RecordElement(base.fields)
+    from .kernel import _k_subscript
+
+    return _k_subscript(ctx, node)
+
+
 VERTEX_RULES = {
     **KERNEL_RULES,
     ast.Call: _v_call,
     ast.Assign: _v_assign,
+    ast.Subscript: _v_subscript,
     ast.IfExp: _v_ifexp,
     ast.BoolOp: _v_boolop,
 }
@@ -347,10 +369,50 @@ def _fresh_context(kind: str) -> dict:
     }
 
 
+class _RecordBuffer:
+    """A record-element vertex buffer at LOWER time: the structured dtype
+    is the declaration (the 200 §4 encoding is the memory shape), each
+    field a region param — pure lowering bookkeeping, zero new IR.
+    ``verts[v]`` admits the Coordinate and yields the element."""
+
+    def __init__(self, frame, fields: dict):
+        self.frame = frame  # the vertex_id Frame
+        self.fields = fields  # field name -> the field-view param node
+
+
+class _RecordElement:
+    """One record, per-vertex: fields by NAME (each a field over the draw
+    lattice); anything else refuses listing the fields."""
+
+    def __init__(self, fields: dict):
+        object.__setattr__(self, "_fields", fields)
+
+    def __getattr__(self, name):
+        if name not in self._fields:
+            raise AttributeError(f"the record has no field {name!r} (fields: {sorted(self._fields)})")
+        return self._fields[name]
+
+
+def _record_fields(b: Tensor):
+    """The v1 record-buffer contract: dims exactly (vertex_id,), flat
+    float64 fields — nested/mixed records are a recorded boundary."""
+    names = tuple(d.name for d in b.layout.dims)
+    if names != ("vertex_id",):
+        raise TypeError(f"a record vertex buffer's dims are exactly ('vertex_id',), got {names}")
+    for fname, (fdt, _off) in b.dtype.fields.items():
+        if fdt.kind != "f" or fdt.fields is not None:
+            raise TypeError(
+                f"record field {fname!r}: flat float fields only today ({fdt}) — "
+                f"nested/mixed records are a recorded boundary (BOUNDARIES.md)"
+            )
+    return tuple(b.dtype.names)
+
+
 def _lower_vertex(vs: VertexShader, buffers: tuple):
     """The vertex body over the draw domain. Region params: the vertex
-    buffers, then the hidden vertex_id lattice; yields (px, py, *varyings).
-    Returns (region, varying names in claim order, flat set, count)."""
+    buffers — a RECORD buffer (structured dtype) expands to one param per
+    FIELD (its field views; the complex-element door, automated) — then
+    the hidden vertex_id lattice; yields (px, py, *varyings)."""
     fn = vs.fn
     handle = capture_shim(fn)
     check_coherence(handle)
@@ -366,13 +428,25 @@ def _lower_vertex(vs: VertexShader, buffers: tuple):
         raise ValueError(f"vertex buffers disagree on the draw count: vertex_id extents {sorted(counts)}")
     count = buffers[0].layout.dim("vertex_id").size if buffers else 6  # no inputs: the screen quad's six ids
     lattice = Tensor.from_numpy(np.zeros(count), ("vertex_id",)) if not buffers else None
-    params = []
+    params, plan, locals_ = [], [], []  # plan: (buffer index, field name | None) per param
     for i, b in enumerate(buffers):
-        params.append(ctx.builder.param(i, tensor_type(b)))
+        if b.dtype.fields is not None:  # a RECORD buffer: one param per field view
+            fields = {}
+            for fname in _record_fields(b):
+                plan.append((i, fname))
+                fields[fname] = ctx.builder.param(len(params), tensor_type(b.field(fname)))
+                params.append(fields[fname])
+            locals_.append(_RecordBuffer(b.layout.dim("vertex_id").frame, fields))
+        else:
+            plan.append((i, None))
+            p = ctx.builder.param(len(params), tensor_type(b))
+            params.append(p)
+            locals_.append(p)
     hidden = ctx.builder.param(len(params), tensor_type(lattice)) if lattice is not None else params[0]
     all_params = tuple(params) + ((hidden,) if lattice is not None else ())
     ctx.params = all_params
-    ctx.locals.update(zip(names, params))
+    ctx.context["g.param_plan"] = tuple(plan)
+    ctx.locals.update(zip(names, locals_))
     tree = _fn_ast(fn)
     result = None
     for stmt in tree.body:
@@ -515,7 +589,9 @@ def render(pso, *args, target: Tensor):
     vs_args, fs_args = args[:n_vs], args[n_vs:]
     region, vnames, flats, count, lattice, v_ctx = _lower_vertex(pso.vs, tuple(vs_args))
     _check_pairing(frozenset(vnames), pso.required)  # the deferred half (buffer-taking shaders)
-    values = list(vs_args) + ([lattice] if lattice is not None else [])
+    plan = v_ctx.get("g.param_plan", ())
+    values = [vs_args[i] if f is None else vs_args[i].field(f) for i, f in plan]
+    values += [lattice] if lattice is not None else []
     outs = run_region(region, values, uniforms=_env_staging(v_ctx, pso.vs.fn))
     order = ("vertex_id",)
     px, py = outs[0].to_numpy(order=order), outs[1].to_numpy(order=order)
@@ -548,7 +624,20 @@ def render(pso, *args, target: Tensor):
     color, tap_vals = (out, ()) if not taps else (out[0], out[1:])
     composed = np.where(covered, color.to_numpy(order=dim_names), target.to_numpy(order=dim_names))
     _store(Token(), target, Tensor.from_numpy(composed, dim_names))
-    for (tname, buf), tv in zip(taps.items(), tap_vals):  # MRT: each tap is a second target
+    tap_types = [n.type for n in f_region.body[-1].args[0].args[1:]] if taps else []
+    for (tname, buf), tv, tt in zip(taps.items(), tap_vals, tap_types):  # MRT: each tap a second target
+        if isinstance(tv, tuple):  # a RECORD tap: per-field stores through the struct views (200 §4)
+            fnames = [fn for fn, _ in tt.fields]
+            if buf.dtype.names is None or list(buf.dtype.names) != fnames:
+                raise TypeError(
+                    f"record tap {tname!r} wants a struct-element buffer with fields {fnames} "
+                    f"(in order); got dtype {buf.dtype}"
+                )
+            for fname, ftv in zip(fnames, tv):
+                view = buf.field(fname)
+                merged = np.where(covered, ftv.to_numpy(order=dim_names), view.to_numpy(order=dim_names))
+                _store(Token(), view, Tensor.from_numpy(merged, dim_names))
+            continue
         merged = np.where(covered, tv.to_numpy(order=dim_names), buf.to_numpy(order=dim_names))
         _store(Token(), buf, Tensor.from_numpy(merged, dim_names))
     return None
