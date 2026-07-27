@@ -8,7 +8,8 @@ parameters), explicit token-threaded STORES into writable arguments
 value-read door). Stores stay ambient-indexed and bijective —
 assignment NEVER becomes a scatter (owner-ruled at P9): data-dependent
 accumulation is reduce-by-index, at home in the tensor tier's
-take/scatter_add; its kernel face is an L4 door with a declared monoid. Function-valued arguments apply at the thread coordinates,
+take/scatter_add; its kernel face is an L4 door with a declared monoid.
+Function-valued arguments apply at the thread coordinates,
 including tuple-returning ones (``v, (dy, dx) = f(y, x)`` — the
 destructuring pattern declares the structure). Writability is inferred
 from the body: an argument is writable iff it is stored to.
