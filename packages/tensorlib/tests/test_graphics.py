@@ -82,3 +82,29 @@ def test_pairing_refuses_missing_varyings_with_the_names():
 
     with pytest.raises(ValueError, match=r"pairing refused.*\['w'\].*missing"):
         pair(lean, needs_w)
+
+
+def test_multiple_buffers_and_the_draw_count_consistency():
+    """Multiple vertex buffers bind together; the draw count derives from
+    their shared vertex_id extent — disagreement refuses at lower time."""
+    import pytest
+
+    @vertex
+    def mesh(pos, extra):
+        x = pos.select(c=0)
+        y = pos.select(c=1)
+        u = extra * 0.5  # a second, 1-D per-vertex buffer  # noqa: F841
+        return position(x, y)
+
+    @fragment
+    def shade(varying):
+        return varying.u
+
+    tri = T([[-1.0, -1.0], [1.0, -1.0], [-1.0, 1.0]], ("vertex_id", "c"))
+    good = T([0.0, 1.0, 2.0], ("vertex_id",))
+    img = T(np.zeros((4, 4)), ("y", "x"))
+    render(pair(mesh, shade), tri, good, target=img)
+    assert np.isfinite(img.to_numpy()).all()
+    bad = T([0.0, 1.0], ("vertex_id",))
+    with pytest.raises(ValueError, match="disagree on the draw count"):
+        render(pair(mesh, shade), tri, bad, target=img)

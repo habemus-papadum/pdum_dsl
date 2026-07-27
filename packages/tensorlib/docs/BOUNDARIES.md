@@ -97,5 +97,12 @@ live in the workspace spec, `docs/design/200_the-spec.md` §8.
   from the exact IEC curve by ~0.5/255 in linear light, and bilinear
   weights carry ~8-bit fractional precision.
 - **The reference rasterizer has no depth buffer** — triangles compose
-  in draw order (painter's), and vertex buffers do not yet reach the
-  device render path (the vid-only subset renders there).
+  in draw order (painter's), on the reference and the conformance
+  device path alike.
+- **Vertex buffers reach the device by STORAGE-BUFFER VERTEX PULLING**
+  (read-only storage bound in the vertex stage, attribute reads at the
+  builtin vertex index; bind groups are built automatically — never
+  user-visible). Classic vertex attributes are an L4 backend lowering,
+  not a semantic. The pulled reads assume dense row-major buffers
+  (from_numpy's layout); exotic strides await a consumer. The
+  component dim ("c") is a stopgap the records arc replaces.

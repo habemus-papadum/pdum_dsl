@@ -361,6 +361,9 @@ def _lower_vertex(vs: VertexShader, buffers: tuple):
     for b in buffers:
         if not (isinstance(b, Tensor) and any(d.name == "vertex_id" for d in b.layout.dims)):
             raise TypeError("vertex buffers are tensors with a 'vertex_id' dim (per-vertex attributes)")
+    counts = {b.layout.dim("vertex_id").size for b in buffers}
+    if len(counts) > 1:  # the draw count DERIVES from the buffers: they must agree
+        raise ValueError(f"vertex buffers disagree on the draw count: vertex_id extents {sorted(counts)}")
     count = buffers[0].layout.dim("vertex_id").size if buffers else 6  # no inputs: the screen quad's six ids
     lattice = Tensor.from_numpy(np.zeros(count), ("vertex_id",)) if not buffers else None
     params = []

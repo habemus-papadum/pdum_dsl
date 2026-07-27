@@ -32,7 +32,7 @@ import struct
 from dataclasses import replace
 
 import numpy as np
-from pdum.tl.dialect import walk_region
+from pdum.tl.dialect import _thaw_params, walk_region
 from pdum.tl.tensor import Tensor
 
 WGPU_FP = ("wgsl", "wgpu")  # the backend column's second value
@@ -388,32 +388,71 @@ class _Gen:
         raise Untranslatable(op)
 
 
-def render_wgpu(pso, *fs_args, shape):
+def render_wgpu(pso, *args, shape):
     """The PSO through a REAL vertex/fragment pipeline into an offscreen
     r32float target — the reference interpolator's device twin (exact
-    f32 readback, no rgba8 quantization). Returns the (H, W) image in
-    the reference's row convention (row 0 at NDC y = -1; WebGPU's y-up
-    flips at readback)."""
+    f32 readback, no rgba8 quantization). Vertex buffers ride STORAGE-
+    BUFFER VERTEX PULLING (250/stage-5b): each buffer binds read-only in
+    the vertex stage and attribute fields read at @builtin(vertex_index)
+    — classic vertex attributes are an L4 backend lowering, not a
+    semantic. Args follow render(): vertex buffers first, then fragment
+    args. Returns the (H, W) image in the reference's row convention
+    (row 0 at NDC y = -1; WebGPU's y-up flips at readback)."""
     from pdum.dsl.pack import pack_into
-    from pdum.tl.graphics import _lower_fragment, _lower_vertex
+    from pdum.tl.graphics import _check_pairing, _lower_fragment, _lower_vertex
     from pdum.tl.producer import _captured
 
     device = _device()
     import wgpu
 
     H, W = shape
-    v_region, vnames, flats, count, lattice, _v_ctx = _lower_vertex(pso.vs, ())
-    if lattice is None:
-        raise Untranslatable("vertex buffers on the device (the vid-only subset renders today)")
+    n_vs = pso.vs.fn.__code__.co_argcount
+    vs_args, fs_args = args[:n_vs], args[n_vs:]
+    v_region, vnames, flats, count, lattice, _v_ctx = _lower_vertex(pso.vs, tuple(vs_args))
+    _check_pairing(frozenset(vnames), pso.required)  # buffer-taking shaders check here
+    buf_params = list(v_region.params[: len(vs_args)])
+    used_bufs: set[int] = set()
+
+    def _pulled_read(i: int, coords: dict) -> str:
+        """Row-major element index over buffer i's own dims: vertex_id
+        rides vid, component dims take their selected lattice constant."""
+        dims = vs_args[i].layout.dims
+        strides, acc = [], 1
+        for d in reversed(dims):
+            strides.append(acc)
+            acc *= d.size
+        parts = []
+        for d, st in zip(dims, reversed(strides)):
+            if d.name == "vertex_id":
+                parts.append(f"i32(vid) * {st}" if d.start == 0 else f"(i32(vid) - {d.start}) * {st}")
+            elif d.name in coords:
+                parts.append(str((coords[d.name] - d.start) * st))
+            else:
+                raise Untranslatable(f"a vertex buffer dim {d.name!r} with no selected coordinate")
+        used_bufs.add(i)
+        return f"vb{i}[{' + '.join(parts)}]"
 
     def v_leaf(n, g):
         if n.op == "tl.iota" and dict(n.attrs).get("name") == "vertex_id":
             return "f32(vid)", False
+        if n.op == "tl.select" and n.args and n.args[0] in buf_params:
+            i = buf_params.index(n.args[0])
+            return _pulled_read(i, _thaw_params(dict(n.attrs))["coords"]), False
         if n.op == "core.param":
-            raise Untranslatable("a vertex buffer param on the device")
+            if n in buf_params:  # a 1-D buffer used whole: the per-vertex field
+                return _pulled_read(buf_params.index(n), {}), False
+            raise Untranslatable("a vertex-stage param beyond the pulled buffers")
         return None
 
-    vg = _Gen(v_leaf)
+    v_slots = sorted((dict(nd.attrs)["offset"], dict(nd.attrs)["fmt"]) for nd in _v_ctx["k.uniforms"].values())
+    v_slot_index = {off: i for i, (off, _) in enumerate(v_slots)}
+
+    def v_leaf_slots(n, g):
+        if n.op == "abi.slot":  # the vertex stage's captured scalars (spun's angle)
+            return f"VU[{v_slot_index[dict(n.attrs)['offset']]}]", False
+        return v_leaf(n, g)
+
+    vg = _Gen(v_leaf_slots)
     v_outs = [vg.operand(a) for a in v_region.body[-1].args[0].args]  # (px, py, *varyings)
 
     # the fragment, lowered over the pixel lattice with varyings as params
@@ -464,10 +503,16 @@ def render_wgpu(pso, *fs_args, shape):
         *fields,
         "}",
     ]
+    for i in sorted(used_bufs):  # only USED buffers declare (layout="auto" prunes)
+        src_lines.append(f"@group(0) @binding({i}) var<storage, read> vb{i}: array<f32>;")
+    vu_b = len(vs_args)
+    if v_slots:
+        src_lines.append(f"@group(0) @binding({vu_b}) var<storage, read> VU: array<f32>;")
+    u_b = vu_b + (1 if v_slots else 0)
     if slots:
-        src_lines.append("@group(0) @binding(0) var<storage, read> U: array<f32>;")
+        src_lines.append(f"@group(0) @binding({u_b}) var<storage, read> U: array<f32>;")
     tex_pairs = f_ctx["g.textures"]
-    base_b = 1 if slots else 0
+    base_b = u_b + (1 if slots else 0)
     for i in range(len(tex_pairs)):
         src_lines.append(f"@group(0) @binding({base_b + 2 * i}) var tex{i}: texture_2d<f32>;")
         src_lines.append(f"@group(0) @binding({base_b + 2 * i + 1}) var smp{i}: sampler;")
@@ -517,12 +562,26 @@ def render_wgpu(pso, *fs_args, shape):
     )
     rp.set_pipeline(pipeline)
     entries = []
+    for i in sorted(used_bufs):  # bind groups are OURS to build: automatic, never user-visible
+        b = vs_args[i]
+        flat = np.ascontiguousarray(b.to_numpy(order=tuple(d.name for d in b.layout.dims)), dtype=np.float32)
+        vbuf = device.create_buffer_with_data(data=flat.tobytes(), usage=wgpu.BufferUsage.STORAGE)
+        entries.append({"binding": i, "resource": {"buffer": vbuf, "offset": 0, "size": vbuf.size}})
+    if v_slots:
+        from pdum.tl.graphics import _env_staging
+
+        v_staging = _env_staging(_v_ctx, pso.vs.fn)
+        vvals = [struct.unpack_from(fmt, v_staging, off)[0] for off, fmt in v_slots]
+        vubuf = device.create_buffer_with_data(
+            data=np.asarray(vvals, dtype=np.float32).tobytes(), usage=wgpu.BufferUsage.STORAGE
+        )
+        entries.append({"binding": vu_b, "resource": {"buffer": vubuf, "offset": 0, "size": vubuf.size}})
     if slots:
         uvals = [struct.unpack_from(fmt, staging, off)[0] for off, fmt in slots]
         ubuf = device.create_buffer_with_data(
             data=np.asarray(uvals, dtype=np.float32).tobytes(), usage=wgpu.BufferUsage.STORAGE
         )
-        entries.append({"binding": 0, "resource": {"buffer": ubuf, "offset": 0, "size": ubuf.size}})
+        entries.append({"binding": u_b, "resource": {"buffer": ubuf, "offset": 0, "size": ubuf.size}})
     for i, (t, s_) in enumerate(tex_pairs):
         entries.append({"binding": base_b + 2 * i, "resource": t.create_view()})
         entries.append({"binding": base_b + 2 * i + 1, "resource": s_})
