@@ -162,10 +162,10 @@ def test_the_cylinder_renders_on_the_device():
     reference)."""
     _require_device()
     from pdum.dsl import value_and_grad
-    from pdum.tl.zoo.cylinder import TAU, cylinder_mesh, ripple, spun, stripes
-    from pdum.tl.graphics import fragment as _fragment
     from pdum.dsl.intrinsics import clamp  # noqa: F401 — inlines by capture-and-call
     from pdum.dsl.markers import sqrt  # noqa: F401 — bare in the body
+    from pdum.tl.graphics import fragment as _fragment
+    from pdum.tl.zoo.cylinder import TAU, cylinder_mesh, ripple, spun, stripes
 
     mesh = cylinder_mesh(16)
     n = mesh.layout.dim("vertex_id").size
