@@ -18,6 +18,7 @@ Version of record: this distribution is version-locked with
 from .buffer import Buffer, FunctionalBuffer
 from .chart import Chart, characteristic, chart
 from .compute import Marker, Reducer, iota, pointwise, pw, red, reduce, scan
+from .coords import Coordinate, Displacement, Frame, Slice
 from .dtypes import CARRIERS, as_dtype, bfloat16, carrier_of
 from .guarded import Guard, GuardedLayout, pad_layout, stencil_layout
 from .kernel import Config, block_idx, compute, config, global_thread_idx, grid_layout, thread_idx
@@ -82,7 +83,11 @@ __all__ = [
     "alignment",
     "characteristic",
     "Chart",
+    "Coordinate",
     "Dim",
+    "Displacement",
+    "Frame",
+    "Slice",
     "Guard",
     "GuardedLayout",
     "Injectivity",

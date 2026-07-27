@@ -131,6 +131,13 @@ needed — unmentioned dims pass through). Mixed-frame endpoints refuse.
 Standalone, outside brackets, the dataclass constructor
 `Slice(c0, c1, step)` is the spelling.
 
+One consequence the in-bounds law forces (stage-1 ruling): the
+frame-end **exclusive** endpoint has no point — `y[512]` on a
+`[0, 512)` frame refuses like any other out-of-bounds coordinate — so
+a slice to the end of the domain is spelled by omission
+(`img[y[128]:]`, `Slice(c0)` with `stop=None`). The one-sided form is
+not sugar; it is the only spelling of that endpoint.
+
 ## 6. The subscript law — one law, all tiers
 
 `tensor[index, ...]` where each index is a Coordinate or a Slice:
