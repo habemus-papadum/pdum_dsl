@@ -215,3 +215,54 @@ Recorded so the conversation starts concrete; nothing here is decided.
 - **K-F Relationship to L2.** Kernel boundaries define what materializes;
   bufferization consumes them. Which forces L2's ordering: after fusion
   decisions, before/alongside the runtime plan.
+
+## The Program excavation — plan (written at P9, owner-requested)
+
+The incumbent Program/Instr IR is scheduled to DIE: the dialect
+(Region/OpDef, one Lowerer) is the one engine, and `export_program` is
+"the migration view — this view dies when the last consumer retargets."
+The current consumer inventory of Programs, all in `pdum.tl`:
+**autodiff** (grad walks Instrs; ALL adjoint knowledge lives here),
+**signatures**, **opcount**, **memory**, **placement/traffic**,
+**transforms** (dce/checkpoint), **assemblage/lift_step** (produce
+Programs THROUGH the view), the **zoo** (ZooModel.program), and
+`ir.run` itself. The semantic core is already single-copy — layout ops
+live on Tensor/Layout, compute ops in compute.py/indexing.py, with
+ir.py rows as one-line adapters and the dialect's typing/evaluation
+DERIVED from them (`_BRIDGED` + `run_region`'s generic bridge) — so
+every op added during coexistence (P9's family included) costs exactly
+one repoint at excavation, never a rewrite.
+
+**When: the excavation IS L4's first act** (200 §8's "tensor tier
+retargets off the migration view"), on the Linux box, BEFORE new
+backend work — because K-A (kernels as annotations) wants to annotate
+the IR that will survive, and writing L4 against Programs would double
+the debt. **Order:** (1) analyses that only READ shapes retarget first
+(signatures, opcount, memory, placement — mechanical walks over
+Region nodes); (2) transforms (dce/checkpoint — graph surgery, needs
+the Region's SSA discipline); (3) autodiff LAST and alone (the adjoint
+rules are the battle-tested knowledge; `derive_vjp` on regions already
+exists for fold steps and is the seed); (4) delete export_program +
+ir.run, fold eval_instr/infer_instr's rows into the OpDefs they
+already feed. One consumer per step, suite green between steps.
+**Known debt to burn:** the `_freeze_params`/`_thaw_params` dict
+round-trip (split's ordered parts exposed it at P9 — attrs-as-data
+wants a first-class ordered mapping); Instr params as stringly dicts
+vs typed attrs; the double bookkeeping in lift_step's `names_of`.
+
+## P9 — awaiting owner ratification
+
+- **The aligned law + `over=`** (250 §10 as now written): idx dims
+  shared with surviving table dims ALIGN by name in `take` (the
+  naming law; batched reorder/gate-gather fall out); `scatter_add`
+  DECLARES its consumed dims via `over=` (reduce's precedent, default
+  all). §1.9's text described only the splice form — this is the
+  extension that made the spec's own batched claims spellable.
+- **The kernel-tier data-dependent STORE face** (the P9 spec test,
+  still skipped): proposal — `img[j] = v` at value (i32) indices
+  lowers to scatter_add over the ambient lattice with the WHOLE
+  writable as the declared output (zeros where no thread lands, the
+  pointwise-store law's scatter face; duplicates SUM, deterministic).
+  The alternative reading (accumulate INTO prior buffer contents) is
+  a read-modify-write the spelling does not say. Not built until
+  ruled.
