@@ -43,6 +43,7 @@ from pdum.dsl.lower import Lowerer, check_coherence
 from pdum.dsl.ops import CORE_OPS
 from pdum.dsl.pack import ABI_OPS, pack_into
 from pdum.dsl.registry import DEFAULT
+from pdum.dsl.types import Type
 
 from .dialect import TL_OPS, TensorType, capture_shim, run_region, tensor_type
 from .encoding import FormatEncoding
@@ -490,8 +491,6 @@ def render(pso, *args, target: Tensor):
 _RGBA8_SRGB = FormatEncoding("unorm8-srgb")
 _GPU: list = []  # the lazy device singleton (first upload/sampler creates it)
 
-
-from pdum.dsl.types import Type
 
 
 @dataclass(frozen=True)
