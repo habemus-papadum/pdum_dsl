@@ -93,7 +93,13 @@ coordinate law still holds). The observers make the callee style pay
 rent: `extent(c)` reads the frame's width — a host int, a build-time
 fact (and exactly where the keying ladder's extent-generic license
 will later swap in a uniform) — so one Coordinate argument carries
-location AND domain:
+location AND domain. `extent` has ONE rule at every tier
+(owner-ruled): the width, a host int — `extent(c)` on a Coordinate,
+`extent(t, "y")` on a tensor, and the kernel-lowered form all agree;
+the full domain pair is the Frame's job (`.start`/`.stop`). (Before
+the ruling, the eager form returned `(start, stop)` while the lowered
+form returned the width — the same spelling meant different things
+per tier, working only for 0-based dims.)
 
 ```python
 u = f32(j) / f32(extent(j))

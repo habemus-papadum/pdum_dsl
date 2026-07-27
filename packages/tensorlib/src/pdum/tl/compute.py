@@ -154,18 +154,18 @@ def contract(a: Tensor, b: Tensor, *, axis) -> Tensor:
     return reduce(red.sum, pointwise(pw.mul, repeat_like(a, b), repeat_like(b, a)), axis)
 
 
-def extent(x, name: str | None = None):
-    """A structural READ — build-time fact. ``extent(c)`` on a Coordinate:
-    the frame's width (a host INT; promote it explicitly — f32(extent(c)) —
-    ints never silently join float math). ``extent(t, name)``: the dim's
-    (start, stop)."""
+def extent(x, name: str | None = None) -> int:
+    """A structural READ — build-time fact, ONE rule at every tier
+    (owner-ruled): the WIDTH, a host int. ``extent(c)`` reads a
+    Coordinate's frame; ``extent(t, name)`` reads a tensor's dim. Promote
+    it explicitly to join float math — f32(extent(c)); ints never join
+    silently. The full domain is the Frame's job (.start/.stop)."""
     if name is None:
         if isinstance(x, Coordinate):
             return x.frame.size
-        raise TypeError("extent(c) wants a Coordinate; extent(t, name) reads a dim's (start, stop)")
+        raise TypeError("extent(c) wants a Coordinate; extent(t, name) reads a dim")
     lay = getattr(x, "shadow", None) or x.layout
-    d = lay.dim(name)
-    return (d.start, d.stop)
+    return lay.dim(name).size
 
 
 def const_like(t: Tensor, value) -> Tensor:

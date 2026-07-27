@@ -5,7 +5,7 @@ store-side promotion (scalar → memoryless const broadcast)."""
 
 import numpy as np
 import pytest
-from pdum.tl import Frame, Slice, Tensor, q
+from pdum.tl import Frame, Slice, Tensor, extent, q
 
 
 def T(arr, names):
@@ -270,3 +270,10 @@ def test_coordinate_is_not_a_value(img):
     y, x = t.frames("y", "x")
     with pytest.raises(TypeError, match="not a value"):
         t[y[0], x[0]] = y[3]
+
+
+def test_extent_is_the_width_at_every_tier(img):
+    arr, t = img
+    assert extent(t, "y") == 8  # ONE rule: extent = the width, a host int
+    (y,) = t.frames("y")
+    assert extent(y[3]) == 8  # the coordinate face reads the same fact

@@ -26,12 +26,12 @@ from ..lifting import lift_step
 from .zoo_common import ZooModel, t_in
 
 
-def _ghost(u, dim, extent, delta):
+def _ghost(u, dim, domain, delta):
     # u[i - delta] with a zero ghost outside: shift, slice, pad(0)
-    lo, hi = extent
+    lo, hi = domain
     sh = u.shift(**{dim: delta})
     sl = sh.slice(**{dim: (lo + max(delta, 0), hi + min(delta, 0))})
-    return sl.pad(fill=0.0, **{dim: extent})
+    return sl.pad(fill=0.0, **{dim: domain})
 
 
 def _heat_step(u, n: Literal[int], m: Literal[int], alpha: Literal[float]):
