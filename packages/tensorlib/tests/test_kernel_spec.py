@@ -442,7 +442,7 @@ def test_fragment_taps_bind_render_buffers_mrt():
     to a second render target at the pass: MRT, G-buffers for free. The
     bound NAME SET specializes the pair; the buffers are invocation data."""
     from pdum.dsl import jit
-    from pdum.tl.graphics import fragment, pair, position, render, vertex  # noqa: F821
+    from pdum.tl.graphics import fragment, pair, position, render, vertex, vertex_index  # noqa: F401
     from pdum.tl.kernel import config
 
     def shaded(cy, cx, r):
