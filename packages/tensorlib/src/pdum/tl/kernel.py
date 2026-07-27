@@ -14,8 +14,10 @@ Since the pivot's kernel switch, kernels lower through the DSL Lowerer
 with the KERNEL RULE PACK — a layer over the tl dialect pack, which is a
 layer over the base value pack — onto ``tl.*`` Regions (``tl.iota`` over
 the writable lattice, ``tl.pointwise`` bodies, token-threaded
-``tl.store``), and ``run_region`` executes them. The iota unification is
-now literal: thread coordinates ARE ``tl.iota`` nodes.
+``tl.store``), and ``run_region`` executes them. Thread coordinates are
+COORDINATES (250): ``tl.coord`` handles typed by their Frame, backed by
+``tl.iota`` fields — subscripts consume them typed and order-free,
+coercion (``f32``/``i32``) takes the backing, arithmetic refuses.
 
 Claiming is TAGLESS (S.4 amendment): every uniquely-named binding is a
 claimable site — ``config(taps={"dist": t})`` binds the binding named
@@ -49,6 +51,7 @@ import ast
 import hashlib
 import struct
 from dataclasses import dataclass
+from dataclasses import replace as _dc_replace
 
 import numpy as np
 from pdum.dsl import events
@@ -65,9 +68,11 @@ from pdum.dsl.value import _name as _value_name
 from pdum.dsl.value import _subscript as _value_subscript
 from pdum.dsl.valuekind import typeof
 
+from .coords import Frame, admit_frame
 from .dialect import (
     TL_OPS,
     TL_RULES,
+    CoordType,
     TensorType,
     _globals_of,
     _inline_plain,
@@ -100,6 +105,9 @@ _ARG_BINDINGS: dict[str, object] = {}  # marker name -> the CURRENT handle (per 
 thread_idx = _Intrinsic("thread_idx")
 block_idx = _Intrinsic("block_idx")  # the RAW pair's other half (S.3: raws are the primitives)
 grid_layout = _Intrinsic("grid_layout")  # the launch geometry AS A LAYOUT (split+bind, like placement)
+f32 = _Intrinsic("f32")  # the explicit coercion doors (250 §3): a Coordinate
+i32 = _Intrinsic("i32")  # is not a number; these name the value type it becomes
+rename = _Intrinsic("rename")  # the first adapter: re-associate a Coordinate with another dim name
 # The stdlib device function over the full triple (block, thread, grid) — layout
 # evaluation. The kernel tier binds the NAME to the computed affine map
 # (S.3: declarations over recognition; CUDA's computed floor, Metal's built-in).
@@ -278,7 +286,9 @@ def _claim(ctx, name, value):
         c["k.invalid"][name] = "bound at more than one site (rebinding or inlining made it non-unique)"
         return
     c["k.claimed"].add(name)
-    if isinstance(value, Node) and isinstance(value.type, TensorType):
+    if isinstance(value, Node) and isinstance(value.type, CoordType):
+        c["k.claims"][name] = value.args[0]  # tapping a coordinate dumps its iota field
+    elif isinstance(value, Node) and isinstance(value.type, TensorType):
         c["k.claims"][name] = value
     else:
         c["k.invalid"][name] = "not a lattice value (nothing to store)"
@@ -390,8 +400,11 @@ def _ambient_iota(ctx, kind, axis, name, lattice, node):
     if form == "one":
         if kind == "block_idx":
             dims = tuple((d.name, (d.start, d.stop)) for d in lattice.type.dims)
-            return ctx.emit("tl.const", node=node, value=0.0, dims=dims)
-        return ctx.emit("tl.iota", lattice, node=node, name=name)
+            backing = ctx.emit("tl.const", node=node, value=0.0, dims=dims)
+            return ctx.emit("tl.coord", backing, node=node, frame=Frame(f"{name}.b", 0, 1))
+        backing = ctx.emit("tl.iota", lattice, node=node, name=name)
+        frame = next(f for f in lattice.type.dims if f.name == name)
+        return ctx.emit("tl.coord", backing, node=node, frame=frame)
     src = _grid_node(ctx, lattice)
     if form == "pairs":
         b_dim, t_dim = info[axis]  # positional: axis labels name the call's order
@@ -401,7 +414,10 @@ def _ambient_iota(ctx, kind, axis, name, lattice, node):
             raise ValueError(f"the writable lattice has no axis {name!r} (dims: {tuple(t[0] for t in info)})")
         a, _, _ = match
         b_dim, t_dim = f"{a}.b", f"{a}.t"
-    return ctx.emit("tl.iota", src, node=node, name=b_dim if kind == "block_idx" else t_dim)
+    dim = b_dim if kind == "block_idx" else t_dim
+    backing = ctx.emit("tl.iota", src, node=node, name=dim)
+    frame = next(f for f in src.type.dims if f.name == dim)
+    return ctx.emit("tl.coord", backing, node=node, frame=frame)
 
 
 def _grid_layout_of(ctx):
@@ -435,10 +451,13 @@ def _global_from_raws(ctx, blocks, threads, g, node):
     c = ctx.context
     blocks = blocks if isinstance(blocks, tuple) else (blocks,)
     threads = threads if isinstance(threads, tuple) else (threads,)
+    lattice = ctx.root.params[-1]
     out = []
     for b, t in zip(blocks, threads):
-        t_name = dict(t.attrs).get("name", "") if isinstance(t, Node) else ""
-        if _norm_geom(c["k.geom"]) is None:  # one block: the identity map
+        if not (isinstance(t, Node) and isinstance(t.type, CoordType)):
+            raise ValueError("global_thread_idx wants the raw (block, thread) Coordinate pair and grid_layout()")
+        t_name = t.type.frame.name
+        if _norm_geom(c["k.geom"]) is None:  # one block: the identity map — the raw IS the global coordinate
             c["k.globals"][id(t)] = t_name
             out.append(t)
             continue
@@ -446,8 +465,16 @@ def _global_from_raws(ctx, blocks, threads, g, node):
         if extent is None:
             raise ValueError(f"global_thread_idx: the grid layout has no thread dim {t_name!r} — pass grid_layout()")
         scale = ctx.emit("core.const", node=node, type=f64, value=float(extent))
-        gnode = ctx.emit("tl.pointwise", ctx.emit("tl.pointwise", b, scale, node=node, f="mul"), t, node=node, f="add")
-        c["k.globals"][id(gnode)] = t_name[:-2] if t_name.endswith(".t") else None
+        b_back = b.args[0] if isinstance(b, Node) and isinstance(b.type, CoordType) else b
+        prod = ctx.emit("tl.pointwise", b_back, scale, node=node, f="mul")
+        chain = ctx.emit("tl.pointwise", prod, t.args[0], node=node, f="add")
+        axis = t_name[:-2] if t_name.endswith(".t") else None
+        frame = next((f for f in lattice.type.dims if f.name == axis), None) if axis else None
+        if frame is None:  # pairs form: no flat dim exists — a value-only coordinate frame
+            bsize = b.type.frame.size if isinstance(b, Node) and isinstance(b.type, CoordType) else 1
+            frame = Frame(t_name, 0, extent * bsize)
+        gnode = ctx.emit("tl.coord", chain, node=node, frame=frame)
+        c["k.globals"][id(gnode)] = axis
         out.append(gnode)
     return tuple(out)
 
@@ -456,20 +483,28 @@ def _k_call(ctx, node):
     """The kernel layer of call resolution: the ambient (iota-recording)
     and function-valued arguments; everything else — markers, the staging
     door, helper inlining, the S.1 vocabulary — is the shared dialect pack."""
-    c = ctx.context
     if isinstance(node.func, ast.Name):
         name = node.func.id
         obj = _lookup(ctx, name)
         if isinstance(obj, _Intrinsic) and obj.name in ("thread_idx", "block_idx"):
             lattice = ctx.root.params[-1]  # the writable target (S.3 convention)
-            out = tuple(_ambient_iota(ctx, obj.name, i, cst.value, lattice, node) for i, cst in enumerate(node.args))
-            c["k.iotas"].extend(out)
-            return out  # ALWAYS a tuple
+            return tuple(_ambient_iota(ctx, obj.name, i, cst.value, lattice, node) for i, cst in enumerate(node.args))
         if isinstance(obj, _Intrinsic) and obj.name == "grid_layout":
             return _grid_layout_of(ctx)  # a HOST value: the geometry as a Layout
         if isinstance(obj, _Intrinsic) and obj.name == "global_thread_idx":
             b_arg, t_arg, g = _lower_args(ctx, node)
             return _global_from_raws(ctx, b_arg, t_arg, g, node)
+        if isinstance(obj, _Intrinsic) and obj.name in ("f32", "i32"):
+            (v,) = _lower_args(ctx, node)
+            if not (isinstance(v, Node) and isinstance(v.type, CoordType)):
+                raise TypeError(f"{obj.name}() coerces a Coordinate; already a value — drop the coercion")
+            return v.args[0]  # the backing field; f64 interior (210's policy), the name records declared intent
+        if isinstance(obj, _Intrinsic) and obj.name == "rename":
+            v = ctx.lower(node.args[0])
+            if not (isinstance(v, Node) and isinstance(v.type, CoordType)):
+                raise TypeError("rename() adapts a Coordinate to a different dim name")
+            new = _dialect_host(ctx, node.args[1])
+            return ctx.emit("tl.coord", v.args[0], node=node, frame=_dc_replace(v.type.frame, name=new))
         if obj is not None and getattr(obj, "fp", None) is not None:
             return _fn_arg(ctx, obj, _lower_args(ctx, node), None, node)
     return _tl_call(ctx, node)
@@ -576,6 +611,11 @@ def _fn_arg(ctx, handle, args, out_spec, node):
     Staged transforms of a parameter replay their recipe chain on the
     CURRENT launch binding — both classes."""
     pname, wrap = _resolve_staged(ctx, handle)
+    # Application AT coordinates is the ambient semantic (S.3's committed
+    # spelling, f(y, x)): the call boundary is a DECLARED consumer — the
+    # splice takes each Coordinate's backing field as the argument. The
+    # coercion doctrine (250 §3) governs operators, not declared doors.
+    args = tuple(a.args[0] if isinstance(a, Node) and isinstance(a.type, CoordType) else a for a in args)
     if all(isinstance(a, Node) for a in args) and hasattr(handle, "fntype"):
         if _references_ambient(handle):
             return _inline_ambient(ctx, handle, args, out_spec, node)
@@ -787,14 +827,15 @@ def _fn_arg_oracle(ctx, handle, args, out_spec, node, pname, wrap):
 def _check_indices(ctx, sub):
     """Store indices are AMBIENT-DERIVED and bijective (owner-ruled): the
     raw coordinates, or the DECLARED global coordinates (the recorded
-    outputs of global_thread_idx). Anything else — arbitrary index
-    arithmetic, data-dependent indexing — is scatter territory (P9)."""
+    outputs of global_thread_idx). The check is TYPED (250 §6): only the
+    ambient doors mint CoordType, so the type IS the credential. Anything
+    else — arbitrary index arithmetic, data-dependent indexing — is
+    scatter territory (P9)."""
     idx = sub.slice.elts if isinstance(sub.slice, ast.Tuple) else [sub.slice]
     out = []
     for i in idx:
         v = ctx.lower(i)
-        raw = isinstance(v, Node) and any(v == t for t in ctx.context["k.iotas"])
-        if not raw and id(v) not in ctx.context["k.globals"]:
+        if not (isinstance(v, Node) and isinstance(v.type, CoordType)):
             raise ValueError(
                 "kernel subscripts take exactly the thread coordinates — raw, or the "
                 "declared global_thread_idx pair (data-dependent indexing is "
@@ -815,6 +856,8 @@ def _k_assign(ctx, node):
             raise ValueError("stores write into a tensor argument")
         idx_nodes = _check_indices(ctx, tgt)
         value = _k_call(ctx, node.value) if isinstance(node.value, ast.Call) else ctx.lower(node.value)
+        if isinstance(value, Node) and isinstance(value.type, CoordType):
+            raise TypeError("a Coordinate is not a storable value — coerce explicitly (f32/i32)")
         if not hasattr(value, "type"):  # a scalar store broadcasts over the target lattice
             dims = tuple((d.name, (d.start, d.stop)) for d in target.type.layout.dims)
             value = ctx.emit("tl.const", node=node, value=float(value), dims=dims)
@@ -869,24 +912,52 @@ def _k_assign(ctx, node):
 
 
 def _k_subscript(ctx, node):
-    """A LOAD. At exactly the thread coordinates it is the view itself;
-    at COMPUTED integer indices it is a value-language gather (``tl.read``
-    — P8 buffer reads, the fuzz/texture door), gradient-free through the
-    indices. Data-dependent STORES remain P9 (scatter)."""
+    """A LOAD. Coordinate indices are TYPED and ORDER-FREE (250 §6): one
+    per dim, bound by frame name, strict identity + containment
+    (admit_frame) — the identity load (the view itself) when every frame
+    matches exactly, a lattice-parallel ``tl.read`` at the coordinate
+    backings under strict containment. VALUE indices are the computed-read
+    door (P8 buffer reads, the fuzz/texture door), gradient-free through
+    the indices; mixing the two refuses toward explicit coercion.
+    Data-dependent STORES remain P9 (scatter)."""
     if isinstance(node.value, ast.Name):
         base = ctx.locals.get(node.value.id)
         if isinstance(base, Node) and isinstance(base.type, TensorType):
             idx = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
             vals = [ctx.lower(i) for i in idx]
-            names = [d.name for d in base.type.dims]
-            if len(vals) == len(names) and all(
-                isinstance(v, Node)
-                and v.op == "tl.iota"
-                and dict(v.attrs).get("name") == n
-                and any(v == t for t in ctx.context["k.iotas"])
-                for v, n in zip(vals, names)
-            ):
-                return base  # the identity load: the view itself
+            n_coord = sum(1 for v in vals if isinstance(v, Node) and isinstance(v.type, CoordType))
+            if n_coord and n_coord != len(vals):
+                raise TypeError(
+                    "a subscript mixes Coordinates and value indices — coerce the "
+                    "coordinates (f32/i32) for a computed read, or index with Coordinates only"
+                )
+            if n_coord:
+                by_name = {}
+                for v in vals:
+                    nm = v.type.frame.name
+                    if nm in by_name:
+                        raise TypeError(
+                            f"duplicate coordinate for dim {nm!r} — a diagonal read is a computed read: coerce (i32)"
+                        )
+                    by_name[nm] = v
+                names = [d.name for d in base.type.dims]
+                if set(by_name) != set(names):
+                    raise TypeError(
+                        f"subscript coordinates {tuple(sorted(by_name))} do not cover the "
+                        f"tensor's dims {tuple(sorted(names))} — one Coordinate per dim, any order"
+                    )
+                ordered = [by_name[n] for n in names]
+                for v, d in zip(ordered, base.type.dims):
+                    admit_frame(d, v.type.frame)
+                if all(
+                    v.type.frame == d and v.args[0].op == "tl.iota" and dict(v.args[0].attrs).get("name") == d.name
+                    for v, d in zip(ordered, base.type.dims)
+                ):
+                    return base  # the identity load: the view itself (un-renamed ambient only)
+                # renamed/derived coordinates read AT their backings — the
+                # result lives on the ambient lattice, which is what aligns
+                return ctx.emit("tl.read", base, *(v.args[0] for v in ordered), node=node)
+
             def lift_ix(v):
                 return v if isinstance(v, Node) else ctx.emit("core.const", node=node, type=f64, value=float(v))
 
@@ -1035,7 +1106,6 @@ def _compile(fn, args, tap_names=(), geom=None) -> _Artifact:
             "k.claimed": set(),
             "k.fn_params": {},
             "k.fn_markers": {},
-            "k.iotas": [],
             "k.stored": [],
             "k.pname_of": {},
             "k.uniforms": {},

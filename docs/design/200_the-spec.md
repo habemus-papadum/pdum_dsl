@@ -1022,6 +1022,27 @@ tensor-lifter path is a vectorizing *execution strategy* for the same
 programs, not a sibling language. The whole-tensor assemblage tier
 remains the separate altitude above.
 
+**S.3 amendment (P8.6, owner-ruled): the coordinate law.** The ambient
+functions yield **Coordinates** — typed handles (`CoordType`: the
+observable Frame plus an iota-backed value field), never bare numbers
+(normative: `250_coordinate-algebra.md`). Subscripts consume them
+TYPED and ORDER-FREE: one Coordinate per dim, bound by frame name —
+`dst[x, y] = src[y, x]` IS `dst[y, x] = src[y, x]` — under strict
+frame identity with containment extent; `rename(c, "row")` is the
+adapter when a tensor's dims don't share the thread-lattice names (a
+renamed read lands on the ambient lattice, which is what aligns).
+**No arithmetic on a Coordinate**: numeric use refuses toward the
+explicit coercion doors — `f32(c)` for value math, `i32(c)` for index
+math (f64 interior per 210; the name records declared intent) — and
+nothing degrades to float silently. Value-indexed reads (`tex[i32(y)
++ dy]`) remain the computed-read door; mixing Coordinates and value
+indices in one bracket refuses. Application at coordinates —
+`f(y, x)` — is a DECLARED consumer, not arithmetic: the splice takes
+each Coordinate's backing as the argument (the ambient application
+semantic; this is what keeps device functions scalar-language
+citizens). Coordinate arithmetic returning Coordinates (SDFs, window
+reads) arrives with its first consumer, per 250 §9.
+
 *The invocation config.* `kernel[config(...)](args)` brackets the
 launch; each component has its own specialization regime, stated
 per component rather than blanket: **blocks/threads** — the geometry —

@@ -398,6 +398,35 @@ def as_index(ix) -> "Coordinate | Slice":
     raise TypeError(f"subscripts take Coordinates and Slices (design 250), got {ix!r} — make points via frames()")
 
 
+def admit_frame(target: Frame, f: Frame) -> None:
+    """The WHOLE-DOMAIN form of the subscript law (the kernel tier, where a
+    coordinate ranges over its entire frame): strict labeling identity,
+    domain containment — every point the frame can take must be admitted."""
+    if f.name != target.name:
+        raise TypeError(f"index frame {f.name!r} does not name dim {target.name!r}")
+    if f == target:
+        return
+    if f.chart != target.chart:
+        raise TypeError(
+            f"frame mismatch on {f.name!r}: chart {f.chart!r} vs {target.chart!r} — "
+            f"the subscript law is strict identity; rebuild the index from the target's frames()"
+        )
+    if (f.labels is None) != (target.labels is None):
+        raise TypeError(f"frame mismatch on {f.name!r}: labeled-meets-unlabeled refuses")
+    if f.level != target.level:
+        raise TypeError(f"frame mismatch on {f.name!r}: level {f.level!r} vs {target.level!r}")
+    if f.start < target.start or f.stop > target.stop:
+        raise IndexError(
+            f"{f.name}: domain [{f.start}, {f.stop}) not contained in the target's "
+            f"[{target.start}, {target.stop}) — containment is the extent law"
+        )
+    if f.labels is not None and target.labels is not None:
+        for i in range(f.start, f.stop):
+            a, b = f.labels[i - f.start], target.labels[i - target.start]
+            if a != b:
+                raise TypeError(f"frame mismatch on {f.name!r}: label {a!r} vs {b!r} at {i}")
+
+
 def admit(target: Frame, index) -> None:
     """The subscript law's type check: STRICT frame identity, CONTAINMENT
     extent (the one relaxation — visited points must lie in the target's

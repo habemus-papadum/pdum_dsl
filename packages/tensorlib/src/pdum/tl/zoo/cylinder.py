@@ -17,7 +17,7 @@ import numpy as np
 from pdum.dsl import jit, value_and_grad
 from pdum.dsl.intrinsics import clamp  # noqa: F401 — inlines by capture-and-call
 from pdum.dsl.markers import cos, ge, sin, sqrt, where  # noqa: F401 — bare in bodies
-from pdum.tl import Tensor, compute, thread_idx
+from pdum.tl import Tensor, compute, f32, i32, thread_idx
 from pdum.tl.graphics import fragment, pair, position, render, vertex
 
 TAU = 6.283185307179586
@@ -41,8 +41,8 @@ def ripple(src, dst):
     theta read at a COMPUTED index (the c=0 column), the phase riding
     the uniform channel."""
     i, c = thread_idx("vid", "c")
-    theta = src[i, c * 0.0]  # the theta column, broadcast per vertex row
-    dst[i, c] = src[i, c] + where(ge(c, 0.5), sin(theta * 3.0 + _PHASE) * 0.08, 0.0)
+    theta = src[i32(i), i32(c) * 0.0]  # the theta column, broadcast per vertex row
+    dst[i, c] = src[i, c] + where(ge(f32(c), 0.5), sin(theta * 3.0 + _PHASE) * 0.08, 0.0)
 
 
 def spun(angle: float):

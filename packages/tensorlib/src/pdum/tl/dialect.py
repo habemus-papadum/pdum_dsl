@@ -90,6 +90,19 @@ class TokenType(Type):
     """The ordering token — stores consume and produce it (dataflow)."""
 
 
+@dataclass(frozen=True)
+class CoordType(Type):
+    """A Coordinate at the kernel tier (design 250): a typed handle whose
+    frame is the dim identity and whose backing (the ``tl.coord`` op's one
+    operand) is the value field realizing it — an iota, a zero field, or
+    an affine chain. Value dataflow never flows THROUGH a coordinate:
+    subscripts check the type and consume the backing, coercion (f32/i32)
+    returns the backing, and arithmetic on the handle refuses. Only the
+    ambient doors mint it — CoordType IS the ambient-derived credential."""
+
+    frame: Frame
+
+
 def tensor_type(t: Tensor) -> TensorType:
     return TensorType(t.layout)
 
@@ -120,6 +133,13 @@ def _r_pointwise(args, attrs, regions):
         details = "\n".join(f"  {m!r}" for m in issues)
         raise TypeError(f"tl.pointwise wants ALIGNED operands:\n{details}")
     return TensorType(infer_instr(Instr("out", "pointwise", ("a0",), {}), {"a0": ts[0].layout}))
+
+
+def _r_coord(args, attrs, regions):
+    (backing,) = args
+    if not isinstance(backing, TensorType):
+        raise TypeError("tl.coord wants a lattice-valued backing")
+    return CoordType(attrs["frame"])
 
 
 def _r_iota(args, attrs, regions):
@@ -240,6 +260,7 @@ TL_OPS = {
     # per-launch scalar slots are abi.slot — the dsl's marshaling dialect,
     # ONE concept both tiers (240 C5; the uniform channel is its kernel face)
     "tl.token": OpDef("tl.token", lambda a, at, r: TokenType(), PURE),
+    "tl.coord": OpDef("tl.coord", _r_coord, PURE),
     "tl.iota": OpDef("tl.iota", _r_iota, PURE),
     "tl.pointwise": OpDef("tl.pointwise", _r_pointwise, PURE),
     "tl.read": OpDef("tl.read", _r_read, PURE),
@@ -255,6 +276,12 @@ TL_OPS = {
 _BIN_MARKER = {pyast.Add: "add", pyast.Sub: "sub", pyast.Mult: "mul", pyast.Div: "div"}
 _CMP_MARKER = {pyast.Lt: "lt", pyast.Gt: "gt", pyast.LtE: "le", pyast.GtE: "ge", pyast.Eq: "eq", pyast.NotEq: "ne"}
 
+_COORD_MATH = (
+    "no arithmetic on a Coordinate — a point is not a number in the kernel either: "
+    "coerce it first (f32(c) for value math, i32(c) for index math); coordinate "
+    "arithmetic (250 §9) arrives with its first consumer"
+)
+
 
 def _typed_rule(table, base_rule, pick):
     """The op-selection pattern, once: lower the children; a tensor operand
@@ -263,6 +290,8 @@ def _typed_rule(table, base_rule, pick):
 
     def rule(ctx, node):
         operands = [ctx.lower(a) for a in _operands_of(node)]
+        if any(hasattr(o, "type") and isinstance(o.type, CoordType) for o in operands):
+            raise TypeError(_COORD_MATH)
         tensorish = any(hasattr(o, "type") and isinstance(o.type, TensorType) for o in operands)
         f = table.get(type(pick(node)))
         if tensorish:
@@ -419,7 +448,17 @@ def _tl_call(ctx, node):
         if isinstance(obj, _Intrinsic) and obj.name == "thread_idx":
             lattice = ctx.root.params[-1]  # the writable target (S.3 convention)
             names = [c.value for c in node.args]
-            return tuple(ctx.emit("tl.iota", lattice, node=node, name=n) for n in names)  # ALWAYS a tuple
+            out = []
+            for n in names:  # Coordinates (250): the iota backing, frame-typed
+                backing = ctx.emit("tl.iota", lattice, node=node, name=n)
+                frame = next(f for f in lattice.type.dims if f.name == n)
+                out.append(ctx.emit("tl.coord", backing, node=node, frame=frame))
+            return tuple(out)  # ALWAYS a tuple
+        if isinstance(obj, _Intrinsic) and obj.name in ("f32", "i32"):
+            v = ctx.lower(node.args[0])
+            if not (hasattr(v, "type") and isinstance(v.type, CoordType)):
+                raise TypeError(f"{obj.name}() coerces a Coordinate; already a value — drop the coercion")
+            return v.args[0]  # the backing field; f64 interior (210's policy), the name records declared intent
         if obj is _eager_pw:  # the S.1 STEP-tier spelling
             marker = _lookup(ctx, node.args[0].id) or ctx.context["registry"].overloads.get(node.args[0].id)
             if marker is None or not hasattr(marker, "name"):
@@ -463,6 +502,8 @@ def _tl_call(ctx, node):
         obj2 = obj if obj is not None else ctx.context["registry"].overloads.get(node.func.id)
         if isinstance(obj2, Marker) or type(obj2).__name__ == "CompositeMarker":
             args = [_scalar_lift(ctx, node, ctx.lower(a)) for a in node.args]
+            if any(hasattr(a, "type") and isinstance(a.type, CoordType) for a in args):
+                raise TypeError(_COORD_MATH)
             if any(hasattr(a, "type") and isinstance(a.type, TensorType) for a in args):
                 if ctx.context.get("tl.kind") != "compute":  # the STEP tier spells pointwise
                     raise ValueError(
@@ -676,6 +717,8 @@ def _tl_constant(ctx, node):
 def _tl_unary(ctx, node):
     if isinstance(node.op, pyast.USub):
         v = ctx.lower(node.operand)
+        if hasattr(v, "type") and isinstance(v.type, CoordType):
+            raise TypeError(_COORD_MATH)
         if hasattr(v, "type") and isinstance(v.type, TensorType):
             return ctx.emit("tl.pointwise", v, node=node, f="neg")
         if not hasattr(v, "type"):
@@ -972,6 +1015,8 @@ def run_region(region: Region, values: list, uniforms: bytes | None = None, text
             return ev(n.args[0])[attrs["index"]]
         if n.op == "tl.token":
             return Token()
+        if n.op == "tl.coord":  # a typed handle: its value IS its backing
+            return ev(n.args[0])
         if n.op == "abi.slot":
             return struct.unpack_from(attrs["fmt"], uniforms, attrs["offset"])[0]
         if n.op == "tl.iota":

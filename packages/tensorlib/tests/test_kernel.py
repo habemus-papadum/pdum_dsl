@@ -12,7 +12,7 @@ from pdum.dsl import events, jit, op
 from pdum.dsl.reference import reference
 from pdum.tl import Tensor
 from pdum.tl.compute import iota, pointwise
-from pdum.tl.kernel import KERNELS, compute, config, thread_idx
+from pdum.tl.kernel import KERNELS, compute, config, f32, i32, thread_idx
 from pdum.tl.zoo.zoo_common import GELU_C, np_gelu
 from pdum.tl.zoo.zoo_common import gelu as gelu_marker
 
@@ -42,7 +42,7 @@ def zoom(scale):
 @compute
 def shader(f, img):
     y, x = thread_idx("y", "x")
-    img[y, x] = f(y + x)
+    img[y, x] = f(f32(y) + f32(x))
 
 
 def _expected(f, shape):
@@ -104,7 +104,7 @@ def _gelu(v):
 @compute
 def gelu_kernel(img):
     (y,) = thread_idx("y")
-    img[y] = _gelu(y * 0.1)
+    img[y] = _gelu(f32(y) * 0.1)
 
 
 def test_the_two_consumers_differential():
@@ -198,8 +198,8 @@ def test_writable_overlapping_readable_refuses_ping_pong():
 @compute
 def complex_kernel(re_out, im_out):
     (y,) = thread_idx("y")
-    re_out[y] = y * 0.5
-    im_out[y] = 1.0 - y * 0.25
+    re_out[y] = f32(y) * 0.5
+    im_out[y] = 1.0 - f32(y) * 0.25
 
 
 def test_struct_element_kernel_round_trips_through_structured_encoding():
@@ -234,7 +234,7 @@ def test_kernels_return_nothing_and_data_dependent_indexing_refuses():
     @compute
     def bad_index(img):
         (y,) = thread_idx("y")
-        img[y * 2] = 1.0
+        img[i32(y) * 2] = 1.0
 
     with pytest.raises(ValueError, match=r"exactly the thread coordinates.*arriving P9"):
         bad_index(T(np.zeros(3), ("y",)))
@@ -257,7 +257,7 @@ def _looped_device_fn(cr, ci):
 @compute
 def _escape_kernel(f, img):
     y, x = thread_idx("y", "x")
-    img[y, x] = f(y * 0.5 - 1.0, x * 0.5 - 1.0)
+    img[y, x] = f(f32(y) * 0.5 - 1.0, f32(x) * 0.5 - 1.0)
 
 
 def test_liftable_fn_args_inline_with_zero_oracle_dispatch():
@@ -346,7 +346,7 @@ def test_the_reference_refuses_out_of_bounds_reads():
     @compute
     def shift_read(tex, img):
         (y,) = thread_idx("y")
-        img[y] = tex[y + 3.0]
+        img[y] = tex[i32(y) + 3.0]
 
     tex, img = T(np.arange(5.0), ("y",)), T(np.zeros(3), ("y",))
     with pytest.raises(ValueError, match="out of bounds.*oracle has no undefined behavior"):
@@ -377,7 +377,7 @@ from pdum.tl.kernel import shared  # noqa: E402
 @compute
 def tapped_kernel(img):
     y, x = thread_idx("y", "x")
-    dist = (y - 1.0) * (y - 1.0) + x * 0.0
+    dist = (f32(y) - 1.0) * (f32(y) - 1.0) + f32(x) * 0.0
     img[y, x] = dist * 2.0
 
 
@@ -426,8 +426,8 @@ def _tapped_helper(v):
 @compute
 def colliding_kernel(img):
     y, x = thread_idx("y", "x")
-    a = _tapped_helper(y + 0.0)
-    b = _tapped_helper(x + 0.0)  # the SAME binding inlined twice: non-unique
+    a = _tapped_helper(f32(y) + 0.0)
+    b = _tapped_helper(f32(x) + 0.0)  # the SAME binding inlined twice: non-unique
     img[y, x] = a + b
 
 
@@ -472,7 +472,7 @@ def test_undeclared_function_returning_host_call_refuses():
     def k(img):
         (y,) = thread_idx("y")
         f = sneaky_factory()  # noqa: F841
-        img[y] = y * 1.0
+        img[y] = f32(y) * 1.0
 
     with pytest.raises(ValueError, match=r"@staged.*or build the value outside"):
         k(T(np.zeros(3), ("y",)))
@@ -521,7 +521,7 @@ def test_unmarked_captured_scalar_is_data_warm_hit_fresh_value():
     @compute
     def k(img):
         (y,) = thread_idx("y")
-        img[y] = y * _C1_SCALE
+        img[y] = f32(y) * _C1_SCALE
 
     img = T(np.zeros(3), ("y",))
     k(img)
@@ -545,7 +545,7 @@ def test_uniform_slots_ride_the_dsl_marshaling_dialect():
     @compute
     def k(img):
         (y,) = thread_idx("y")
-        img[y] = y * _C1_SCALE
+        img[y] = f32(y) * _C1_SCALE
 
     img = T(np.zeros(3), ("y",))
     k(img)
@@ -568,7 +568,7 @@ def test_block_idx_default_geometry_and_split_geometry_warmth():
     def k_default(img):
         (by,) = block_idx("y")
         (ty,) = thread_idx("y")
-        img[ty] = by + ty  # by == 0 everywhere
+        img[ty] = f32(by) + f32(ty)  # by == 0 everywhere
 
     img = T(np.zeros(4), ("y",))
     k_default(img)
@@ -583,7 +583,7 @@ def test_block_idx_default_geometry_and_split_geometry_warmth():
     def k_split(tiled):
         (by,) = block_idx("y")
         (ty,) = thread_idx("y")
-        tiled[by, ty] = by * 4.0 + ty
+        tiled[by, ty] = f32(by) * 4.0 + f32(ty)
 
     base = T(np.zeros(8), ("y",))
     k_split[config(blocks=(2,), threads=(4,))](base.split("y", by=2, ty=4))
@@ -604,12 +604,12 @@ def test_identical_ir_shares_one_executor_across_kernels():
     @compute
     def k_left(img):
         (y,) = thread_idx("y")
-        img[y] = y * 3.0
+        img[y] = f32(y) * 3.0
 
     @compute
     def k_right(img):
         (y,) = thread_idx("y")
-        img[y] = y * 3.0
+        img[y] = f32(y) * 3.0
 
     assert _code_fp(k_left.fn) != _code_fp(k_right.fn)  # the pin's premise: two templates
     img = T(np.zeros(3), ("y",))
@@ -634,7 +634,7 @@ def test_literal_wrapped_capture_bakes_and_recompiles_by_choice():
     @compute
     def k(img):
         (y,) = thread_idx("y")
-        img[y] = y * _C4_GAIN
+        img[y] = f32(y) * _C4_GAIN
 
     img = T(np.zeros(3), ("y",))
     k(img)
@@ -660,7 +660,7 @@ def test_edited_captured_helper_misses_never_stale():
     @compute
     def k(img):
         (y,) = thread_idx("y")
-        img[y] = _c1_helper(y)
+        img[y] = _c1_helper(f32(y))
 
     img = T(np.zeros(3), ("y",))
     k(img)
@@ -691,7 +691,7 @@ def test_staged_transform_must_return_a_function_citizen():
     def k(f, img):
         (y,) = thread_idx("y")
         g = not_a_transform(f)  # noqa: F841
-        img[y] = y * 1.0
+        img[y] = f32(y) * 1.0
 
     with pytest.raises(ValueError, match=r"not a\s+function citizen"):
         k(twill(1.0, 0.0) | zoom(1.0), T(np.zeros(3), ("y",)))

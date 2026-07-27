@@ -29,8 +29,11 @@ from pdum.tl import (  # noqa: F401 — ambient vocabulary resolved from bodies'
     Tensor,
     block_idx,
     compute,
+    f32,
     global_thread_idx,
     grid_layout,
+    i32,
+    rename,
     thread_idx,
 )
 from pdum.tl.kernel import config
@@ -70,7 +73,7 @@ def test_raw_block_thread_ambient_and_derived_global():
         by, bx = block_idx("y", "x")  # raw
         ty, tx = thread_idx("y", "x")  # raw: within block under explicit geometry
         gy, gx = global_thread_idx((by, bx), (ty, tx), g)  # the triple
-        img[gy, gx] = (gy - (by * 8.0 + ty)) + (gx - (bx * 8.0 + tx))  # identity → 0
+        img[gy, gx] = (f32(gy) - (f32(by) * 8.0 + f32(ty))) + (f32(gx) - (f32(bx) * 8.0 + f32(tx)))  # identity → 0
 
     img = T(np.ones((16, 16)), ("y", "x"))
     k[config(blocks=(2, 2), threads=(8, 8))](img)
@@ -88,7 +91,7 @@ def test_split_aligned_tensors_index_by_raw_coordinates():
     def k(tiled):
         (by,) = block_idx("y")
         (ty,) = thread_idx("y")
-        tiled[by, ty] = by * 8.0 + ty  # the global coordinate, via raws alone
+        tiled[by, ty] = f32(by) * 8.0 + f32(ty)  # the global coordinate, via raws alone
 
     base = T(np.zeros(16), ("y",))
     k[config(blocks=(2,), threads=(8,))](base.split("y", by=2, ty=8))
@@ -106,14 +109,14 @@ def test_global_thread_idx_survives_coordinate_transforms():
         def go(y, x):
             g = grid_layout()  # the ambient reaches device functions too
             gy, gx = global_thread_idx(block_idx("y", "x"), thread_idx("y", "x"), g)
-            return (y - gy) + (x - gx)  # zero iff untransformed
+            return (y - f32(gy)) + (x - f32(gx))  # zero iff untransformed
 
         return go
 
     @compute
     def k(f, img):
         y, x = thread_idx("y", "x")
-        img[y, x] = f(y * 2.0, x * 2.0)  # transformed coords; ambient unchanged
+        img[y, x] = f(f32(y) * 2.0, f32(x) * 2.0)  # transformed coords; ambient unchanged
 
     img = T(np.zeros((2, 3)), ("y", "x"))
     k(probe(), img)
@@ -265,7 +268,7 @@ def test_element_reads_at_computed_indices():
     @compute
     def gather_diag(tex, img):
         (y,) = thread_idx("y")
-        img[y] = tex[y, y]  # computed index read (not just thread coords)
+        img[y] = tex[i32(y), i32(y)]  # computed index read (not just thread coords)
 
     tex = T(np.arange(9.0).reshape(3, 3), ("y", "x"))
     img = T(np.zeros(3), ("y",))
@@ -283,7 +286,7 @@ def test_neighborhood_static_loop_unrolls_to_scalar_ops():
         (y,) = thread_idx("y")
         acc = 0.0
         for dy in range(3):
-            acc = acc + tex[y + dy]
+            acc = acc + tex[i32(y) + dy]
         img[y] = acc / 3.0
 
     tex = T(np.arange(5.0), ("y",))
@@ -536,6 +539,86 @@ def test_shared_memory_config_linked_and_kernel_side_static():
 
 
 # --- P9: data-dependent indexing joins as take/scatter_add -------------------
+
+
+# --- P8.6: the coordinate law (250 §6) ---------------------------------------
+
+
+def test_subscripts_are_typed_and_order_free():
+    """Coordinates are typed handles bound by frame NAME, never by
+    position: subscript order is semantically void — dst[x, y] = src[y, x]
+    IS the identity copy."""
+
+    @compute
+    def copy_any_order(src, dst):
+        y, x = thread_idx("y", "x")
+        dst[x, y] = src[y, x]
+
+    src = T(np.arange(12.0).reshape(3, 4), ("y", "x"))
+    dst = T(np.zeros((3, 4)), ("y", "x"))
+    copy_any_order(src, dst)
+    np.testing.assert_array_equal(dst.to_numpy(), src.to_numpy())
+
+
+def test_no_arithmetic_on_a_coordinate_without_explicit_coercion():
+    """A Coordinate is a point, not a number (owner-ruled): arithmetic
+    refuses toward the explicit doors — f32 for value math, i32 for index
+    math — and coercing an already-coerced value refuses too. Nothing
+    degrades to float silently."""
+
+    @compute
+    def bad(img):
+        (y,) = thread_idx("y")
+        img[y] = y * 0.25
+
+    with pytest.raises(TypeError, match=r"no arithmetic on a Coordinate.*f32\(c\)"):
+        bad(T(np.zeros(3), ("y",)))
+
+    @compute
+    def good(img):
+        (y,) = thread_idx("y")
+        img[y] = f32(y) * 0.25
+
+    img = T(np.zeros(3), ("y",))
+    good(img)
+    np.testing.assert_allclose(img.to_numpy(), np.arange(3.0) * 0.25)
+
+    @compute
+    def double_coerce(img):
+        (y,) = thread_idx("y")
+        img[y] = f32(f32(y))
+
+    with pytest.raises(TypeError, match="already a value"):
+        double_coerce(T(np.zeros(3), ("y",)))
+
+
+def test_rename_is_the_coordinate_adapter():
+    """Tensors need not conform to the thread-lattice names: rename
+    re-associates a Coordinate with another dim — the read lands on the
+    ambient lattice, which is what aligns with the writable."""
+
+    @compute
+    def copy_across_names(src, dst):
+        (y,) = thread_idx("y")
+        dst[y] = src[rename(y, "row")] * 2.0
+
+    src = T(np.arange(4.0), ("row",))
+    dst = T(np.zeros(4), ("y",))
+    copy_across_names(src, dst)
+    np.testing.assert_allclose(dst.to_numpy(), np.arange(4.0) * 2.0)
+
+
+def test_mixed_coordinate_and_value_indices_refuse():
+    """One subscript, one index sort: Coordinates (typed, order-free) or
+    values (the computed-read door) — never both in one bracket."""
+
+    @compute
+    def bad(tex, img):
+        y, x = thread_idx("y", "x")
+        img[y, x] = tex[y, i32(x) * 1]
+
+    with pytest.raises(TypeError, match="mixes Coordinates and value indices"):
+        bad(T(np.zeros((2, 2)), ("y", "x")), T(np.zeros((2, 2)), ("y", "x")))
 
 
 @P9

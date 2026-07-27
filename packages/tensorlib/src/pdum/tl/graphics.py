@@ -318,7 +318,6 @@ def _fresh_context(kind: str) -> dict:
         "k.claimed": set(),
         "k.fn_params": {},
         "k.fn_markers": {},
-        "k.iotas": [],
         "k.stored": [],
         "k.pname_of": {},
         "k.uniforms": {},

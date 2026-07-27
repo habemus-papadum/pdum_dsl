@@ -11,7 +11,7 @@ bit-identical, dropout on)."""
 import numpy as np
 import pytest
 from pdum.dsl.ir import Builder, Region
-from pdum.tl import Tensor, compute, thread_idx  # noqa: F401 — thread_idx: bodies' global
+from pdum.tl import Tensor, compute, f32, thread_idx  # noqa: F401 — ambient vocabulary: bodies' globals
 from pdum.tl.compute import const_like, pointwise, reduce, repeat_like  # noqa: F401 — S.1 spellings in bodies
 from pdum.tl.dialect import (
     CORE_OPS,
@@ -29,7 +29,7 @@ from pdum.tl.markers import maximum, red, tanh, where  # noqa: F401 — bare in 
 @compute
 def spike_kernel(img):
     y, x = thread_idx("y", "x")
-    v = maximum(y, x) * 0.25 + (y - x) * 0.5
+    v = maximum(f32(y), f32(x)) * 0.25 + (f32(y) - f32(x)) * 0.5
     img[y, x] = v * v + 1.5
 
 

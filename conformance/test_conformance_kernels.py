@@ -10,7 +10,7 @@ no adapter, or a named untranslatable op.
 import numpy as np
 import pytest
 from pdum.dsl import jit, op
-from pdum.tl import Tensor, compute, thread_idx
+from pdum.tl import Tensor, compute, f32, i32, thread_idx
 from pdum.tl.markers import maximum, sqrt, tanh  # noqa: F401 — bare in kernel bodies
 from wgsl_executor import Untranslatable, wgpu_artifact
 
@@ -57,7 +57,7 @@ def differential(kernel, make_args, rtol=1e-5, atol=1e-6):
 @compute
 def ambient_field(img):
     y, x = thread_idx("y", "x")
-    img[y, x] = y * 0.25 + x * 0.5 + 1.5
+    img[y, x] = f32(y) * 0.25 + f32(x) * 0.5 + 1.5
 
 
 def test_ambient_pointwise_store():
@@ -84,7 +84,7 @@ _GAIN = 3.5
 @compute
 def gained(img):
     y, x = thread_idx("y", "x")
-    img[y, x] = (y + x) * _GAIN
+    img[y, x] = (f32(y) + f32(x)) * _GAIN
 
 
 def test_captured_scalar_rides_the_uniform_buffer():
@@ -112,7 +112,7 @@ def zoom(s):
 @compute
 def shader(f, img):
     y, x = thread_idx("y", "x")
-    img[y, x] = f(y + x)
+    img[y, x] = f(f32(y) + f32(x))
 
 
 def test_spliced_fn_arg_slots():
@@ -123,7 +123,7 @@ def test_spliced_fn_arg_slots():
 @compute
 def gather_diag(tex, img):
     (y,) = thread_idx("y")
-    img[y] = tex[y, y]
+    img[y] = tex[i32(y), i32(y)]
 
 
 def test_computed_index_read():
@@ -135,7 +135,7 @@ def box3(tex, img):
     (y,) = thread_idx("y")
     acc = 0.0
     for dy in range(3):
-        acc = acc + tex[y + dy]
+        acc = acc + tex[i32(y) + dy]
     img[y] = acc / 3.0
 
 
@@ -146,7 +146,7 @@ def test_unrolled_neighborhood():
 @compute
 def spiky(img):
     y, x = thread_idx("y", "x")
-    v = maximum(y, x) * 0.25 + (y - x) * 0.5
+    v = maximum(f32(y), f32(x)) * 0.25 + (f32(y) - f32(x)) * 0.5
     img[y, x] = tanh(v) + sqrt(v * v + 1.0)
 
 
