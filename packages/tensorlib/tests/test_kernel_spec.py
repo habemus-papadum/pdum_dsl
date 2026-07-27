@@ -29,6 +29,7 @@ from pdum.tl import (  # noqa: F401 — ambient vocabulary resolved from bodies'
     Tensor,
     block_idx,
     compute,
+    extent,
     f32,
     global_thread_idx,
     grid_layout,
@@ -144,7 +145,7 @@ def test_with_respect_to_a_local_value():
     @compute
     def k(f, img):
         y, x = thread_idx("y", "x")
-        img[y, x] = f(y, x)
+        img[y, x] = f(f32(y), f32(x))
 
     img = T(np.zeros((3, 3)), ("y", "x"))
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -178,7 +179,7 @@ def test_value_and_grad_wrt_ambient_is_fwidth():
     @compute
     def aa_shader(f, img):
         y, x = thread_idx("y", "x")
-        v, (dy, dx) = f(y, x)
+        v, (dy, dx) = f(f32(y), f32(x))
         w = sqrt(dy * dy + dx * dx)  # fwidth — analytic, no 2x2 quad
         img[y, x] = clamp(v / w + 0.5, 0.0, 1.0)  # one-pixel edge
 
@@ -210,7 +211,7 @@ def test_value_and_grad_stages_inside_the_kernel_body():
     def aa_shader(f, img):
         y, x = thread_idx("y", "x")
         g = value_and_grad(f, wrt=("y", "x"))  # staged: f's identity is compile-time
-        v, (dy, dx) = g(y, x)
+        v, (dy, dx) = g(f32(y), f32(x))
         w = sqrt(dy * dy + dx * dx)
         img[y, x] = clamp(v / w + 0.5, 0.0, 1.0)
 
@@ -249,7 +250,7 @@ def test_derivative_type_law_records_mirror_their_value():
     @compute
     def k(f, img):
         y, x = thread_idx("y", "x")
-        img[y, x] = f(y, x)
+        img[y, x] = f(f32(y), f32(x))
 
     img = T(np.zeros((2, 3)), ("y", "x"))
     k(go, img)
@@ -338,7 +339,7 @@ def test_taps_inside_combinator_bodies_with_validity():
     @compute
     def k(f, img):
         y, x = thread_idx("y", "x")
-        img[y, x] = f(y, x)
+        img[y, x] = f(f32(y), f32(x))
 
     img = T(np.zeros((2, 2)), ("y", "x"))
     yp = T(np.zeros((2, 2)), ("y", "x"))
@@ -619,6 +620,77 @@ def test_mixed_coordinate_and_value_indices_refuse():
 
     with pytest.raises(TypeError, match="mixes Coordinates and value indices"):
         bad(T(np.zeros((2, 2)), ("y", "x")), T(np.zeros((2, 2)), ("y", "x")))
+
+
+def test_coordinates_cross_call_boundaries_as_coordinates():
+    """The boundary law (owner-ruled): no coercion happens FOR you at a
+    call — a Coordinate arrives inside f AS a Coordinate. Style B: the
+    CALLEE casts, and extent() hands it the domain width from the same
+    argument — aspect-true normalization with no resolution uniform."""
+    from pdum.dsl import jit
+
+    def pattern():
+        @jit()
+        def go(i, j):  # i, j: Coordinates — a frame-aware function
+            u = f32(j) / f32(extent(j))
+            v = f32(i) / f32(extent(j))  # one denominator: aspect preserved
+            return u + 10.0 * v
+
+        return go
+
+    @compute
+    def shade(f, img):
+        i, j = thread_idx("y", "x")
+        img[i, j] = f(i, j)  # coordinates pass through UNCHANGED
+
+    img = T(np.zeros((2, 4)), ("y", "x"))
+    shade(pattern(), img)
+    want = np.fromfunction(lambda i, j: j / 4.0 + 10.0 * i / 4.0, (2, 4))
+    np.testing.assert_allclose(img.to_numpy(), want)
+
+
+def test_arithmetic_inside_the_callee_still_refuses():
+    """Style B is not a loophole: the coordinate law reaches inlined
+    bodies — arithmetic on a Coordinate refuses wherever it is written."""
+    from pdum.dsl import jit
+
+    def bad_fn():
+        @jit()
+        def go(i):
+            return i * 0.25
+
+        return go
+
+    @compute
+    def k(f, img):
+        (i,) = thread_idx("y")
+        img[i] = f(i)
+
+    with pytest.raises(TypeError, match="no arithmetic on a Coordinate"):
+        k(bad_fn(), T(np.zeros(3), ("y",)))
+
+
+def test_the_coercion_doors_promote_host_ints_explicitly():
+    """extent(c) is a host INT (a build-time fact of the frame); ints are
+    promoted explicitly — f32(extent(c)) — never laundered. f32 of a float
+    still refuses: it is already a value."""
+
+    @compute
+    def k(img):
+        (i,) = thread_idx("y")
+        img[i] = f32(i) * f32(extent(i))
+
+    img = T(np.zeros(3), ("y",))
+    k(img)
+    np.testing.assert_allclose(img.to_numpy(), np.arange(3.0) * 3.0)
+
+    @compute
+    def bad(img):
+        (i,) = thread_idx("y")
+        img[i] = f32(i) * f32(2.5)
+
+    with pytest.raises(TypeError, match="already a value"):
+        bad(T(np.zeros(3), ("y",)))
 
 
 @P9

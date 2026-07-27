@@ -301,7 +301,7 @@ def test_all_scalar_subtrees_stay_value_dialect():
     @compute
     def apply_gain(f, img):
         (y,) = thread_idx("y")
-        img[y] = f(y)
+        img[y] = f(f32(y))
 
     img = T(np.zeros(3), ("y",))
     apply_gain(gain(2.0, 3.0), img)
@@ -329,7 +329,7 @@ def test_combinator_applied_twice_invalidates_its_sites():
     @compute
     def k(f, img):
         (y,) = thread_idx("y")
-        img[y] = f(y) + f(y)
+        img[y] = f(f32(y)) + f(f32(y))
 
     img = T(np.zeros(3), ("y",))
     sites = k.taps(scale(2.0), img)
@@ -499,7 +499,7 @@ def test_staged_transforms_compose_and_restage():
     def k(f, img):
         (y,) = thread_idx("y")
         g = slope_only(f)
-        v, (dy,) = g(y)
+        v, (dy,) = g(f32(y))
         img[y] = dy  # the slope field: constant a
 
     img = T(np.zeros(4), ("y",))

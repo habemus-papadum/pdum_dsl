@@ -17,7 +17,7 @@ Version of record: this distribution is version-locked with
 
 from .buffer import Buffer, FunctionalBuffer
 from .chart import Chart, characteristic, chart
-from .compute import Marker, Reducer, iota, pointwise, pw, red, reduce, scan
+from .compute import Marker, Reducer, extent, iota, pointwise, pw, red, reduce, scan
 from .coords import Coordinate, Displacement, Frame, Slice
 from .dtypes import CARRIERS, as_dtype, bfloat16, carrier_of
 from .guarded import Guard, GuardedLayout, pad_layout, stencil_layout
@@ -58,6 +58,7 @@ __all__ = [
     "compute",
     "fold_in",
     "config",
+    "extent",
     "f32",
     "i32",
     "rename",

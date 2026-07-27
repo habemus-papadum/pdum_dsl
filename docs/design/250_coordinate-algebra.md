@@ -82,6 +82,30 @@ arithmetic arrives (§8), it returns Coordinates — scalars and unit
 values promote to Displacements, the sum is a point again, chart-aware
 and exact — never a bare number.
 
+**The call-boundary law (owner-ruled, the P8.6 veto).** Coordinates
+cross call boundaries AS Coordinates — no coercion happens for you at
+an application. Both casting sites are legal and the language never
+picks: the CALLER casts (`f(f32(i), f32(j))` — f stays a plain scalar
+citizen: liftable, spliced, its captures riding arg-rooted slots) or
+the CALLEE casts (`f(i, j)` with the coercion inside f's body — f is a
+frame-aware function and INLINES through the kernel rules, where the
+coordinate law still holds). The observers make the callee style pay
+rent: `extent(c)` reads the frame's width — a host int, a build-time
+fact (and exactly where the keying ladder's extent-generic license
+will later swap in a uniform) — so one Coordinate argument carries
+location AND domain:
+
+```python
+u = f32(j) / f32(extent(j))
+v = f32(i) / f32(extent(j))   # one denominator: aspect preserved
+```
+
+**Ints promote explicitly.** `f32`/`i32` accept host ints alongside
+Coordinates (`f32(extent(j))`); ints never silently join float math —
+the style is `x * 0.5`, never `x / 2`. (Blanket enforcement of the
+int/float boundary awaits the carrier machinery of the dtype era;
+recorded, not half-built.)
+
 ## 4. Factories — where coordinates come from
 
 Each tier has one factory, and they rhyme:

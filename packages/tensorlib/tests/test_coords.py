@@ -6,7 +6,7 @@ the contract."""
 from fractions import Fraction
 
 import pytest
-from pdum.tl import Coordinate, Displacement, Frame, Slice, chart, q
+from pdum.tl import Coordinate, Displacement, Frame, Slice, chart, extent, q
 
 Y = Frame("y", 0, 512)
 X = Frame("x", 0, 512)
@@ -298,3 +298,9 @@ def test_reprs():
     assert repr(Slice(Y[128], Y[256], 2)) == "y[128:256:2]"
     assert repr(Slice(Y[128])) == "y[128:]"
     assert repr(Frame("y", 0, 4, labels=("a", "b", "c", "d"))) == "y[0:4) #[a,b,c,d]"
+
+
+def test_extent_reads_the_frame_width():
+    assert extent(Y[128]) == 512  # a host int — promote explicitly to join float math
+    with pytest.raises(TypeError, match="wants a Coordinate"):
+        extent(3)

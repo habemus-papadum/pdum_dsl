@@ -283,6 +283,21 @@ _COORD_MATH = (
 )
 
 
+def _coerce_scalar(name: str, v):
+    """The explicit coercion doors (250 §3): a Coordinate yields its backing
+    field (f64 interior per 210; the name records declared intent); a host
+    int PROMOTES explicitly (ints never silently join float math — the rule
+    `extent(c)` exists to exercise: f32(extent(c))). Everything else is
+    already a value; the coercion refuses rather than launder it."""
+    if hasattr(v, "type") and isinstance(v.type, CoordType):
+        return v.args[0]
+    if isinstance(v, bool):
+        raise TypeError(f"{name}() takes a Coordinate or an int; bool is not a number here")
+    if isinstance(v, int):
+        return float(v) if name == "f32" else v
+    raise TypeError(f"{name}() coerces a Coordinate (or promotes a host int); already a value — drop the coercion")
+
+
 def _typed_rule(table, base_rule, pick):
     """The op-selection pattern, once: lower the children; a tensor operand
     selects the dialect row from ``table``; otherwise the base value pack
@@ -455,10 +470,7 @@ def _tl_call(ctx, node):
                 out.append(ctx.emit("tl.coord", backing, node=node, frame=frame))
             return tuple(out)  # ALWAYS a tuple
         if isinstance(obj, _Intrinsic) and obj.name in ("f32", "i32"):
-            v = ctx.lower(node.args[0])
-            if not (hasattr(v, "type") and isinstance(v.type, CoordType)):
-                raise TypeError(f"{obj.name}() coerces a Coordinate; already a value — drop the coercion")
-            return v.args[0]  # the backing field; f64 interior (210's policy), the name records declared intent
+            return _coerce_scalar(obj.name, ctx.lower(node.args[0]))
         if obj is _eager_pw:  # the S.1 STEP-tier spelling
             marker = _lookup(ctx, node.args[0].id) or ctx.context["registry"].overloads.get(node.args[0].id)
             if marker is None or not hasattr(marker, "name"):
@@ -489,6 +501,8 @@ def _tl_call(ctx, node):
             return ctx.emit("tl.iota", src, node=node, name=_host(ctx, node.args[1]), **extra)
         if obj is _eager_extent:  # a structural READ: host data from the TYPE
             t = ctx.lower(node.args[0])
+            if hasattr(t, "type") and isinstance(t.type, CoordType):
+                return t.type.frame.size  # the coordinate face: the frame's width, a host INT
             want = _host(ctx, node.args[1])
             return next(d.size for d in t.type.dims if d.name == want)
         if obj is _eager_contract:  # ONE visible line over the primitives (S.1)

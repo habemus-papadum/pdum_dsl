@@ -74,6 +74,7 @@ from .dialect import (
     TL_RULES,
     CoordType,
     TensorType,
+    _coerce_scalar,
     _globals_of,
     _inline_plain,
     _lookup,
@@ -496,9 +497,7 @@ def _k_call(ctx, node):
             return _global_from_raws(ctx, b_arg, t_arg, g, node)
         if isinstance(obj, _Intrinsic) and obj.name in ("f32", "i32"):
             (v,) = _lower_args(ctx, node)
-            if not (isinstance(v, Node) and isinstance(v.type, CoordType)):
-                raise TypeError(f"{obj.name}() coerces a Coordinate; already a value — drop the coercion")
-            return v.args[0]  # the backing field; f64 interior (210's policy), the name records declared intent
+            return _coerce_scalar(obj.name, v)
         if isinstance(obj, _Intrinsic) and obj.name == "rename":
             v = ctx.lower(node.args[0])
             if not (isinstance(v, Node) and isinstance(v.type, CoordType)):
@@ -611,11 +610,20 @@ def _fn_arg(ctx, handle, args, out_spec, node):
     Staged transforms of a parameter replay their recipe chain on the
     CURRENT launch binding — both classes."""
     pname, wrap = _resolve_staged(ctx, handle)
-    # Application AT coordinates is the ambient semantic (S.3's committed
-    # spelling, f(y, x)): the call boundary is a DECLARED consumer — the
-    # splice takes each Coordinate's backing field as the argument. The
-    # coercion doctrine (250 §3) governs operators, not declared doors.
-    args = tuple(a.args[0] if isinstance(a, Node) and isinstance(a.type, CoordType) else a for a in args)
+    if any(isinstance(a, Node) and isinstance(a.type, CoordType) for a in args):
+        # Coordinates cross call boundaries AS COORDINATES (owner-ruled: no
+        # magic — nothing degrades to float at a boundary). A coordinate-
+        # consuming fn is part of the one body language and INLINES through
+        # the kernel rules: f32/i32/extent/subscripts legal inside, its
+        # arithmetic refusing toward the doors. Coercing at the call
+        # (f(f32(y), ...)) keeps f a plain scalar citizen instead.
+        if getattr(handle, "pyfunc", None) is None:
+            raise TypeError(
+                "this function-valued argument consumes values — coerce the "
+                "coordinates at the call (f32/i32), or pass a device function "
+                "(coordinate-aware bodies inline)"
+            )
+        return _inline_ambient(ctx, handle, args, out_spec, node)
     if all(isinstance(a, Node) for a in args) and hasattr(handle, "fntype"):
         if _references_ambient(handle):
             return _inline_ambient(ctx, handle, args, out_spec, node)

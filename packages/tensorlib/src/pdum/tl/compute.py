@@ -50,6 +50,7 @@ from fractions import Fraction
 import numpy as np
 
 from .buffer import Buffer, FunctionalBuffer, host_view
+from .coords import Coordinate
 from .layout import Dim, Layout
 from .markers import Marker, Reducer, pw, red  # noqa: F401 — the one vocabulary, re-exported
 from .mdsl import CompositeMarker, CompositeReducer
@@ -153,8 +154,15 @@ def contract(a: Tensor, b: Tensor, *, axis) -> Tensor:
     return reduce(red.sum, pointwise(pw.mul, repeat_like(a, b), repeat_like(b, a)), axis)
 
 
-def extent(x, name: str) -> tuple[int, int]:
-    """A structural READ: the dim's (start, stop) — build-time fact."""
+def extent(x, name: str | None = None):
+    """A structural READ — build-time fact. ``extent(c)`` on a Coordinate:
+    the frame's width (a host INT; promote it explicitly — f32(extent(c)) —
+    ints never silently join float math). ``extent(t, name)``: the dim's
+    (start, stop)."""
+    if name is None:
+        if isinstance(x, Coordinate):
+            return x.frame.size
+        raise TypeError("extent(c) wants a Coordinate; extent(t, name) reads a dim's (start, stop)")
     lay = getattr(x, "shadow", None) or x.layout
     d = lay.dim(name)
     return (d.start, d.stop)
