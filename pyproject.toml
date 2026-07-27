@@ -92,7 +92,7 @@ select = ["E", "F", "W", "I"]
 ignore = []
 
 [tool.pytest.ini_options]
-testpaths = ["packages/dsl/tests", "packages/tensorlib/tests"]
+testpaths = ["packages/dsl/tests", "packages/tensorlib/tests", "conformance"]
 # importlib mode: the two members' suites may share test basenames (test_ir.py)
 addopts = "-s --import-mode=importlib"
 python_files = ["test_*.py"]
