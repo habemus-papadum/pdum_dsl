@@ -1696,7 +1696,13 @@ gate. Then the handoff: the tiled-matmul zoo entry; the license-schema
 stub + the worked GEMM license declaration; the L2 blocker list; the
 open registry (streams, device-resident state, normalization, warp
 vocabulary, external-oracle fixtures, the operators door, adversarial
-input families — one −inf-mask attention case seeded into Z now). GATE:
+input families — one −inf-mask attention case seeded into Z now; the
+PIPE-ARITY door, distilled from the P1 shader-zoo markup before its
+deletion: `|` threads exactly ONE value and composite (tuple)
+arguments do not marshal at the dsl entry, so a coordinate function
+cannot ride the pipe — entry arity, composite-arg marshaling, or a
+dedicated composition spelling are the candidate answers, decided
+when a consumer forces it). GATE:
 Z green including tiled-matmul, the embedding sample, MoE, and the
 unrolled trainer; §8 handed to the L4/L2 work as its brief.
 
