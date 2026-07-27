@@ -523,11 +523,27 @@ _STRUCTURAL_OPS = {"core.param", "core.env", "core.const", "core.yield", "core.t
 def _scalar_region(handle, nargs):
     """The fn-argument lowered by the dsl's OWN machinery to a scalar
     region: pipelines compose, staged/derived transforms build, captures
-    become env paths — zero kernel-side lowering logic (240 C5.3)."""
+    become env paths — zero kernel-side lowering logic (240 C5.3).
+    Returns ``(region, named)`` where ``named`` records the body's
+    single-name bindings (name, node) — the naming law's ledger, so
+    combinator bindings CLAIM through the splice (P8 taps)."""
     ops = {**CORE_OPS, **ABI_OPS, **DEFAULT.ops}
     rules, ctx = dict(DEFAULT.lower_rules), {"registry": DEFAULT}
+    named: list = []
+    base_assign = rules[ast.Assign]
+
+    def recording_assign(lctx, anode):  # a rule-pack LAYER: record, then delegate
+        out = base_assign(lctx, anode)
+        tgt = anode.targets[0] if anode.targets else None
+        if isinstance(tgt, ast.Name):
+            v = lctx.locals.get(tgt.id)
+            if hasattr(v, "op"):
+                named.append((tgt.id, v))
+        return out
+
+    rules[ast.Assign] = recording_assign
     region = lower_handle(handle, rules, ops, arg_types=(f64,) * nargs, derived=DEFAULT.derived, context=ctx)
-    return run_stage(region, NORMALIZE_ENV, ops)
+    return run_stage(region, NORMALIZE_ENV, ops), named
 
 
 def _liftable(region) -> bool:
@@ -557,9 +573,9 @@ def _fn_arg(ctx, handle, args, out_spec, node):
     if all(isinstance(a, Node) for a in args) and hasattr(handle, "fntype"):
         if _references_ambient(handle):
             return _inline_ambient(ctx, handle, args, out_spec, node)
-        region = _scalar_region(handle, len(args))
+        region, named = _scalar_region(handle, len(args))
         if _liftable(region):
-            return _splice_fn(ctx, handle, region, args, out_spec, node, pname, wrap)
+            return _splice_fn(ctx, handle, region, named, args, out_spec, node, pname, wrap)
     return _fn_arg_oracle(ctx, handle, args, out_spec, node, pname, wrap)
 
 
@@ -622,12 +638,14 @@ def _shape_result(result, out_spec):
     return tuple(flat)
 
 
-def _splice_fn(ctx, handle, region, args, out_spec, node, pname, wrap):
+def _splice_fn(ctx, handle, region, named, args, out_spec, node, pname, wrap):
     """Scalar region -> kernel region: params bind the coordinate tensors,
     value ops become pointwise rows when a tensor is in play (all-scalar
     subtrees stay in the value dialect — run_region has their rows), and
     env reads become abi slots at ("arg", pname, *path) with offsets from
-    the fn's OWN pack plan, block-based into the kernel staging bytes."""
+    the fn's OWN pack plan, block-based into the kernel staging bytes.
+    The fn's own bindings CLAIM through the splice (the naming law
+    reaches inlined combinators; a name applied twice invalidates)."""
     c = ctx.context
     key = (pname, handle.fp)
     block = c["k.arg_plans"].get(key)
@@ -687,7 +705,12 @@ def _splice_fn(ctx, handle, region, args, out_spec, node, pname, wrap):
             return ctx.emit("tl.pointwise", *lifted, node=node, f=f)
         return ctx.emit(nd.op, *lifted, node=node, **attrs)  # an all-scalar subtree stays value-dialect
 
-    return _shape_result(go(region.body[-1].args[0]), out_spec)
+    result = go(region.body[-1].args[0])
+    for nm, nd in named:  # combinator bindings claim (tagless; twice = invalid)
+        spliced = memo.get(id(nd))
+        if isinstance(spliced, Node):
+            _claim(ctx, nm, spliced)
+    return _shape_result(result, out_spec)
 
 
 def _fn_arg_oracle(ctx, handle, args, out_spec, node, pname, wrap):

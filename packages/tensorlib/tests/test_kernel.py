@@ -311,6 +311,32 @@ def test_all_scalar_subtrees_stay_value_dialect():
     np.testing.assert_allclose(img.to_numpy(), np.arange(3.0) * -5.0)
 
 
+def test_combinator_applied_twice_invalidates_its_sites():
+    """The naming law through the splice (P8 combinator taps): one
+    combinator applied at two call sites binds its names twice — the
+    site goes non-unique and is INVALIDATED with the reason, never
+    auto-suffixed."""
+    from pdum.dsl import jit
+
+    def scale(s):
+        @jit()
+        def go(y):
+            yprime = y * s
+            return yprime + 1.0
+
+        return go
+
+    @compute
+    def k(f, img):
+        (y,) = thread_idx("y")
+        img[y] = f(y) + f(y)
+
+    img = T(np.zeros(3), ("y",))
+    sites = k.taps(scale(2.0), img)
+    assert not sites["yprime"]["valid"]
+    assert "more than one" in sites["yprime"]["reason"]
+
+
 def test_the_reference_refuses_out_of_bounds_reads():
     """P8 buffer reads + the keying-ladder ruling: an out-of-bounds
     computed read REFUSES at the reference — an oracle has no undefined

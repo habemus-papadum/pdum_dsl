@@ -316,7 +316,6 @@ def test_fuzz_as_a_combinator_closes_over_a_buffer():
 # --- P8: taps inside device-function/combinator bodies -----------------------
 
 
-@P8
 def test_taps_inside_combinator_bodies_with_validity():
     """A claimed BINDING inside a combinator body — tagless, the naming
     law; applied once it is valid, applied twice its name goes non-unique
