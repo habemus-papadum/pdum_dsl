@@ -68,14 +68,6 @@ from .tensor import Tensor, alignment
 # --- types -------------------------------------------------------------------
 
 
-def _frame(d) -> Frame:
-    """One dim's identity entry: its observable Frame (design 250) — name,
-    domain, and the labeling frame (chart | labels | level), stride-free.
-    The degenerate frame (no chart/labels/level) needs no special casing:
-    Frame equality carries the Nones."""
-    return Frame(d.name, d.start, d.stop, d.chart, d.labels, d.level)
-
-
 @dataclass(frozen=True)
 class TensorType(Type):
     """A tensor-typed SSA value, constructed FROM a Layout. IDENTITY (what
@@ -90,7 +82,7 @@ class TensorType(Type):
     dims: tuple[Frame, ...] = field(init=False)  # identity, derived from the layout
 
     def __post_init__(self):
-        object.__setattr__(self, "dims", tuple(_frame(d) for d in self.layout.dims))
+        object.__setattr__(self, "dims", tuple(d.frame for d in self.layout.dims))
 
 
 @dataclass(frozen=True)

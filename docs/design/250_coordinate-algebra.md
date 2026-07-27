@@ -188,10 +188,13 @@ Layout kwargs methods (`select`/`slice`/`decimate`/`flip`) never change
    conformance — must pass **with no test edits**.
 3. **Host indexing.** `t.frames(...)`, `__getitem__`/`__setitem__`
    lowering onto the Layout normal form; rank-0; never-promote; the
-   broadcast store law. Indexing becomes the canonical Tensor surface;
-   the subsumed Tensor methods retire. (`shift`, `rename`, `repeat`,
-   `recenter`, `split`, `merge` are not index sets — they stay
-   methods.)
+   broadcast store law. Indexing becomes the canonical Tensor surface.
+   (`shift`, `rename`, `repeat`, `recenter`, `split`, `merge` are not
+   index sets — they stay methods.) Stage-3 finding: `select`/`slice`/
+   `decimate` are ALSO traced spellings the step tier lowers by
+   inspection (`_METHODS`), so their retirement moves to the respell
+   stages — the methods die when the traced tiers lower the subscript
+   spelling, not before.
 4. **Kernel law.** `thread_idx` returns Coordinates (the `CoordType`
    leaf, iota-backed); the typed order-free subscript replaces the
    structural iota-membership checks; the explicit-coercion refusal

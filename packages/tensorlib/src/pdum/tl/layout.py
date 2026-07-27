@@ -49,6 +49,7 @@ from typing import Iterator, Mapping
 
 from .chart import Chart
 from .chart import chart as make_chart
+from .coords import Frame
 from .units import Quantity
 
 # An extent spec: an int n (meaning the lattice range [0, n)) or an explicit
@@ -110,6 +111,11 @@ class Dim:
     @property
     def size(self) -> int:
         return self.stop - self.start
+
+    @property
+    def frame(self) -> Frame:
+        """The observable frame (design 250): this dim minus its stride."""
+        return Frame(self.name, self.start, self.stop, self.chart, self.labels, self.level)
 
     def contains(self, i: int) -> bool:
         return self.start <= i < self.stop

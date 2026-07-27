@@ -359,7 +359,78 @@ class Slice:
         span = self.stop_i - self.start_i
         return (span + self.step_k - 1) // self.step_k
 
+    @property
+    def last_i(self) -> int:
+        """The last visited lattice point (undefined for an empty Slice)."""
+        return self.start_i + (self.size - 1) * self.step_k
+
     def __repr__(self) -> str:
         stop = "" if self.stop is None else str(self.stop.i)
         step = "" if self.step_k == 1 else f":{self.step_k}"
         return f"{self.frame.name}[{self.start.i}:{stop}{step}]"
+
+
+# ---------------------------------------------------------------------------
+# The subscript law (250 §6): normalization and the type check
+# ---------------------------------------------------------------------------
+
+
+def as_index(ix) -> "Coordinate | Slice":
+    """Normalize one subscript entry to a Coordinate or Slice. Python's
+    colon display arrives as a builtin slice over Coordinate endpoints; a
+    bare [:] has no frame and refuses (unmentioned dims pass through);
+    anything else refuses toward the frame factories."""
+    if isinstance(ix, (Coordinate, Slice)):
+        return ix
+    if isinstance(ix, slice):
+        a, b, s = ix.start, ix.stop, ix.step
+        for end in (a, b):
+            if end is not None and not isinstance(end, Coordinate):
+                raise TypeError(f"slice endpoints are Coordinates, got {end!r} — make points via frames()")
+        if a is None and b is None:
+            raise TypeError(
+                "a slice needs a Coordinate endpoint to name its frame — a bare [:] "
+                "is never needed (unmentioned dims pass through)"
+            )
+        if a is None:
+            a = Coordinate(b.frame, b.frame.start)
+        return Slice(a, b, 1 if s is None else s)
+    raise TypeError(f"subscripts take Coordinates and Slices (design 250), got {ix!r} — make points via frames()")
+
+
+def admit(target: Frame, index) -> None:
+    """The subscript law's type check: STRICT frame identity, CONTAINMENT
+    extent (the one relaxation — visited points must lie in the target's
+    domain; extents need not be equal). `index` is a Coordinate or Slice
+    already bound to `target` by name; refusals name what disagrees."""
+    f = index.frame
+    if f.name != target.name:
+        raise TypeError(f"index frame {f.name!r} does not name dim {target.name!r}")
+    if f != target:
+        if f.chart != target.chart:
+            raise TypeError(
+                f"frame mismatch on {f.name!r}: chart {f.chart!r} vs {target.chart!r} — "
+                f"the subscript law is strict identity; rebuild the index from the target's frames()"
+            )
+        if (f.labels is None) != (target.labels is None):
+            raise TypeError(f"frame mismatch on {f.name!r}: labeled-meets-unlabeled refuses")
+        if f.level != target.level:
+            raise TypeError(f"frame mismatch on {f.name!r}: level {f.level!r} vs {target.level!r}")
+    if isinstance(index, Coordinate):
+        points = (index.i,)
+    elif index.size == 0:
+        return  # an empty progression is a subset of any domain
+    else:
+        points = (index.start_i, index.last_i)
+    for i in points:
+        if not target.contains(i):
+            raise IndexError(
+                f"{f.name}={i} outside the target's domain [{target.start}, {target.stop}) — "
+                f"containment is the extent law"
+            )
+    if f.labels is not None and target.labels is not None and f != target:
+        visited = points if isinstance(index, Coordinate) else range(index.start_i, index.last_i + 1, index.step_k)
+        for i in visited:
+            a, b = f.labels[i - f.start], target.labels[i - target.start]
+            if a != b:
+                raise TypeError(f"frame mismatch on {f.name!r}: label {a!r} vs {b!r} at {i}")

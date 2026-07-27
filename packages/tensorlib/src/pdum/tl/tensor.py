@@ -32,6 +32,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from .buffer import Buffer, host_view
+from .coords import Coordinate, Frame, admit, as_index
 from .dtypes import CARRIERS, carrier_of
 from .guarded import GuardedLayout, pad_layout, stencil_layout
 from .layout import Dim, Injectivity, Layout, RangeSpec, as_range
@@ -153,6 +154,13 @@ class Tensor:
             return False
         return a[0] < b[1] and b[0] < a[1]
 
+    def frames(self, *names: str) -> tuple[Frame, ...]:
+        """The host-tier coordinate factories (design 250): the observable
+        frames of the named dims — all dims when unnamed — stride-free.
+        `y, x = t.frames("y", "x"); t[y[3], x[0]:x[4]]`."""
+        dims = self.layout.dims if not names else tuple(self.layout.dim(n) for n in names)
+        return tuple(d.frame for d in dims)
+
     def phys(self, name: str, i: int) -> Quantity:
         """Physical label of lattice coordinate i on a charted dim."""
         return self.layout.phys(name, i)
@@ -197,6 +205,75 @@ class Tensor:
 
     def _via(self, layout: Layout | GuardedLayout) -> "Tensor":
         return replace(self, layout=layout)
+
+    # ---- the subscript law (design 250 §6): named, order-free, typed.
+    # Coordinates select (the dim drops), Slices slice (+ decimate for
+    # step > 1); unmentioned dims pass through; the result is ALWAYS a
+    # Tensor — a full point is rank-0, and .item() is the scalar exit. ----
+
+    def __getitem__(self, key) -> "Tensor":
+        lay = self.layout
+        selects: dict[str, int] = {}
+        spans = []
+        for raw in key if isinstance(key, tuple) else (key,):
+            ix = as_index(raw)
+            name = ix.frame.name
+            if name in selects or any(s.frame.name == name for s in spans):
+                raise TypeError(f"duplicate index for dim {name!r}")
+            admit(lay.dim(name).frame, ix)
+            if isinstance(ix, Coordinate):
+                selects[name] = ix.i
+            else:
+                spans.append(ix)
+        for s in spans:
+            name = s.frame.name
+            if s.size == 0:
+                lay = lay.slice(**{name: (s.start_i, s.start_i)})
+                continue
+            lay = lay.slice(**{name: (s.start_i, s.last_i + 1)})
+            if s.step_k != 1:
+                lay = lay.decimate(name, s.step_k, phase=s.start_i % s.step_k)
+        if selects:
+            lay = lay.select(**selects)
+        return self._via(lay)
+
+    def __setitem__(self, key, value) -> None:
+        """The store side: a bits-compatible scalar promotes to a memoryless
+        const broadcast over the indexed view (pointwise's law — the
+        single-element assign is its smallest instance); a Tensor value
+        meets the view under the alignment law. The write seam mirrors the
+        read seam; values are materialized before any write, so an
+        overlapping right-hand side reads pre-store state."""
+        view = self[key]
+        lay = view.layout
+        if not isinstance(lay, Layout):
+            raise TypeError("writes through guarded views belong to bufferization (200 §8); write to the core view")
+        if view.injectivity() is Injectivity.ALIASED:
+            raise ValueError(
+                "no writes through aliased views (a stride-0 repeat addresses one location "
+                "many times); writes-through-views on injectivity is bufferization's (200 §8)"
+            )
+        names = [d.name for d in lay.dims]
+        coords = list(itertools.product(*(range(d.start, d.stop) for d in lay.dims)))
+        if isinstance(value, Tensor):
+            if set(names) != set(value.names):
+                raise TypeError(
+                    f"store wants the value aligned to the view: dims "
+                    f"{tuple(sorted(names))} vs {tuple(sorted(value.names))}"
+                )
+            issues = alignment(view, value)
+            if issues:
+                details = "\n".join(f"  {m!r}" for m in issues)
+                raise TypeError(f"store wants an ALIGNED value:\n{details}")
+            vals = [value.item(**dict(zip(names, tup))) for tup in coords]
+        elif isinstance(value, Coordinate):
+            raise TypeError("a Coordinate is not a value — coerce explicitly (.i / .phys)")
+        elif isinstance(value, (int, float, np.number)):
+            vals = [value] * len(coords)
+        else:
+            raise TypeError(f"cannot store {value!r}: pass a scalar or an aligned Tensor")
+        for tup, v in zip(coords, vals):
+            view.buffer.write(lay.get_loc(**dict(zip(names, tup))), self.dtype, v)
 
     def slice(self, **ranges) -> "Tensor":
         return self._via(self.layout.slice(**ranges))

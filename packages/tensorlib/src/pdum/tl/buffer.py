@@ -60,6 +60,15 @@ class Buffer:
             raise RuntimeError(f"buffer on {self.device} is not host-readable")
         return np.frombuffer(self.data, dtype, count=1, offset=loc)[0]
 
+    def write(self, loc: int, dtype, value) -> None:
+        """The write seam: the read seam's mirror — one value of `dtype`
+        into byte `loc`."""
+        if self.data is None:
+            raise RuntimeError(f"buffer on {self.device} is not host-writable")
+        if self.data.readonly:
+            raise RuntimeError("buffer bytes are read-only")
+        np.frombuffer(self.data, dtype, count=1, offset=loc)[0] = value
+
     def __repr__(self) -> str:
         return f"Buffer({self.nbytes}B @ {self.device})"
 
@@ -93,6 +102,9 @@ class FunctionalBuffer(Buffer):
             raise ValueError("scale must be a positive byte count")
         object.__setattr__(self, "coeff", Fraction(self.coeff))
         object.__setattr__(self, "const", Fraction(self.const))
+
+    def write(self, loc: int, dtype, value) -> None:
+        raise RuntimeError("a functional buffer owns no memory — nothing to write")
 
     def read(self, loc: int, dtype) -> object:
         q, r = divmod(loc, self.scale)
