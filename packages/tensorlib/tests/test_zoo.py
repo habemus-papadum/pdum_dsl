@@ -14,6 +14,7 @@ from pdum.tl.zoo import (
     moe,
     qknorm_attention,
     sliding_attention,
+    tiled_matmul,
     unrolled_trainer,
 )
 
@@ -29,6 +30,7 @@ ENTRIES = {
     "fdtd": fdtd1d_staggered,
     "moe": moe,
     "trainer": unrolled_trainer,
+    "gemm": tiled_matmul,
 }
 
 
@@ -128,3 +130,22 @@ def test_the_unrolled_trainer_is_the_p9_end_to_end_gate():
     ec = run(ck.program, m.inputs)
     for v in ("tau", "wte", "wq", "wk", "wv", "wo", "wpe"):
         np.testing.assert_allclose(ec[grads[v]].to_numpy(), env[grads[v]].to_numpy(), rtol=1e-10, err_msg=v)
+
+
+def test_tiled_matmul_counts_the_standard_macs_and_trains():
+    """Tiling is layout, not semantics: the tiled program IS the plain
+    matmul (forward pinned by the generic zoo test); under fuse_mac the
+    count is the standard m·n·k figure; the gradient flows through the
+    tile splits/merges and matches FD."""
+    from pdum.tl.opcount import ops_count
+
+    m = tiled_matmul()
+    c = ops_count(m.program, m.inputs, fuse_mac=True)
+    assert c.total["mac"] == 8 * 6 * 4  # m·n·k, exactly
+    prog = _with_loss(m)
+    jp, grads = grad(prog, "zloss", m.inputs)
+    env = run(jp, m.inputs)
+    for v in ("a", "b"):
+        got = env[grads[v]].to_numpy(order=m.inputs[v].names)
+        fd = numeric_grad(prog, "zloss", v, m.inputs)
+        np.testing.assert_allclose(got, fd, rtol=1e-5, atol=1e-8)

@@ -26,6 +26,7 @@ shapes, fully dynamic MoE dispatch (a dynamic-shapes problem).
 """
 
 from .attention import flash_attention, gated_attention, qknorm_attention, sliding_attention
+from .gemm import GemmConfig, tiled_matmul
 from .gpt2 import GPT2Config, gpt2
 from .llama import LlamaConfig, llama_block
 from .megatron import MegatronConfig, megatron_block
@@ -40,6 +41,8 @@ __all__ = [
     "MegatronConfig",
     "MoEConfig",
     "moe",
+    "GemmConfig",
+    "tiled_matmul",
     "TrainerConfig",
     "unrolled_trainer",
     "ZooModel",
