@@ -40,6 +40,7 @@ from pdum.dsl.markers import (  # noqa: F401 — THE vocabulary, one home
     pw,
     sin,
     sqrt,
+    stop_gradient,
     sub,
     tanh,
     where,

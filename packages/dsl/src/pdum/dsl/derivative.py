@@ -87,6 +87,8 @@ TABLE = {
     "minimum": (lambda a, b: Prim("le", (a, b)), lambda a, b: Prim("lt", (b, a))),
     "abs": (lambda a: Prim("where", (Prim("ge", (a, Const(0))), Const(1), Const(-1))),),  # tie at 0 -> +1
     "floor": (None,),  # gradient-free BY DECLARATION (zero a.e.; the carrier discipline)
+    "stop_gradient": (None,),  # identity forward, zero backward — straight-through's
+    # building block: hard + (soft - stop_gradient(soft)) (200 §1.8, a declared estimator)
     "where": (
         None,  # the condition is gradient-free
         lambda c, x, y: Prim("where", (c, Const(1), Const(0))),

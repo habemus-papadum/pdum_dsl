@@ -528,6 +528,70 @@ def test_producer_cost_and_bound_dim_refusal():
         traffic(prog, {"x": x.bind(e="gpu")}, mesh(4))
 
 
+def test_straight_through_topk_sampling_trains_tau():
+    """The §1.8 sampling idiom over the §1.9 family: sample = argtopk of
+    Gumbel-perturbed logits (gradient-free), hard embedding by take, soft
+    embedding by contract, straight-through = hard + (soft −
+    stop_gradient(soft)). Forward equals the HARD path exactly — which is
+    WHY finite differences of the objective itself see zero in τ: ST's
+    gradient is a DECLARED estimator, not the true derivative. The pin:
+    each declared grad equals FD of the path it declares (τ and logits →
+    the soft target; wte → hard target + soft target)."""
+    rng = np.random.default_rng(3)
+    logits = T(rng.standard_normal(4), ("v",))
+    gum = T(-np.log(-np.log(rng.uniform(size=4))), ("v",))
+    tau = T(np.asarray(0.7), ())
+    wte = T(rng.standard_normal((4, 2)), ("v", "d"))
+    ins = [
+        I("logits", "input"),
+        I("gum", "input"),
+        I("tau", "input"),
+        I("wte", "input"),
+        I("taub", "repeat_like", ["tau", "logits"]),
+        I("pert", "pointwise", ["logits", "gum"], f="add"),
+        I("sc", "pointwise", ["pert", "taub"], f="div"),
+        I("mx", "reduce", ["sc"], f="max", dims=("v",)),
+        I("mxb", "repeat_like", ["mx", "sc"]),
+        I("shift", "pointwise", ["sc", "mxb"], f="sub"),
+        I("ex", "pointwise", ["shift"], f="exp"),
+        I("z", "reduce", ["ex"], f="sum", dims=("v",)),
+        I("zb", "repeat_like", ["z", "ex"]),
+        I("soft", "pointwise", ["ex", "zb"], f="div"),  # softmax((logits+gum)/tau)
+        I("nxt", "argtopk", ["sc"], dim="v", k=1, k_name="c"),  # the sample
+        I("ehard", "take", ["wte", "nxt"], dim="v"),  # (c, d)
+        I("sw", "repeat_like", ["soft", "wte"]),
+        I("prod", "pointwise", ["sw", "wte"], f="mul"),
+        I("esoft", "reduce", ["prod"], f="sum", dims=("v",)),  # (d,)
+        I("esb", "repeat_like", ["esoft", "ehard"]),
+        I("sg", "pointwise", ["esb"], f="stop_gradient"),
+        I("diff", "pointwise", ["esb", "sg"], f="sub"),
+        I("st", "pointwise", ["ehard", "diff"], f="add"),  # hard + (soft - sg(soft))
+        I("y", "reduce", ["st"], f="sum", dims=("c", "d")),
+        I("yss", "reduce", ["esoft"], f="sum", dims=("d",)),  # the soft path alone
+        I("yhh", "reduce", ["ehard"], f="sum", dims=("c", "d")),  # the hard path alone
+    ]
+    prog = Program(tuple(ins))
+    inputs = {"logits": logits, "gum": gum, "tau": tau, "wte": wte}
+    env = run(prog, inputs)
+    # forward IS the hard path, exactly
+    np.testing.assert_array_equal(env["st"].to_numpy(), env["ehard"].to_numpy())
+    np.testing.assert_array_equal(env["y"].to_numpy(), env["yhh"].to_numpy())
+    joint, grads = grad(prog, "y", inputs)
+    assert grads["gum"] is not None  # noise participates in the soft path
+    envj = run(joint, inputs)
+
+    def g(wrt):
+        return envj[grads[wrt]].to_numpy(order=inputs[wrt].names)
+
+    # tau and logits train through the SOFT path alone (the declaration)
+    np.testing.assert_allclose(g("tau"), numeric_grad(prog, "yss", "tau", inputs), rtol=1e-4, atol=1e-8)
+    np.testing.assert_allclose(g("logits"), numeric_grad(prog, "yss", "logits", inputs), rtol=1e-4, atol=1e-8)
+    # wte trains through BOTH: the take's true adjoint plus the soft path
+    want = numeric_grad(prog, "yhh", "wte", inputs) + numeric_grad(prog, "yss", "wte", inputs)
+    np.testing.assert_allclose(g("wte"), want, rtol=1e-4, atol=1e-8)
+    assert float(np.abs(g("tau"))) > 0  # tau genuinely trains
+
+
 def test_producers_lower_in_a_step_body():
     """The MoE router shape: argtopk in a step body, gates by take."""
     from pdum.tl import argtopk

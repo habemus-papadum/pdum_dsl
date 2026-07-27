@@ -104,6 +104,7 @@ class pw:
     cos = Marker("cos", np.cos)
     abs = Marker("abs", np.abs)
     floor = Marker("floor", np.floor)
+    stop_gradient = Marker("stop_gradient", np.positive)  # identity forward; the declared estimator door (200 §1.8)
     where = Marker("where", np.where)  # ternary select
     eq = Marker("eq", np.equal)
     ne = Marker("ne", np.not_equal)
@@ -119,4 +120,5 @@ class pw:
 add, sub, mul, div, neg = pw.add, pw.sub, pw.mul, pw.div, pw.neg
 exp, log, tanh, sqrt, sin, cos = pw.exp, pw.log, pw.tanh, pw.sqrt, pw.sin, pw.cos
 maximum, minimum, where, floor = pw.maximum, pw.minimum, pw.where, pw.floor
+stop_gradient = pw.stop_gradient
 eq, ne, le, lt, ge, gt = pw.eq, pw.ne, pw.le, pw.lt, pw.ge, pw.gt
