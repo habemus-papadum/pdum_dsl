@@ -119,6 +119,7 @@ def record(registry: Registry, cls):
                 raise TypeError(f"record method {cls.__name__}.{name} must be capture-free")
             registry.overloads[(cls.__name__, name)] = handle
     cls.__dsl_record__ = rec_type  # the introspection door: `SomeRecord.__dsl_record__` -> its Record type
+    registry.overloads[cls.__name__] = cls  # the constructor joins the vocabulary (bodies build records)
     _invalidate(registry)
     return cls
 

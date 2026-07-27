@@ -21,6 +21,8 @@ device function over the full triple (block, thread, grid) — layout
 evaluation, not an intrinsic.
 """
 
+from dataclasses import dataclass
+
 import numpy as np
 import pytest
 from pdum.dsl.intrinsics import clamp
@@ -39,6 +41,13 @@ from pdum.tl import (  # noqa: F401 — ambient vocabulary resolved from bodies'
     thread_idx,
 )
 from pdum.tl.kernel import config
+
+
+@dataclass(frozen=True)
+class _RG:  # the derivative-type-law record (declared per test run, surface C)
+    r: float
+    g: float
+
 
 P8 = pytest.mark.skip(reason="specified now; lands at P8 (graphics + the value-tier derivative engine)")
 P9 = pytest.mark.skip(reason="specified now; lands at P9 (the indexing family)")
@@ -227,25 +236,23 @@ def test_value_and_grad_stages_inside_the_kernel_body():
         assert a.min() == 0.0 and a.max() == 1.0 and ((a > 0.0) & (a < 1.0)).any()
 
 
-@P8
 def test_derivative_type_law_records_mirror_their_value():
     """The differentiated value may be a scalar, a record, or a statically
     sized float tensor; the RESULT HAS THE SAME TYPE (per-field for
-    records)."""
-    from dataclasses import dataclass
-
+    records). The record is DECLARED (surface C) — its constructor joins
+    the vocabulary; construction folds at lowering, so the spliced kernel
+    stays scalar rows."""
     from pdum.dsl import jit
-    from pdum.dsl.surfaces import record  # noqa: F401
+    from pdum.dsl.registry import DEFAULT
+    from pdum.dsl.surfaces import record
 
-    @dataclass(frozen=True)
-    class RG:
-        r: float
-        g: float
+    if not getattr(_RG, "__dsl_record__", None):
+        record(DEFAULT, _RG)
 
     @jit()
     def go(y, x):
-        c = RG(y * x, y + x)
-        dc = with_respect_to(c, y)  # noqa: F821 — RG(d r/dy, d g/dy) = RG(x, 1)
+        c = _RG(y * x, y + x)
+        dc = with_respect_to(c, y)  # noqa: F821 — _RG(d r/dy, d g/dy) = _RG(x, 1)
         return dc.r + dc.g
 
     @compute

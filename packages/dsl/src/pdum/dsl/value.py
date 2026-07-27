@@ -163,6 +163,8 @@ def _subscript(ctx, node):
 def _attribute(ctx, node):
     base = ctx.lower(node.value)
     if isinstance(base.type, Record) and node.attr in dict(base.type.fields):
+        if base.op == "core.tuple":  # constructed in-body: the field IS its argument (fold)
+            return base.args[[n for n, _ in base.type.fields].index(node.attr)]
         return ctx.emit("core.field", base, node=node, name=node.attr)
     raise MissingRule(f"attribute {node.attr!r} needs a Record-typed value [{fmt(ctx.loc(node))}]")
 
@@ -381,9 +383,24 @@ def _call(ctx, node):
         pass  # unknown name: overloads below, then the loud message
     if isinstance(resolved, tuple) and resolved[0] == "callee":
         return ctx.inline(resolved[1], resolved[2], args, node)
+
+    def _construct(rec):  # surface C: record CONSTRUCTION — a DECLARED value type builds in-body
+        if len(args) != len(rec.fields):
+            raise MissingRule(
+                f"{name}(...) constructs a {rec.name} record: {len(rec.fields)} fields, "
+                f"got {len(args)} [{fmt(ctx.loc(node))}]"
+            )
+        return ctx.emit("core.tuple", *args, node=node, type=rec)
+
+    rec = getattr(resolved, "__dsl_record__", None) if isinstance(resolved, type) else None
+    if rec is not None:  # a record class riding the closure
+        return _construct(rec)
     if resolved is not None:  # a local/captured VALUE shadowing a battery name: python would
         raise MissingRule(f"{name!r} is a value here, not callable [{fmt(ctx.loc(node))}]")  # raise; so do we
     impl = registry.overloads.get(name) if registry else None
+    rec = getattr(impl, "__dsl_record__", None) if isinstance(impl, type) else None
+    if rec is not None:  # a record class in the vocabulary (the registration door)
+        return _construct(rec)
     if getattr(impl, "__lower_macro__", False):  # a lowering macro: receives ctx + arg NODES
         return impl(ctx, args, node)
     from .markers import Marker, value_op

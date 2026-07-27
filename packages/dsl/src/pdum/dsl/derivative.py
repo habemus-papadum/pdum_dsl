@@ -35,7 +35,7 @@ from .capture import Handle
 from .derived import DerivedValue
 from .ir import VerifyError
 from .staging import macro, staged
-from .types import Scalar
+from .types import Record, Scalar
 
 
 @dataclass(frozen=True)
@@ -232,15 +232,32 @@ def _with_respect_to(ctx, args, node):
     if len(args) != 2:
         raise VerifyError(f"with_respect_to(value, wrt) takes exactly two values [{fmt(ctx.loc(node))}]")
     v, u = args
-    for x, role in ((v, "value"), (u, "wrt")):
+    if not (isinstance(u.type, Scalar) and u.type.kind.startswith("f")):
+        raise VerifyError(
+            f"with_respect_to: the wrt must be castable to real (a float scalar), got {u.type!r} [{fmt(ctx.loc(node))}]"
+        )
+    memo = ctx.context.setdefault("tangent_memos", {}).setdefault(u.key, {})
+
+    def d_of(x):
+        # THE DERIVATIVE TYPE LAW (200 §1.3, the record clause): the result
+        # has the SAME TYPE as the value — per-field for records, recursively.
+        if isinstance(x.type, Record):
+            if x.op != "core.tuple":
+                raise VerifyError(
+                    f"with_respect_to: a record value differentiates per-field when constructed "
+                    f"in-body; a {x.type.name} arriving as {x.op!r} has no per-field view yet "
+                    f"[{fmt(ctx.loc(node))}]"
+                )
+            return ctx.builder.emit("core.tuple", *(d_of(a) for a in x.args), type=x.type)
         if not (isinstance(x.type, Scalar) and x.type.kind.startswith("f")):
             raise VerifyError(
-                f"with_respect_to: the {role} must be castable to real (a float scalar), "
-                f"got {x.type!r} [{fmt(ctx.loc(node))}]"
+                f"with_respect_to: the value must be castable to real (a float scalar or a "
+                f"record of them), got {x.type!r} [{fmt(ctx.loc(node))}]"
             )
-    memo = ctx.context.setdefault("tangent_memos", {}).setdefault(u.key, {})
-    d = tangent(ctx.builder, v, u.key, memo)
-    return d if d is not None else ctx.builder.emit("core.const", type=v.type, value=0.0)
+        d = tangent(ctx.builder, x, u.key, memo)
+        return d if d is not None else ctx.builder.emit("core.const", type=x.type, value=0.0)
+
+    return d_of(v)
 
 
 class _ValueAndGrad(DerivedValue):
