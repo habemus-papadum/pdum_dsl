@@ -37,6 +37,7 @@ import struct
 from dataclasses import dataclass
 
 import numpy as np
+from pdum.dsl.cache import Memo
 from pdum.dsl.ir import Region
 from pdum.dsl.lower import Lowerer, check_coherence
 from pdum.dsl.ops import CORE_OPS
@@ -45,7 +46,7 @@ from pdum.dsl.registry import DEFAULT
 
 from .dialect import TL_OPS, TensorType, capture_shim, run_region, tensor_type
 from .ir import Token, _store
-from .kernel import _ARG_BINDINGS, KERNEL_RULES, _lookup
+from .kernel import _ARG_BINDINGS, KERNEL_RULES, _code_fp, _env_fp, _lookup
 from .lifting import _Intrinsic
 from .producer import _captured, _fn_ast
 from .tensor import Tensor
@@ -100,7 +101,9 @@ def _v_call(ctx, node):
 
 def _v_assign(ctx, node):
     """Vertex bindings CLAIM (varyings — one law, this sink is the
-    interpolator); ``flat(...)`` marks the site it binds."""
+    interpolator); ``flat(...)`` marks the site it binds. Host-scalar
+    bindings claim too — a constant varying broadcasts over the vid
+    lattice at the yield."""
     tgt = node.targets[0]
     if isinstance(tgt, ast.Name):
         value = ctx.lower(node.value)
@@ -108,7 +111,8 @@ def _v_assign(ctx, node):
             ctx.context["g.flat"].add(tgt.id)
             value = value.value
         ctx.locals[tgt.id] = value
-        if hasattr(value, "op") and isinstance(value.type, TensorType):
+        tensorish = hasattr(value, "op") and isinstance(value.type, TensorType)
+        if tensorish or isinstance(value, (int, float)):
             claims = ctx.context["g.claims"]
             if tgt.id in claims:
                 ctx.context["g.invalid"][tgt.id] = "bound at more than one site"
@@ -171,6 +175,13 @@ VERTEX_RULES = {
 class VertexShader:
     fn: object
 
+    def varyings(self) -> dict:
+        """Introspection: every claimed site with its interpolation mode.
+        Flat-ness is a production detail EXCLUDED from the interface type
+        the fragment pairs against — it appears here, never there."""
+        _, vnames, flats, _, _ = _lower_vertex(self, ())
+        return {n: {"flat": n in flats} for n in vnames}
+
 
 @dataclass(frozen=True)
 class FragmentShader:
@@ -192,12 +203,55 @@ class PSO:
 
     vs: VertexShader
     fs: FragmentShader
+    required: frozenset  # the fragment's inferred interface (names only)
+
+
+# The fragment ARTIFACT tier: the interface, content-keyed by the fragment's
+# own fingerprints — one artifact serves EVERY vertex shader producing a
+# superset, so ``pair(rich, shade)`` after ``pair(lean, shade)`` is a HIT
+# (``fragment.miss`` never fires; the committed subset-pairing pin).
+FRAGMENTS = Memo("fragment", capacity=1 << 20)
+
+
+def _required_fields(fs: FragmentShader) -> frozenset:
+    """The fragment's REQUIRED record, inferred from the fields its body
+    touches (attribute access on the varying parameter — inference is the
+    floor; a declared record type is honored when that door opens)."""
+    fn = fs.fn
+    names = fn.__code__.co_varnames[: fn.__code__.co_argcount]
+    if not names:
+        raise TypeError(f"{fn.__qualname__}: a fragment shader's last parameter is the varying record")
+    vname = names[-1]
+    tree = _fn_ast(fn)
+    return frozenset(
+        nd.attr
+        for nd in ast.walk(tree)
+        if isinstance(nd, ast.Attribute) and isinstance(nd.value, ast.Name) and nd.value.id == vname
+    )
 
 
 def pair(vs: VertexShader, fs: FragmentShader) -> PSO:
+    """PSO pairing: the boundary is a record TYPE and strings never cross
+    it — the check is produced ⊇ required (width subtyping), so adding a
+    varying breaks no existing pairing."""
     if not isinstance(vs, VertexShader) or not isinstance(fs, FragmentShader):
         raise TypeError("pair(vertex, fragment) — PSO pairing takes one shader of each kind")
-    return PSO(vs, fs)
+    key = (_code_fp(fs.fn), _env_fp(fs.fn))
+    iface = FRAGMENTS.get_or_compile(key, lambda: {"required": _required_fields(fs)})
+    required = iface["required"]
+    if vs.fn.__code__.co_argcount == 0:  # buffer-taking shaders check at render, when buffers exist
+        _, produced, _, _, _ = _lower_vertex(vs, ())
+        _check_pairing(frozenset(produced), required)
+    return PSO(vs, fs, required)
+
+
+def _check_pairing(produced: frozenset, required: frozenset):
+    missing = required - produced
+    if missing:
+        raise ValueError(
+            f"pairing refused: the fragment requires varyings {sorted(required)} but the vertex "
+            f"shader produces {sorted(produced)} — missing {sorted(missing)}"
+        )
 
 
 def _fresh_context(kind: str) -> dict:
@@ -266,7 +320,7 @@ def _lower_vertex(vs: VertexShader, buffers: tuple):
         dims = tuple((d[0], (d[1], d[2])) for d in hidden.type.dims)
         return ctx.builder.emit("tl.const", value=float(v), dims=dims) if not hasattr(v, "op") else lift(v)
 
-    outs = (as_field(result.x), as_field(result.y)) + tuple(c["g.claims"][n] for n in varying_names)
+    outs = (as_field(result.x), as_field(result.y)) + tuple(as_field(c["g.claims"][n]) for n in varying_names)
     yielded = ctx.builder.emit("core.tuple", *outs)
     region = Region(params=all_params, body=(ctx.builder.emit("core.yield", yielded),))
     return region, varying_names, frozenset(c["g.flat"]), count, lattice
@@ -360,6 +414,7 @@ def render(pso: PSO, *args, target: Tensor):
     n_vs = pso.vs.fn.__code__.co_argcount
     vs_args, fs_args = args[:n_vs], args[n_vs:]
     region, vnames, flats, count, lattice = _lower_vertex(pso.vs, tuple(vs_args))
+    _check_pairing(frozenset(vnames), pso.required)  # the deferred half (buffer-taking shaders)
     values = list(vs_args) + ([lattice] if lattice is not None else [])
     outs = run_region(region, values)
     order = ("vid",)

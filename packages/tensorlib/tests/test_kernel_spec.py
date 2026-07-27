@@ -389,7 +389,6 @@ def test_quad_from_vertex_index_pairs_with_the_compute_zoo_f():
     assert img.to_numpy().min() == 0.0 and img.to_numpy().max() == 1.0
 
 
-@P8
 def test_subset_pairing_shares_one_fragment_artifact():
     """The boundary is a record TYPE and strings never cross it: the
     fragment's required record is INFERRED from the fields it touches;
@@ -397,17 +396,17 @@ def test_subset_pairing_shares_one_fragment_artifact():
     different superset interfaces share ONE fragment artifact, and
     adding a varying breaks no existing pairing."""
     from pdum.dsl import events
-    from pdum.tl.graphics import fragment, pair, position, vertex  # noqa: F821
+    from pdum.tl.graphics import fragment, pair, position, vertex, vertex_index  # noqa: F401
 
     @vertex
     def lean():
-        vid = vertex_index()  # noqa: F821
+        vid = vertex_index()
         u = 1.0 if vid == 1 else 0.0
         return position(u, u)
 
     @vertex
     def rich():
-        vid = vertex_index()  # noqa: F821
+        vid = vertex_index()
         u = 1.0 if vid == 1 else 0.0
         w = u * 3.0  # an EXTRA varying: a superset interface  # noqa: F841
         return position(u, u)
@@ -421,16 +420,15 @@ def test_subset_pairing_shares_one_fragment_artifact():
         pair(rich, shade)  # superset producer: the same fragment artifact
 
 
-@P8
 def test_flat_is_the_sole_interpolation_annotation():
     """Interpolation is declared at the vertex claim site — perspective-
     correct by default, flat(...) the one opt-out — and is a production
     detail EXCLUDED from the interface type the fragment pairs against."""
-    from pdum.tl.graphics import flat, position, vertex  # noqa: F821
+    from pdum.tl.graphics import flat, position, vertex, vertex_index  # noqa: F401
 
     @vertex
     def vs():
-        vid = vertex_index()  # noqa: F821
+        vid = vertex_index()
         u = 0.5  # perspective-corrected by default
         pick = flat(vid)  # noqa: F841 — provoking vertex's value, no interpolation
         return position(u, u)
@@ -457,7 +455,7 @@ def test_fragment_taps_bind_render_buffers_mrt():
 
     @vertex
     def quad():
-        vid = vertex_index()  # noqa: F821
+        vid = vertex_index()
         u = 1.0 if (vid == 1 or vid == 3 or vid == 4) else 0.0
         v = 1.0 if (vid == 2 or vid == 4 or vid == 5) else 0.0
         return position(u * 2.0 - 1.0, v * 2.0 - 1.0)

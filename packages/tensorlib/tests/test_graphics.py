@@ -63,3 +63,23 @@ def test_interpolated_varyings_are_barycentric():
     render(pair(mesh, shade), quad, target=img)
     want = np.broadcast_to((np.arange(4) + 0.5) / 4.0, (4, 4))
     np.testing.assert_allclose(img.to_numpy(), want, rtol=1e-12)
+
+
+def test_pairing_refuses_missing_varyings_with_the_names():
+    """The other half of subset pairing: a fragment requiring a field no
+    vertex shader produces refuses AT PAIR TIME, naming both sides."""
+    import pytest
+    from pdum.tl.graphics import vertex_index  # noqa: F401 — resolved from the body's globals
+
+    @vertex
+    def lean():
+        vid = vertex_index()
+        u = vid * 0.0
+        return position(u, u)
+
+    @fragment
+    def needs_w(varying):
+        return varying.w
+
+    with pytest.raises(ValueError, match=r"pairing refused.*\['w'\].*missing"):
+        pair(lean, needs_w)
