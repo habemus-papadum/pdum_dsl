@@ -11,6 +11,7 @@ from pdum.tl.zoo import (
     gpt2,
     heat2d,
     llama_block,
+    moe,
     qknorm_attention,
     sliding_attention,
 )
@@ -25,6 +26,7 @@ ENTRIES = {
     "flash_naive": lambda: flash_attention(naive=True),
     "heat2d": heat2d,
     "fdtd": fdtd1d_staggered,
+    "moe": moe,
 }
 
 
@@ -50,7 +52,13 @@ def _with_loss(m):
 
 @pytest.mark.parametrize(
     ("name", "wrt"),
-    [("gpt2", ("x", "h.0.attn.wq")), ("llama", ("x",)), ("heat2d", ("u0",)), ("fdtd", ("E0",))],
+    [
+        ("gpt2", ("wte", "h.0.attn.wq")),
+        ("llama", ("x",)),
+        ("heat2d", ("u0",)),
+        ("fdtd", ("E0",)),
+        ("moe", ("x", "wr", "w1")),  # routing gradient-free; gates/values by composition
+    ],
 )
 def test_zoo_gradients_match_fd(name, wrt):
     m = ENTRIES[name]()

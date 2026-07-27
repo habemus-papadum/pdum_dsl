@@ -41,7 +41,10 @@ _METHODS = {
     "rename": ("rename", lambda a, kw: {"mapping": kw}),
     "repeat": ("repeat", lambda a, kw: {"name": a[0], "extent": a[1], **kw}),
     "flip": ("flip", lambda a, kw: {"name": a[0]}),
-    "split": ("split", lambda a, kw: {"name": a[0], "parts": kw}),
+    # split's parts ORDER is the mixed-radix nesting (outer..inner) — packed
+    # as a tuple of pairs so the dialect's canonical attr sort (identity)
+    # cannot reorder it; _thaw_params restores the ordered dict downstream
+    "split": ("split", lambda a, kw: {"name": a[0], "parts": tuple(kw.items())}),
     "merge": ("merge", lambda a, kw: {"parts": tuple(a[0]), "name": a[1], **kw}),
     "diagonal": ("diagonal", lambda a, kw: {"parts": tuple(a[0]), "name": a[1], **kw}),
     "window": ("window", lambda a, kw: dict(zip(("name", "k_name", "k", "dilation"), a)) | kw),

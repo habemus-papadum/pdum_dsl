@@ -157,14 +157,15 @@ def traffic(prog: Program, input_layouts: dict, machine: Machine) -> TrafficRepo
             # consumed lattice's placement (colocation), or the indices
             # address rows a device does not hold.
             vsh, ish = shadows[ins.operands[0]], shadows[ins.operands[1]]
+            consumed = ins.params.get("over") or tuple(ish.names)
             for n in ish.names:
                 lv, li = vsh.dim(n).level, ish.dim(n).level
                 if lv != li:
                     raise NotImplementedError(
-                        f"scatter_add: values and idx place consumed dim {n!r} on "
+                        f"scatter_add: values and idx place shared dim {n!r} on "
                         f"different machine levels ({lv!r} vs {li!r}) — colocate them"
                     )
-                if li is not None:
+                if li is not None and n in consumed:
                     raise NotImplementedError(
                         f"scatter_add over machine-bound dim {n!r} leaves per-device "
                         f"partial sums that need an all-reduce, not modeled in v1 — "

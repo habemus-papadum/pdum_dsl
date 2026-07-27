@@ -421,6 +421,7 @@ def eval_instr(ins: Instr, env: dict, inputs: dict | None = None):
             env[ins.operands[1]],
             dim=ins.params["dim"],
             extent=ins.params["extent"],
+            over=ins.params.get("over"),
         )
     elif ins.op == "argtopk":
         from .indexing import argtopk

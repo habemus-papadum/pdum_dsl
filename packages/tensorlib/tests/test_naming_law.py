@@ -20,8 +20,8 @@ def test_the_naming_law_literal_pins():
     """Gate 7: level-first names, hardcoded. h.{i} from seq, attn/mlp from
     make_block, leaf names from declare-at-use — the checkpoint contract."""
     m = gpt2()
-    names = set(m.inputs) - {"x"}
-    expected = {"wpe", "lnfg", "lnfb", "wlm"}
+    names = set(m.inputs) - {"ids"}
+    expected = {"wte", "wpe", "lnfg", "lnfb"}
     for i in range(CFG.layers):
         expected |= {f"h.{i}.attn.{n}" for n in ("ln1g", "ln1b", "wq", "wk", "wv", "wo")}
         expected |= {f"h.{i}.mlp.{n}" for n in ("ln2g", "ln2b", "w1", "b1", "w2", "b2")}
@@ -34,9 +34,9 @@ def test_a_rebuilt_closure_maps_the_same_capture_to_the_same_name():
     from pdum.tl.ir import _dense_like
     from pdum.tl.layout import Dim
 
-    lay = _dense_like((Dim("t", 0, 0, CFG.t), Dim("d", 0, 0, CFG.d)))
-    a1 = assemblage(make_gpt2(root1, CFG), scope=root1, x=lay)
-    a2 = assemblage(make_gpt2(root2, CFG), scope=root2, x=lay)
+    lay = _dense_like((Dim("t", 0, 0, CFG.t),))
+    a1 = assemblage(make_gpt2(root1, CFG), scope=root1, ids=lay)
+    a2 = assemblage(make_gpt2(root2, CFG), scope=root2, ids=lay)
     assert list(a1.params) == list(a2.params)  # same captures, same names, same order
     assert a1 is a2  # and in fact the same cached build (identical identity)
 

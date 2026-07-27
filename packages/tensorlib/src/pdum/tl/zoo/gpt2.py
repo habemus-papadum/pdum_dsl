@@ -5,8 +5,11 @@ tensors to tensors. The makers own names: declare-at-use ``s.param`` lines,
 level-first paths via ``make_attn(s / "attn", cfg)``, and ``s.seq`` giving
 ``h.0.attn.wq, h.1.mlp.w1, ...`` — the naming law's worked example. Weights
 are born structured: wq is (d, nh, hk), heads are dims, never splits (D5).
-Starts from hidden states (token embedding is a gather — a recorded
-boundary); learned positions are the ``wpe`` leaf added in."""
+Starts from token IDS: embedding is ``take(wte, ids, dim="v")`` (the P9
+gather — the old recorded boundary, dissolved), the head is TIED to the
+same ``wte`` (contract over d), so d_wte accumulates through BOTH paths —
+the scatter-add adjoint plus the contract adjoint, summed by fan-out;
+learned positions are the ``wpe`` leaf added in."""
 
 from __future__ import annotations
 
@@ -17,6 +20,7 @@ import numpy as np
 
 from ..assemblage import assemblage, unit
 from ..compute import const_like, contract, iota, pointwise, red, reduce, repeat_like
+from ..indexing import take
 from ..ir import _dense_like
 from ..layout import Dim
 from ..markers import exp, le, sqrt, where
@@ -33,7 +37,7 @@ class GPT2Config:
     hk: int = 3  # head width
     m: int = 8  # mlp width
     layers: int = 2
-    v: int = 5  # vocab (head only; embedding gather is a recorded boundary)
+    v: int = 5  # vocab: wte is tied — the §1.9 gather in, the head contract out
     eps: float = 1e-5
 
 
@@ -102,20 +106,20 @@ def make_block(s, cfg):
 
 
 def make_gpt2(s, cfg):
+    wte = s.param("wte", v=cfg.v, d=cfg.d)  # tied: embedding AND head
     wpe = s.param("wpe", t=cfg.t, d=cfg.d)
     lnfg, lnfb = s.param("lnfg", d=cfg.d), s.param("lnfb", d=cfg.d)
-    wlm = s.param("wlm", d=cfg.d, v=cfg.v)
 
     @unit
-    def embed(x):
-        return x + wpe
+    def embed(ids):
+        return take(wte, ids, dim="v") + wpe  # the §1.9 gather
 
     trunk = s.seq("h", make_block, cfg, n=cfg.layers)  # h.0.attn.wq, h.1.mlp.w1, ...
 
     @unit
     def head(h):
         hf = layernorm_t(h, lnfg, lnfb, feat="d", eps=cfg.eps)
-        return contract(hf, wlm, axis="d")
+        return contract(hf, wte, axis="d")  # the tie: one leaf, two duties
 
     return embed | trunk | head
 
@@ -130,9 +134,9 @@ def _t(arr, names):
 def gpt2(cfg: GPT2Config = GPT2Config(), seed: int = 7) -> ZooModel:
     rng = np.random.default_rng(seed)
     root = scope()
-    xlay = _dense_like((Dim("t", 0, 0, cfg.t), Dim("d", 0, 0, cfg.d)))
-    model = assemblage(make_gpt2(root, cfg), scope=root, x=xlay)
-    inputs = {"x": _t(rng.standard_normal((cfg.t, cfg.d)), ("t", "d"))}
+    ids_lay = _dense_like((Dim("t", 0, 0, cfg.t),))
+    model = assemblage(make_gpt2(root, cfg), scope=root, ids=ids_lay)
+    inputs = {"ids": Tensor.from_numpy(rng.integers(0, cfg.v, cfg.t), ("t",))}
     for name, p in root.coll.leaves.items():
         shape = tuple(e for _, e in p.dims)
         std = 0.1 if name == "wpe" else 0.4
@@ -141,7 +145,7 @@ def gpt2(cfg: GPT2Config = GPT2Config(), seed: int = 7) -> ZooModel:
     T, K = cfg.t, cfg.hk
 
     def ref(inp):
-        h = inp["x"] + inp["wpe"]
+        h = inp["wte"][inp["ids"]] + inp["wpe"]
         mask = np.tril(np.ones((T, T), dtype=bool))
         for i in range(cfg.layers):
             p = f"h.{i}."
@@ -158,6 +162,6 @@ def gpt2(cfg: GPT2Config = GPT2Config(), seed: int = 7) -> ZooModel:
             mm = np_gelu(a2 @ inp[p + "mlp.w1"] + inp[p + "mlp.b1"])
             h = h + mm @ inp[p + "mlp.w2"] + inp[p + "mlp.b2"]
         hf = np_layernorm(h, inp["lnfg"], inp["lnfb"], cfg.eps)
-        return hf @ inp["wlm"]
+        return hf @ inp["wte"].T  # tied head
 
     return ZooModel(model.program, inputs, model.output, ref, ("t", "v"))

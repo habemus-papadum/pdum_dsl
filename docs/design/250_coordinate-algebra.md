@@ -325,16 +325,28 @@ in-bounds BY CONSTRUCTION, data cannot be, so the reference refuses
 out-of-range indices loudly (device-tier behavior is a descent-license
 matter, never silent).
 
-**`take(table, idx, dim="v")`** — a computation, never a view — replaces
-the taken dim IN PLACE with idx's dims; every surviving dim keeps its
-frame verbatim (chart, labels, level ride); the consumed frame
-disappears — its lattice went data. **`scatter_add(values, idx,
-dim="v", extent=…)`** DECLARES its output frame (name + extent,
-repeat's convention) — never inferred from the data; the new dim is
-born plain, `with_charts` glues physics back on. Duplicates SUM:
-addition is order-independent, hence deterministic — and `take† =
-scatter_add`, `scatter_add† = take`, a self-dual adjoint pair with
-`d_idx = None`.
+**`take(table, idx, dim="v")`** — a computation, never a view. idx dims
+NEW to the table replace the taken dim IN PLACE; idx dims the table
+already carries ALIGN by name — the tensor tier's one naming law (same
+name IS the same lattice, exactly as pointwise and repeat_like read
+it): `out[aligned, spliced, rest] = table[idx[aligned, spliced],
+aligned, rest]`. The batched forms fall out of the law rather than
+joining as ops: `take(x, argsort(x, dim="t"), dim="t")` reorders every
+line of a batch, and the MoE gate gather is the same spelling as the
+embedding gather. Every surviving dim keeps its frame verbatim (chart,
+labels, level ride); the consumed frame disappears — its lattice went
+data; aligned dims must agree in domain and decoration (refuse toward
+slice/rename). **`scatter_add(values, idx, dim="v", extent=…,
+over=…)`** DECLARES its output frame (name + extent, repeat's
+convention) — never inferred from the data; the new dim is born plain,
+`with_charts` glues physics back on. Scatter's consumed/aligned split
+is genuinely free where take's is forced by the naming law, so it is
+DECLARED: `over=` names the consumed dims (reduce's declared-dims
+precedent), defaulting to all idx dims; idx dims not named align and
+ride — the per-line scatter. Duplicates SUM: addition is
+order-independent, hence deterministic — and `take† = scatter_add`
+(over = the spliced dims), `scatter_add† = take` (alignment re-forced
+by the naming law), a self-dual adjoint pair with `d_idx = None`.
 
 **The factoring.** Index producers (`argtopk` — descending, ties
 first-wins; `argsort` — ascending, stable; `argmax` IS `argtopk(k=1)`)

@@ -119,9 +119,39 @@ def test_take_refuses_united_indices():
         take(TABLE, idx.with_value_units(u.um), dim="v")
 
 
-def test_take_refuses_colliding_index_dims():
-    with pytest.raises(ValueError, match="collide.*rename is the adapter"):
-        take(TABLE, T(np.array([0, 1]), ("d",)), dim="v")
+def test_take_aligns_shared_dims_by_the_naming_law():
+    """An idx dim the table already carries ALIGNS (same name = same
+    lattice — the tier's one naming law): out[d] = table[idx[d], d], the
+    data-dependent diagonal. A domain mismatch refuses."""
+    picks = T(np.array([3, 0, 2]), ("d",))  # one row choice PER column
+    out = take(TABLE, picks, dim="v")
+    assert out.names == ("d",)
+    tn = TABLE.to_numpy()
+    np.testing.assert_array_equal(out.to_numpy(), [tn[3, 0], tn[0, 1], tn[2, 2]])
+    with pytest.raises(ValueError, match="disagrees in domain.*naming law"):
+        take(TABLE, T(np.array([0, 1]), ("d",)), dim="v")  # d is [0,3), idx d is [0,2)
+
+
+def test_take_batched_reorder_is_the_same_spelling():
+    """The spec's 'any differentiable reordering is take by sorted indices'
+    in BATCHED form: argsort over (b, t) aligns b, splices t — each line
+    reorders independently."""
+    from pdum.tl import argsort
+
+    x = T(np.array([[3.0, 1.0, 2.0], [6.0, 4.0, 5.0]]), ("b", "t"))
+    out = take(x, argsort(x, dim="t"), dim="t")
+    assert out.names == ("b", "t")
+    np.testing.assert_array_equal(out.to_numpy(), [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+
+
+def test_take_gate_gather_is_the_moe_shape():
+    """The router's gate gather: per-token choices over (t, c) against
+    logits (t, e) — t aligns, c splices in e's place."""
+    logits = T(np.array([[0.1, 0.9, 0.5], [0.8, 0.2, 0.3]]), ("t", "e"))
+    choice = T(np.array([[1], [0]]), ("t", "c"))
+    gates = take(logits, choice, dim="e")
+    assert gates.names == ("t", "c")
+    np.testing.assert_array_equal(gates.to_numpy(), [[0.9], [0.8]])
 
 
 def test_take_refuses_unknown_dim():
@@ -163,13 +193,25 @@ def test_scatter_add_riding_dims_ride():
     np.testing.assert_array_equal(out.to_numpy(), [[2.0, 3.0], [4.0, 6.0]])
 
 
+def test_scatter_add_over_declares_the_per_line_form():
+    """`over=` names the consumed dims (reduce's precedent); idx dims not
+    named align and ride — the per-line histogram."""
+    vals = T(np.ones((2, 3)), ("b", "t"))
+    idx = T(np.array([[0, 1, 0], [2, 2, 2]]), ("b", "t"))
+    out = scatter_add(vals, idx, dim="v", extent=3, over=("t",))
+    assert out.names == ("b", "v")
+    np.testing.assert_array_equal(out.to_numpy(), [[2.0, 1.0, 0.0], [0.0, 0.0, 3.0]])
+    with pytest.raises(ValueError, match=r"over=\['q'\] are not idx dims"):
+        scatter_add(vals, idx, dim="v", extent=3, over=("q",))
+
+
 def test_scatter_add_refusals():
     vals = T(np.array([1.0, 2.0, 3.0]), ("t",))
     with pytest.raises(IndexError, match="refuses out-of-range"):
         scatter_add(vals, T(np.array([0, 1, 9]), ("t",)), dim="v", extent=4)
     with pytest.raises(ValueError, match="not values dims"):
         scatter_add(vals, T(np.array([0, 1]), ("q",)), dim="v", extent=4)
-    with pytest.raises(ValueError, match="disagree on consumed dim"):
+    with pytest.raises(ValueError, match="disagrees in domain.*naming law"):
         scatter_add(vals, T(np.array([0, 1]), ("t",)), dim="v", extent=4)
     with pytest.raises(ValueError, match="collides with a surviving"):
         vals2 = T(np.arange(6.0).reshape(3, 2), ("t", "d"))
@@ -332,6 +374,48 @@ def test_units_ride_through_take():
     prog = _prog()
     sigs = infer_signatures(prog, {"table": TABLE.with_value_units(u.um), "ids": IDS})
     assert sigs["tok"].unit == u.um
+
+
+def test_aligned_take_gradient_matches_finite_differences():
+    """The batched gather's adjoint is the per-line scatter (over= the
+    spliced dims) — pinned by FD, and by the self-duality round trip."""
+    table = T(np.arange(8.0).reshape(2, 4), ("b", "v"))
+    idx = T(np.array([[1, 1, 3], [0, 2, 2]]), ("b", "t"))
+    prog = Program(
+        (
+            I("table", "input"),
+            I("idx", "input"),
+            I("g", "take", ["table", "idx"], dim="v"),
+            I("sq", "pointwise", ["g", "g"], f="mul"),
+            I("y", "reduce", ["sq"], f="sum", dims=("b", "t")),
+        )
+    )
+    inputs = {"table": table, "idx": idx}
+    joint, grads = grad(prog, "y", inputs)
+    env = run(joint, inputs)
+    g = env[grads["table"]].to_numpy(order=("b", "v"))
+    fd = numeric_grad(prog, "y", "table", inputs)
+    np.testing.assert_allclose(g, fd, rtol=1e-5, atol=1e-7)
+
+
+def test_over_scatter_gradient_matches_finite_differences():
+    vals = T(np.arange(6.0).reshape(2, 3), ("b", "t"))
+    idx = T(np.array([[0, 1, 0], [2, 2, 0]]), ("b", "t"))
+    prog = Program(
+        (
+            I("vals", "input"),
+            I("idx", "input"),
+            I("s", "scatter_add", ["vals", "idx"], dim="v", extent=(0, 3), over=("t",)),
+            I("sq", "pointwise", ["s", "s"], f="mul"),
+            I("y", "reduce", ["sq"], f="sum", dims=("b", "v")),
+        )
+    )
+    inputs = {"vals": vals, "idx": idx}
+    joint, grads = grad(prog, "y", inputs)
+    env = run(joint, inputs)
+    g = env[grads["vals"]].to_numpy(order=("b", "t"))
+    fd = numeric_grad(prog, "y", "vals", inputs)
+    np.testing.assert_allclose(g, fd, rtol=1e-5, atol=1e-7)
 
 
 # ----------------------------------------------------------------------

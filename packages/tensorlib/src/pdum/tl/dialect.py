@@ -493,6 +493,17 @@ def _tl_call(ctx, node):
             rest = [_scalar_lift(ctx, node, ctx.lower(a)) for a in node.args[1:]]
             return ctx.emit("tl.pointwise", *rest, node=node, f=marker.name)
         if obj is const_like:  # scalar broadcast: the const IS the operand
+            try:
+                v = _host(ctx, node.args[1])
+            except Exception:
+                v = None
+            if isinstance(v, int) and not isinstance(v, bool):
+                # the literal's own type is the carrier declaration (the
+                # eager face's law): an int broadcasts at integer carrier —
+                # index arithmetic (§1.9 linearizations) never rides f64
+                ref = ctx.lower(node.args[0])
+                dims = tuple((d.name, (d.start, d.stop)) for d in ref.type.layout.dims)
+                return ctx.emit("tl.const", node=node, value=v, dims=dims, dtype="int64")
             return ctx.lower(node.args[1])
         if obj is _eager_reduce or obj is _eager_scan:  # the S.1 spellings
             f = _host(ctx, node.args[0])

@@ -15,15 +15,18 @@ Chosen to SPAN mechanisms, not to crawl the architecture gallery:
   is DERIVED
 - physics: 2D heat (fold + Dirichlet ghosts via pad), 1D FDTD on a charted
   staggered grid (exact half-integer charts, recharted differences)
+- moe: capacity-factor top-k routing — the §1.9 indexing family end to
+  end (argtopk, aligned take, prefix-sum slots, over-scatter, take-back)
 
-Recorded boundaries (LEVELS.md): MoE routing / top-k (data-dependent
-gather), KV-cache decode (mutation), dynamic shapes.
+Recorded boundaries (LEVELS.md): KV-cache decode (mutation), dynamic
+shapes, fully dynamic MoE dispatch (a dynamic-shapes problem).
 """
 
 from .attention import flash_attention, gated_attention, qknorm_attention, sliding_attention
 from .gpt2 import GPT2Config, gpt2
 from .llama import LlamaConfig, llama_block
 from .megatron import MegatronConfig, megatron_block
+from .moe import MoEConfig, moe
 from .physics import fdtd1d_staggered, heat2d
 from .zoo_common import ZooModel
 
@@ -31,6 +34,8 @@ __all__ = [
     "GPT2Config",
     "LlamaConfig",
     "MegatronConfig",
+    "MoEConfig",
+    "moe",
     "ZooModel",
     "megatron_block",
     "fdtd1d_staggered",

@@ -49,11 +49,11 @@ def test_dce_prunes_unrequested_gradient_work():
     m = gpt2()
     prog = _loss_prog(m)
     jp, grads = grad(prog, "zloss", m.inputs)
-    keep_x = dce(jp, (grads["x"], "zloss"))
-    assert len(keep_x.instrs) < len(jp.instrs)  # weight-grad work is gone
+    keep_x = dce(jp, (grads["wte"], "zloss"))
+    assert len(keep_x.instrs) < len(jp.instrs)  # the other weight-grad work is gone
     ex, ej = run(keep_x, m.inputs), run(jp, m.inputs)
     np.testing.assert_allclose(
-        ex[grads["x"]].to_numpy(order=("t", "d")), ej[grads["x"]].to_numpy(order=("t", "d")), rtol=1e-12
+        ex[grads["wte"]].to_numpy(order=("v", "d")), ej[grads["wte"]].to_numpy(order=("v", "d")), rtol=1e-12
     )
     assert peak_memory(keep_x, m.inputs).peak_bytes <= peak_memory(jp, m.inputs).peak_bytes
 
@@ -122,7 +122,7 @@ def test_checkpoint_gpt2_shrinks_the_boundary_and_the_peak():
     after = peak_memory(ck.program, m.inputs).peak_bytes
     assert after <= before
     ej, ec = run(jp, m.inputs), run(ck.program, m.inputs)
-    for v in ("x", "h.0.attn.wq"):
+    for v in ("wte", "h.0.attn.wq"):
         np.testing.assert_allclose(
             ec[grads[v]].to_numpy(order=m.inputs[v].names),
             ej[grads[v]].to_numpy(order=m.inputs[v].names),
@@ -134,11 +134,11 @@ def test_dce_then_checkpoint_compose():
     m = gpt2()
     prog = _loss_prog(m)
     jp, grads = grad(prog, "zloss", m.inputs)
-    pruned = dce(jp, (grads["x"], "zloss"))
+    pruned = dce(jp, (grads["wte"], "zloss"))
     ck = checkpoint(pruned, "zloss", m.inputs)
     ej, ec = run(jp, m.inputs), run(ck.program, m.inputs)
     np.testing.assert_allclose(
-        ec[grads["x"]].to_numpy(order=("t", "d")), ej[grads["x"]].to_numpy(order=("t", "d")), rtol=1e-10
+        ec[grads["wte"]].to_numpy(order=("v", "d")), ej[grads["wte"]].to_numpy(order=("v", "d")), rtol=1e-10
     )
     # the composition is the point: prune first, then plan what remains
     assert ck.bytes_before <= checkpoint(jp, "zloss", m.inputs).bytes_before

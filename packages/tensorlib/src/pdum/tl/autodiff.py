@@ -900,10 +900,14 @@ def _grad(
             # deterministic. Indices are integer-carrier: gradient-free
             # (d_idx = None), so only the table receives a contribution.
             d = shadows[ins.operands[0]].dim(ins.params["dim"])
+            # the consumed dims are exactly the SPLICED idx dims (aligned
+            # idx dims ride in the adjoint too — the batched forms)
+            survivors = {x.name for x in shadows[ins.operands[0]].dims if x.name != d.name}
+            spliced = tuple(n for n in shadows[ins.operands[1]].names if n not in survivors)
             gv = b.emit(
                 "scatter_add",
                 (c, ins.operands[1]),
-                {"dim": d.name, "extent": (d.start, d.stop)},
+                {"dim": d.name, "extent": (d.start, d.stop), "over": spliced},
             )
             contribute(ins.operands[0], gv)
         elif ins.op == "scatter_add":

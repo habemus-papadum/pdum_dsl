@@ -17,18 +17,29 @@ domains agree) still refuse at build time, in `take_dims`/`scatter_dims`
 — the single copy of the structural law that eager evaluation, Program
 inference, and the dialect's type rules all share.
 
-`take(table, idx, dim="v")`: the taken dim is replaced IN PLACE by idx's
-dims; every surviving dim keeps its frame verbatim (chart, labels, level
-ride); the consumed frame disappears — its lattice went data. The adjoint
-is `scatter_add` into the taken dim: duplicates SUM (a token appearing
-twice accumulates both contributions — exactly the embedding gradient),
-which makes the adjoint order-independent, hence deterministic. Indices
-are gradient-free (`d_idx = None`).
+`take(table, idx, dim="v")`: idx dims NEW to the table replace the taken
+dim IN PLACE; idx dims the table ALREADY carries align by name — the
+tensor tier's one naming law (same name = same lattice, exactly as
+pointwise and repeat_like read it), which is what makes the batched
+forms fall out: `take(x, argsort(x, dim="t"), dim="t")` reorders each
+line of a batch, and a per-token gate gather is the same spelling as
+the embedding gather. out[**aligned**, spliced, rest] =
+table[idx[aligned, spliced], **aligned**, rest]. Every surviving dim
+keeps its frame verbatim (chart, labels, level ride); the consumed
+frame disappears — its lattice went data. The adjoint is `scatter_add`
+into the taken dim: duplicates SUM (a token appearing twice accumulates
+both contributions — exactly the embedding gradient), which makes the
+adjoint order-independent, hence deterministic. Indices are
+gradient-free (`d_idx = None`).
 
-`scatter_add(values, idx, dim="v", extent=...)` is user-facing (routing
-needs it) and DECLARES its output frame — name and extent, never inferred
-from the data (`max(idx)+1` would be a data-dependent shape). Its adjoint
-is `take` — a self-dual pair, like `repeat† = reduce`.
+`scatter_add(values, idx, dim="v", extent=..., over=...)` is user-facing
+(routing needs it) and DECLARES its output frame — name and extent,
+never inferred from the data (`max(idx)+1` would be a data-dependent
+shape). Unlike take's, scatter's consumed/aligned split is genuinely
+free — so it is DECLARED: `over=` names the consumed dims (reduce's
+declared-dims precedent), defaulting to all idx dims (the total form);
+idx dims not in `over` align and ride. Its adjoint is `take` — a
+self-dual pair, like `repeat† = reduce`.
 
 THE FACTORING: every other indexing operation decomposes into a
 gradient-free INDEX PRODUCER plus `take`. `argtopk` (descending, ties
@@ -93,48 +104,67 @@ def _as_domain(extent) -> tuple[int, int]:
 # ---- the structural law (build-time; layout-only) --------------------------
 
 
+def _check_aligned(op: str, n: str, a: Dim, b: Dim) -> None:
+    if (a.start, a.stop) != (b.start, b.stop):
+        raise ValueError(
+            f"{op}: aligned dim {n!r} disagrees in domain: [{a.start}, {a.stop}) "
+            f"vs [{b.start}, {b.stop}) — same name IS the same lattice (the "
+            f"naming law); slice/pad one side, or rename to splice a new dim"
+        )
+    if a.chart != b.chart or a.labels != b.labels:
+        raise ValueError(
+            f"{op}: aligned dim {n!r} disagrees in chart/labels — same name IS the same lattice; strip_charts or rename"
+        )
+
+
 def take_dims(table, idx, dim: str) -> tuple[tuple[Dim, ...], Dim]:
-    """Output dims of a take: idx's dims replace the taken dim IN PLACE;
-    surviving dims verbatim. `table`/`idx` are Layouts (or anything with
-    .dims/.dim). Refuses structurally impossible takes at build time."""
+    """Output dims of a take. idx dims NEW to the table replace the taken
+    dim IN PLACE (in idx order); idx dims the table already carries ALIGN
+    by name (the naming law — the batched forms) and must agree with the
+    table's. `table`/`idx` are Layouts (or anything with .dims/.dim).
+    Structurally impossible takes refuse at build time."""
     d = table.dim(dim)  # KeyError names the dims it does have
     survivors = {x.name for x in table.dims if x.name != dim}
-    clash = survivors & set(idx.names)
-    if clash:
-        raise ValueError(
-            f"take: index dim(s) {sorted(clash)} collide with surviving table "
-            f"dims — the taken dim is replaced by the index tensor's dims, so "
-            f"shared names would be ambiguous; rename is the adapter"
-        )
+    for n in idx.names:
+        if n in survivors:
+            _check_aligned("take", n, table.dim(n), idx.dim(n))
+    spliced = tuple(n for n in idx.names if n not in survivors)
     out: list[Dim] = []
     for x in table.dims:
         if x.name == dim:
-            out.extend(idx.dim(n) for n in idx.names)
+            out.extend(idx.dim(n) for n in spliced)
         else:
             out.append(x)
     return tuple(out), d
 
 
-def scatter_dims(values, idx, dim: str, extent) -> tuple[Dim, ...]:
-    """Output dims of a scatter_add: idx's dims are CONSUMED (they must all
-    be values dims, agreeing in domain); the declared dim takes the place of
-    the first consumed dim; surviving dims verbatim."""
+def _over_names(idx, over) -> tuple[str, ...]:
+    """The DECLARED consumed dims: default = all idx dims (the total form);
+    idx dims not named ride aligned."""
+    if over is None:
+        return tuple(idx.names)
+    names = (over,) if isinstance(over, str) else tuple(over)
+    unknown = [n for n in names if n not in idx.names]
+    if unknown:
+        raise ValueError(f"scatter_add: over={unknown} are not idx dims {idx.names}")
+    return names
+
+
+def scatter_dims(values, idx, dim: str, extent, over=None) -> tuple[Dim, ...]:
+    """Output dims of a scatter_add: the `over` dims are CONSUMED (every idx
+    dim must be a values dim, agreeing in domain — the naming law); the
+    declared dim takes the place of the first consumed dim; idx dims not in
+    `over` align and ride; surviving dims verbatim."""
     start, stop = _as_domain(extent)
-    consumed = tuple(idx.names)
-    missing = [n for n in consumed if n not in values.names]
+    consumed = _over_names(idx, over)
+    missing = [n for n in idx.names if n not in values.names]
     if missing:
         raise ValueError(
             f"scatter_add: idx dim(s) {missing} are not values dims {values.names} "
-            f"— values must carry every index dim (the consumed lattice)"
+            f"— values must carry every index dim (the consumed and aligned lattice)"
         )
-    for n in consumed:
-        a, b = values.dim(n), idx.dim(n)
-        if (a.start, a.stop) != (b.start, b.stop):
-            raise ValueError(
-                f"scatter_add: values and idx disagree on consumed dim {n!r}: "
-                f"[{a.start}, {a.stop}) vs [{b.start}, {b.stop}) — the consumed "
-                f"lattice must agree in domain"
-            )
+    for n in idx.names:
+        _check_aligned("scatter_add", n, values.dim(n), idx.dim(n))
     survivors = {x.name for x in values.dims if x.name not in consumed}
     if dim in survivors:
         raise ValueError(
@@ -151,7 +181,7 @@ def scatter_dims(values, idx, dim: str, extent) -> tuple[Dim, ...]:
                 placed = True
         else:
             out.append(x)
-    if not placed:  # a rank-0 idx consumes nothing: the new dim leads
+    if not placed:  # a rank-0/fully-aligned idx consumes nothing: the new dim leads
         out.insert(0, new)
     return tuple(out)
 
@@ -171,28 +201,39 @@ def take(table: Tensor, idx: Tensor, *, dim: str) -> Tensor:
 
     out_dims, d = take_dims(table.layout, idx.layout, dim)
     _check_index_tensor("take", idx)
-    inames = idx.names
-    iarr = idx.to_numpy(order=inames) if inames else idx.to_numpy()
+    survivors = {x.name for x in table.layout.dims if x.name != dim}
+    aligned = tuple(n for n in idx.names if n in survivors)
+    spliced = tuple(n for n in idx.names if n not in survivors)
+    rest = tuple(x.name for x in table.layout.dims if x.name != dim and x.name not in aligned)
+    iarr = idx.to_numpy(order=aligned + spliced) if idx.names else idx.to_numpy()
     _check_range("take", dim, iarr, d.start, d.stop)
-    rest = tuple(x.name for x in table.layout.dims if x.name != dim)
-    arr = table.to_numpy(order=(dim,) + rest)
-    got = arr[iarr - d.start]  # shape idx.shape + rest — then present in place
-    src_order = inames + rest
+    arr = table.to_numpy(order=aligned + (dim,) + rest)
+    na = int(np.prod(arr.shape[: len(aligned)])) if aligned else 1
+    ns = int(np.prod(iarr.shape[len(aligned) :])) if spliced else 1
+    flat = arr.reshape((na, d.size) + arr.shape[len(aligned) + 1 :])
+    picks = flat[np.arange(na)[:, None], (iarr - d.start).reshape(na, ns)]
+    a_shape = arr.shape[: len(aligned)]
+    s_shape = iarr.shape[len(aligned) :]
+    got = picks.reshape(a_shape + s_shape + flat.shape[2:])
+    src_order = aligned + spliced + rest
     perm = tuple(src_order.index(x.name) for x in out_dims)
     return _tensor_like(np.transpose(got, perm), out_dims, value_units=table.value_units)
 
 
-def scatter_add(values: Tensor, idx: Tensor, *, dim: str, extent) -> Tensor:
-    """out[v, rest...] = Σ over consumed positions p with idx[p] == v of
-    values[p, rest...]; zero where nothing lands — take's adjoint, user-facing
-    (200 §1.9). The output frame is DECLARED: `dim` names it, `extent` (an
-    int width or a (start, stop) pair, repeat's convention) is its domain;
-    the new dim is plain — with_charts glues physics back on. Duplicates sum;
+def scatter_add(values: Tensor, idx: Tensor, *, dim: str, extent, over=None) -> Tensor:
+    """out[v, aligned..., rest...] = Σ over consumed positions p with
+    idx[aligned, p] == v of values[aligned, p, rest...]; zero where nothing
+    lands — take's adjoint, user-facing (200 §1.9). The output frame is
+    DECLARED: `dim` names it, `extent` (an int width or a (start, stop)
+    pair, repeat's convention) is its domain; the new dim is plain —
+    with_charts glues physics back on. `over` DECLARES the consumed dims
+    (reduce's precedent), defaulting to all idx dims; idx dims not in
+    `over` align by name and ride (the per-line scatter). Duplicates sum;
     addition makes the result order-independent, hence deterministic.
     Adjoint: take at the same indices; indices are gradient-free."""
     from .compute import _tensor_like
 
-    out_dims = scatter_dims(values.layout, idx.layout, dim, extent)
+    out_dims = scatter_dims(values.layout, idx.layout, dim, extent, over)
     _check_index_tensor("scatter_add", idx)
     if values.carrier == "bool":
         raise TypeError(
@@ -200,18 +241,22 @@ def scatter_add(values: Tensor, idx: Tensor, *, dim: str, extent) -> Tensor:
             "cast to a numeric carrier first (a count is pw.mul with 1.0)"
         )
     start, stop = _as_domain(extent)
-    inames = idx.names
-    iarr = idx.to_numpy(order=inames) if inames else idx.to_numpy()
+    consumed = _over_names(idx.layout, over)
+    aligned = tuple(n for n in idx.names if n not in consumed)
+    rest = tuple(x.name for x in values.layout.dims if x.name not in idx.names)
+    iarr = idx.to_numpy(order=aligned + consumed) if idx.names else idx.to_numpy()
     _check_range("scatter_add", dim, iarr, start, stop)
-    rest = tuple(x.name for x in values.layout.dims if x.name not in inames)
-    varr = values.to_numpy(order=inames + rest)
-    lines = int(np.prod(iarr.shape)) if inames else 1
-    flat_v = varr.reshape((lines,) + varr.shape[len(inames) :])
-    acc = np.zeros((stop - start,) + flat_v.shape[1:], dtype=varr.dtype)
-    np.add.at(acc, iarr.reshape(lines) - start, flat_v)
-    src_order = (dim,) + rest
+    varr = values.to_numpy(order=aligned + consumed + rest)
+    na = int(np.prod(varr.shape[: len(aligned)])) if aligned else 1
+    nc = int(np.prod(iarr.shape[len(aligned) :])) if consumed else 1
+    flat_v = varr.reshape((na, nc) + varr.shape[len(aligned) + len(consumed) :])
+    acc = np.zeros((na, stop - start) + flat_v.shape[2:], dtype=varr.dtype)
+    np.add.at(acc, (np.arange(na)[:, None], (iarr - start).reshape(na, nc)), flat_v)
+    a_shape = varr.shape[: len(aligned)]
+    got = acc.reshape(a_shape + (stop - start,) + flat_v.shape[2:])
+    src_order = aligned + (dim,) + rest
     perm = tuple(src_order.index(x.name) for x in out_dims)
-    return _tensor_like(np.transpose(acc, perm), out_dims, value_units=values.value_units)
+    return _tensor_like(np.transpose(got, perm), out_dims, value_units=values.value_units)
 
 
 # ---- the index producers (gradient-free) -----------------------------------
@@ -291,6 +336,7 @@ def infer_scatter(shadows: dict, ins) -> Layout:
             shadows[ins.operands[1]],
             ins.params["dim"],
             ins.params["extent"],
+            ins.params.get("over"),
         )
     )
 

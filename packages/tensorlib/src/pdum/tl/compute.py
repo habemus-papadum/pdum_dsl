@@ -170,8 +170,14 @@ def extent(x, name: str | None = None) -> int:
 
 def const_like(t: Tensor, value) -> Tensor:
     """A scalar broadcast over ``t``'s lattice, carrying its charts, labels,
-    and placement — the ONE implicit lift's explicit spelling (S.1)."""
-    arr = np.full(tuple(d.size for d in t.layout.dims), float(value))
+    and placement — the ONE implicit lift's explicit spelling (S.1). The
+    literal's own type IS the carrier declaration (exactness doctrine): a
+    Python int broadcasts at integer carrier (index arithmetic — the §1.9
+    linearizations), a float at real."""
+    if isinstance(value, bool):
+        raise TypeError("const_like takes a number; bool fields come from comparisons")
+    dt = np.int64 if isinstance(value, int) else np.float64
+    arr = np.full(tuple(d.size for d in t.layout.dims), value, dtype=dt)
     return _tensor_like(arr, t.layout.dims)
 
 
