@@ -407,7 +407,7 @@ def render_wgpu(pso, *fs_args, shape):
         raise Untranslatable("vertex buffers on the device (the vid-only subset renders today)")
 
     def v_leaf(n, g):
-        if n.op == "tl.iota" and dict(n.attrs).get("name") == "vid":
+        if n.op == "tl.iota" and dict(n.attrs).get("name") == "vertex_id":
             return "f32(vid)", False
         if n.op == "core.param":
             raise Untranslatable("a vertex buffer param on the device")

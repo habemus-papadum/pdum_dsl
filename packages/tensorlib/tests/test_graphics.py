@@ -8,7 +8,7 @@ count IS the vid extent.
 """
 
 import numpy as np
-from pdum.tl import Tensor
+from pdum.tl import Tensor, f32, thread_idx  # noqa: F401 — ambient vocabulary: bodies' globals
 from pdum.tl.graphics import fragment, pair, position, render, vertex
 
 
@@ -31,7 +31,7 @@ def test_vertex_arrays_drive_the_draw():
     def shade(varying):
         return varying.u * 0.0 + 1.0  # flat white over the covered pixels
 
-    tri = T([[-1.0, -1.0], [1.0, -1.0], [-1.0, 1.0]], ("vid", "c"))
+    tri = T([[-1.0, -1.0], [1.0, -1.0], [-1.0, 1.0]], ("vertex_id", "c"))
     img = T(np.zeros((8, 8)), ("y", "x"))
     render(pair(mesh, shade), tri, target=img)
     out = img.to_numpy()
@@ -57,7 +57,7 @@ def test_interpolated_varyings_are_barycentric():
     # two triangles spanning the unit square in (u, v)
     quad = T(
         [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
-        ("vid", "c"),
+        ("vertex_id", "c"),
     )
     img = T(np.zeros((4, 4)), ("y", "x"))
     render(pair(mesh, shade), quad, target=img)
@@ -69,12 +69,11 @@ def test_pairing_refuses_missing_varyings_with_the_names():
     """The other half of subset pairing: a fragment requiring a field no
     vertex shader produces refuses AT PAIR TIME, naming both sides."""
     import pytest
-    from pdum.tl.graphics import vertex_index  # noqa: F401 — resolved from the body's globals
 
     @vertex
     def lean():
-        vid = vertex_index()
-        u = vid * 0.0
+        (vid,) = thread_idx("vertex_id")
+        u = f32(vid) * 0.0
         return position(u, u)
 
     @fragment

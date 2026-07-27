@@ -32,7 +32,7 @@ def cylinder_mesh(segments: int = 32) -> Tensor:
     for s in range(segments):
         t0, t1 = s * TAU / segments, (s + 1) * TAU / segments
         verts += [(t0, -1.0), (t1, -1.0), (t0, 1.0), (t1, -1.0), (t1, 1.0), (t0, 1.0)]
-    return Tensor.from_numpy(np.asarray(verts, dtype=np.float64), ("vid", "c"))
+    return Tensor.from_numpy(np.asarray(verts, dtype=np.float64), ("vertex_id", "c"))
 
 
 @compute
@@ -40,7 +40,7 @@ def ripple(src, dst):
     """The geometry ripple: h gains a phase-shifted sine of theta —
     theta read at a COMPUTED index (the c=0 column), the phase riding
     the uniform channel."""
-    i, c = global_idx("vid", "c")
+    i, c = global_idx("vertex_id", "c")
     theta = src[i32(i), i32(c) * 0.0]  # the theta column, broadcast per vertex row
     dst[i, c] = src[i, c] + where(ge(f32(c), 0.5), sin(theta * 3.0 + _PHASE) * 0.08, 0.0)
 
@@ -85,11 +85,11 @@ def demo_frames(angles=(0.0, 1.2, 2.4), size=(48, 64)):
         w = sqrt(du * du + dv * dv) * 0.7 + 1e-6
         return clamp(s / w * 0.5 + 0.5, 0.0, 1.0)  # the analytic edge, one footprint wide
 
-    n = mesh.layout.dim("vid").size
+    n = mesh.layout.dim("vertex_id").size
     frames = []
     for i, angle in enumerate(angles):
         _PHASE = 0.9 * i  # rebinding the unmarked capture: a WARM relaunch, fresh value
-        rippled = Tensor.from_numpy(np.zeros((n, 2)), ("vid", "c"))
+        rippled = Tensor.from_numpy(np.zeros((n, 2)), ("vertex_id", "c"))
         ripple(mesh, rippled)
         img = Tensor.from_numpy(np.zeros(size), ("y", "x"))
         render(pair(spun(angle), shade), rippled, g, target=img)

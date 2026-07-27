@@ -13,15 +13,17 @@ it touches; pairing checks produced ⊇ required.
 
 Both kinds lower through the ONE dsl Lowerer as rule-pack layers over
 the kernel/tl packs (the dialect-hierarchy law): the vertex pack adds
-the vertex ambient (``vertex_index`` — the raw), data-flow branches
+the vertex ambient (``thread_idx("vertex_id")`` — the one ambient
+function, the draw domain as its lattice), data-flow branches
 (``a if cond else b`` lowers to ``where``; ``or``/``and`` are mask
 max/min — the committed S.4 spellings), and the position yield; the
 fragment IS a step-kind body over the pixel lattice, so fn-valued
 arguments splice through the same machinery as compute kernels.
 
-Vertex ARRAYS are ordinary tensors over the ``vid`` dim passed as
-vertex-shader parameters — per-vertex attributes are ``.select()``
-fields of them, and the draw count is the vid extent. A shader with no
+Vertex ARRAYS are ordinary tensors over the ``vertex_id`` dim passed
+as vertex-shader parameters — per-vertex attributes are ``.select()``
+fields of them (records replace the component dim when the records arc
+lands), and the draw count is the vertex_id extent. A shader with no
 vertex inputs draws the screen quad (six ids, two triangles).
 
 The rasterizer here is the MINIMAL REFERENCE INTERPOLATOR (S.4):
@@ -53,8 +55,9 @@ from .lifting import _Intrinsic
 from .producer import _captured, _fn_ast
 from .tensor import Tensor
 
-vertex_index = _Intrinsic("vertex_index")
-instance_index = _Intrinsic("instance_index")  # reserved: instancing arrives with a consumer
+# The vertex ambient is thread_idx over the DRAW DOMAIN (250, the one
+# ambient function; kind-dependent lattice): canonical dims "vertex_id"
+# (and "instance_id" when instancing arrives with its consumer).
 
 
 @dataclass(frozen=True)
@@ -88,9 +91,21 @@ def flat(v) -> _Flat:
 def _v_call(ctx, node):
     if isinstance(node.func, ast.Name):
         obj = _lookup(ctx, node.func.id)
-        if isinstance(obj, _Intrinsic) and obj.name == "vertex_index":
-            lattice = ctx.root.params[-1]  # the vid lattice (hidden param, or the first vertex buffer)
-            return ctx.emit("tl.iota", lattice, node=node, name="vid")
+        if isinstance(obj, _Intrinsic) and obj.name == "thread_idx":
+            # the ONE ambient function; the vertex kind's lattice is the
+            # DRAW DOMAIN (250) — Coordinates over vertex_id/instance_id
+            lattice = ctx.root.params[-1]  # hidden param, or the first vertex buffer
+            out = []
+            for cst in node.args:
+                n = cst.value
+                if n == "instance_id":
+                    raise ValueError("instancing arrives with its consumer — the draw domain is vertex_id today")
+                if n != "vertex_id":
+                    raise ValueError(f'the vertex ambient is the draw domain: thread_idx("vertex_id"), not {n!r}')
+                backing = ctx.emit("tl.iota", lattice, node=node, name=n)
+                frame = next(f for f in lattice.type.dims if f.name == n)
+                out.append(ctx.emit("tl.coord", backing, node=node, frame=frame))
+            return tuple(out)
         if obj is position:
             x, y = (ctx.lower(a) for a in node.args)
             return _Position(x, y)
@@ -333,8 +348,8 @@ def _fresh_context(kind: str) -> dict:
 
 
 def _lower_vertex(vs: VertexShader, buffers: tuple):
-    """The vertex body over the vid lattice. Region params: the vertex
-    buffers, then the hidden vid lattice; yields (px, py, *varyings).
+    """The vertex body over the draw domain. Region params: the vertex
+    buffers, then the hidden vertex_id lattice; yields (px, py, *varyings).
     Returns (region, varying names in claim order, flat set, count)."""
     fn = vs.fn
     handle = capture_shim(fn)
@@ -344,10 +359,10 @@ def _lower_vertex(vs: VertexShader, buffers: tuple):
     if len(names) != len(buffers):
         raise TypeError(f"{fn.__qualname__} takes {len(names)} vertex buffers, got {len(buffers)}")
     for b in buffers:
-        if not (isinstance(b, Tensor) and any(d.name == "vid" for d in b.layout.dims)):
-            raise TypeError("vertex buffers are tensors with a 'vid' dim (per-vertex attributes)")
-    count = buffers[0].layout.dim("vid").size if buffers else 6  # no inputs: the screen quad's six ids
-    lattice = Tensor.from_numpy(np.zeros(count), ("vid",)) if not buffers else None
+        if not (isinstance(b, Tensor) and any(d.name == "vertex_id" for d in b.layout.dims)):
+            raise TypeError("vertex buffers are tensors with a 'vertex_id' dim (per-vertex attributes)")
+    count = buffers[0].layout.dim("vertex_id").size if buffers else 6  # no inputs: the screen quad's six ids
+    lattice = Tensor.from_numpy(np.zeros(count), ("vertex_id",)) if not buffers else None
     params = []
     for i, b in enumerate(buffers):
         params.append(ctx.builder.param(i, tensor_type(b)))
@@ -499,7 +514,7 @@ def render(pso, *args, target: Tensor):
     _check_pairing(frozenset(vnames), pso.required)  # the deferred half (buffer-taking shaders)
     values = list(vs_args) + ([lattice] if lattice is not None else [])
     outs = run_region(region, values, uniforms=_env_staging(v_ctx, pso.vs.fn))
-    order = ("vid",)
+    order = ("vertex_id",)
     px, py = outs[0].to_numpy(order=order), outs[1].to_numpy(order=order)
     varys = {n: v.to_numpy(order=order) for n, v in zip(vnames, outs[2:])}
     covered, fields = _rasterize(px, py, varys, flats, target)

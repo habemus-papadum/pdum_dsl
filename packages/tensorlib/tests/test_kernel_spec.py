@@ -357,7 +357,7 @@ def test_record_taps_land_as_struct_tensors():
 # --- P8: the graphics tier (S.4 amendment) -----------------------------------
 
 
-def test_quad_from_vertex_index_pairs_with_the_compute_zoo_f():
+def test_quad_from_the_draw_ambient_pairs_with_the_compute_zoo_f():
     """The whole S.4 flow in one spelling: a vertex shader with NO vertex
     buffers (corners computed from the raw ambient), a fragment shader
     that normalizes into f's space and calls THE SAME f as the compute
@@ -365,7 +365,7 @@ def test_quad_from_vertex_index_pairs_with_the_compute_zoo_f():
     through the reference interpolator. Return is MANDATORY (position /
     color0); everything else is claimed by naming it."""
     from pdum.dsl import jit
-    from pdum.tl.graphics import fragment, pair, position, render, vertex, vertex_index  # noqa: F401
+    from pdum.tl.graphics import fragment, pair, position, render, vertex  # noqa: F401
 
     def circle(cy, cx, r):
         @jit()
@@ -377,9 +377,10 @@ def test_quad_from_vertex_index_pairs_with_the_compute_zoo_f():
 
     @vertex
     def quad():
-        vid = vertex_index()  # raw ambient; two triangles, six ids
-        u = 1.0 if (vid == 1 or vid == 3 or vid == 4) else 0.0
-        v = 1.0 if (vid == 2 or vid == 4 or vid == 5) else 0.0  # claimed varyings
+        (vid,) = thread_idx("vertex_id")  # the draw ambient; two triangles, six ids
+        i = i32(vid)
+        u = 1.0 if (i == 1 or i == 3 or i == 4) else 0.0
+        v = 1.0 if (i == 2 or i == 4 or i == 5) else 0.0  # claimed varyings
         return position(u * 2.0 - 1.0, v * 2.0 - 1.0)
 
     @fragment
@@ -401,18 +402,18 @@ def test_subset_pairing_shares_one_fragment_artifact():
     different superset interfaces share ONE fragment artifact, and
     adding a varying breaks no existing pairing."""
     from pdum.dsl import events
-    from pdum.tl.graphics import fragment, pair, position, vertex, vertex_index  # noqa: F401
+    from pdum.tl.graphics import fragment, pair, position, vertex  # noqa: F401
 
     @vertex
     def lean():
-        vid = vertex_index()
-        u = 1.0 if vid == 1 else 0.0
+        (vid,) = thread_idx("vertex_id")
+        u = 1.0 if i32(vid) == 1 else 0.0
         return position(u, u)
 
     @vertex
     def rich():
-        vid = vertex_index()
-        u = 1.0 if vid == 1 else 0.0
+        (vid,) = thread_idx("vertex_id")
+        u = 1.0 if i32(vid) == 1 else 0.0
         w = u * 3.0  # an EXTRA varying: a superset interface  # noqa: F841
         return position(u, u)
 
@@ -429,13 +430,13 @@ def test_flat_is_the_sole_interpolation_annotation():
     """Interpolation is declared at the vertex claim site — perspective-
     correct by default, flat(...) the one opt-out — and is a production
     detail EXCLUDED from the interface type the fragment pairs against."""
-    from pdum.tl.graphics import flat, position, vertex, vertex_index  # noqa: F401
+    from pdum.tl.graphics import flat, position, vertex  # noqa: F401
 
     @vertex
     def vs():
-        vid = vertex_index()
+        (vid,) = thread_idx("vertex_id")
         u = 0.5  # perspective-corrected by default
-        pick = flat(vid)  # noqa: F841 — provoking vertex's value, no interpolation
+        pick = flat(i32(vid))  # noqa: F841 — provoking vertex's value, no interpolation
         return position(u, u)
 
     assert vs.varyings() is not None  # both sites listed; flat-ness not in the type
@@ -446,7 +447,7 @@ def test_fragment_taps_bind_render_buffers_mrt():
     to a second render target at the pass: MRT, G-buffers for free. The
     bound NAME SET specializes the pair; the buffers are invocation data."""
     from pdum.dsl import jit
-    from pdum.tl.graphics import fragment, pair, position, render, vertex, vertex_index  # noqa: F401
+    from pdum.tl.graphics import fragment, pair, position, render, vertex  # noqa: F401
     from pdum.tl.kernel import config
 
     def shaded(cy, cx, r):
@@ -459,9 +460,10 @@ def test_fragment_taps_bind_render_buffers_mrt():
 
     @vertex
     def quad():
-        vid = vertex_index()
-        u = 1.0 if (vid == 1 or vid == 3 or vid == 4) else 0.0
-        v = 1.0 if (vid == 2 or vid == 4 or vid == 5) else 0.0
+        (vid,) = thread_idx("vertex_id")
+        i = i32(vid)
+        u = 1.0 if (i == 1 or i == 3 or i == 4) else 0.0
+        v = 1.0 if (i == 2 or i == 4 or i == 5) else 0.0
         return position(u * 2.0 - 1.0, v * 2.0 - 1.0)
 
     @fragment

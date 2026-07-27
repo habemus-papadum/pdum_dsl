@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 from pdum.dsl import jit
 from pdum.dsl.markers import sqrt  # noqa: F401 — bare in device bodies
-from pdum.tl import Tensor
-from pdum.tl.graphics import fragment, pair, position, render, vertex, vertex_index  # noqa: F401
+from pdum.tl import Tensor, i32, thread_idx  # noqa: F401 — ambient vocabulary: bodies' globals
+from pdum.tl.graphics import fragment, pair, position, render, vertex  # noqa: F401
 from wgsl_executor import Untranslatable, render_wgpu
 
 
@@ -42,9 +42,10 @@ def test_the_quad_f_golden_runs_differentially():
 
     @vertex
     def quad():
-        vid = vertex_index()
-        u = 1.0 if (vid == 1 or vid == 3 or vid == 4) else 0.0
-        v = 1.0 if (vid == 2 or vid == 4 or vid == 5) else 0.0
+        (vid,) = thread_idx("vertex_id")
+        i = i32(vid)
+        u = 1.0 if (i == 1 or i == 3 or i == 4) else 0.0
+        v = 1.0 if (i == 2 or i == 4 or i == 5) else 0.0
         return position(u * 2.0 - 1.0, v * 2.0 - 1.0)
 
     @fragment
@@ -65,9 +66,10 @@ def test_the_quad_f_golden_runs_differentially():
 def _quad():
     @vertex
     def quad():
-        vid = vertex_index()
-        u = 1.0 if (vid == 1 or vid == 3 or vid == 4) else 0.0
-        v = 1.0 if (vid == 2 or vid == 4 or vid == 5) else 0.0
+        (vid,) = thread_idx("vertex_id")
+        i = i32(vid)
+        u = 1.0 if (i == 1 or i == 3 or i == 4) else 0.0
+        v = 1.0 if (i == 2 or i == 4 or i == 5) else 0.0
         return position(u * 2.0 - 1.0, v * 2.0 - 1.0)
 
     return quad

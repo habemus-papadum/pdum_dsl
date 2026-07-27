@@ -1140,9 +1140,11 @@ interface. The PAIR is the artifact unit (real APIs compile PSOs
 whole): dead-varying elimination against the consumed subset is honest
 pair-time specialization; the pair key is (vertex fp, fragment fp,
 requested tap names). Uniforms are closure captures riding the
-existing uniform channel, both kinds. Ambients per kind, raws first:
-vertex = `vertex_index`/`instance_index`; fragment = the framebuffer
-position — precisely the wrt of `fwidth`.
+existing uniform channel, both kinds. Ambients per kind, ONE
+function: `thread_idx` over the kind's declared lattice (250) — the
+vertex kind's is the draw domain (`vertex_id`, and `instance_id` when
+instancing arrives); fragment = the framebuffer position — precisely
+the wrt of `fwidth`.
 
 *Textures, v1.* A texture is NOT a tensor: it is a proper RUNTIME
 object (the wgpu-py texture, owned by the WebGPU runtime) that our
@@ -1207,7 +1209,7 @@ BINDING of the same span seam, not a new mechanism. The tile tier
 inherits this doctrine unchanged — that is why it is settled now.
 
 *The zoo.* examples/dsl_zoo grows the graphics set, one entry per
-behavior: the quad-from-`vertex_index` vertex shader (no vertex
+behavior: the quad-from-the-draw-ambient vertex shader (no vertex
 buffers — corners computed from the raw ambient) paired with a
 fragment shader that normalizes into `f`'s space and calls the SAME
 `f` as the compute zoo; incremental varying addition; subset pairing

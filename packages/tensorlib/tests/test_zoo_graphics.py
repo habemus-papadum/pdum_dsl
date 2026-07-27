@@ -28,6 +28,6 @@ def test_the_pattern_is_periodic_across_the_seam():
 
 def test_the_mesh_is_a_closed_side_surface():
     mesh = cylinder_mesh(segments=8)
-    arr = mesh.to_numpy(order=("vid", "c"))
+    arr = mesh.to_numpy(order=("vertex_id", "c"))
     assert arr.shape == (8 * 6, 2)
     assert abs(arr[:, 0].max() - TAU) < 1e-12 and arr[:, 0].min() == 0.0
