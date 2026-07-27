@@ -22,6 +22,7 @@ nav:
   - "The principles (220)": design/220_principles.md
   - "The syntax tour (230)": design/230_syntax_tour.ipynb
   - "The coordinate algebra (250)": design/250_coordinate-algebra.md
+  - "The L4 brief (260)": design/260_l4-brief.md
   - Design: design/README.md
   - Notebooks:
       - "Units and quantities": notebooks/00_units_and_quantities.ipynb

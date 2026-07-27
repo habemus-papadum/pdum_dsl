@@ -250,6 +250,46 @@ round-trip (split's ordered parts exposed it at P9 — attrs-as-data
 wants a first-class ordered mapping); Instr params as stringly dicts
 vs typed attrs; the double bookkeeping in lift_step's `names_of`.
 
+## The L2 blocker list (handed off at P9)
+
+What bufferization must clear, in dependency order — each item names
+its seat in 200 §8:
+
+1. **Alias theory over the affine algebra** (which views may share a
+   buffer; writes-through-views) — the foundation everything below
+   consumes.
+2. **Materialize elision** (elide the copy when stride nesting already
+   holds) — needs 1; the split/decimate adjoints are the first clients.
+3. **Value numbering** (recompute duplicates currently break
+   name = value under checkpointing) — unblocks honest CSE and the
+   recompute bookkeeping.
+4. **Encoding assignment** (per-intermediate storage encodings; makes
+   placement's uniform 8-byte itemsize real; consumes the license
+   schema's precision claims).
+5. **Chart-denominator normalization** (long chains grow Fraction
+   denominators; per-axis normalization).
+6. **Ring/window samples + device-resident state** — the residency
+   contract's implementation home (the skip-tagged tour cell is the
+   committed surface); tap sets define escapes; in-place as a certified
+   rewrite.
+7. **Kernel boundaries force the ordering** (K-F): L2 runs after L4's
+   fusion decisions define what materializes.
+
+## The open registry (handed off at P9)
+
+Recorded doors, each opened only by a consumer; details in 200 §8/§1.10:
+streams; device-resident state (residency, above); normalization
+choices; the warp vocabulary; external-oracle fixtures; the operators
+door; adversarial input families (−inf attention masks are the seeded
+case — NOTE: the finite-interior boundary means a literal −inf mask
+REFUSES today at from_numpy; the extended-real carrier is its recorded
+opt-in, so the family opens with that door); the PIPE-ARITY door
+(`|` threads exactly ONE value; composite arguments don't marshal at
+the dsl entry — entry arity, composite-arg marshaling, or a dedicated
+composition spelling, decided when a consumer forces it); the
+unit-tier static `for` unroll (the trainer spells chunks today);
+frame-typed index tensors (250 §9); K-G reduce-by-index on device.
+
 ## P9 — ruled (owner, 2026-07-27)
 
 - **The aligned law + `over=`: RATIFIED.** 250 §10 is normative: idx
