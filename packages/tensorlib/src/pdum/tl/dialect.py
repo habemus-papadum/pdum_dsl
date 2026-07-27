@@ -1011,7 +1011,9 @@ def run_region(region: Region, values: list, uniforms: bytes | None = None, text
                 return np.mod(i, n_) if wrap else np.clip(i, 0, n_ - 1)
 
             if attrs["filter"] == "nearest":
-                out = mirror[resolve(np.floor(a_y * Hm).astype(np.int64), Hm), resolve(np.floor(a_x * Wm).astype(np.int64), Wm)]
+                iy = resolve(np.floor(a_y * Hm).astype(np.int64), Hm)
+                ix = resolve(np.floor(a_x * Wm).astype(np.int64), Wm)
+                out = mirror[iy, ix]
             else:  # bilinear, texel centers at (i + 0.5)/N (the WebGPU convention)
                 ty, tx = a_y * Hm - 0.5, a_x * Wm - 0.5
                 y0, x0 = np.floor(ty).astype(np.int64), np.floor(tx).astype(np.int64)

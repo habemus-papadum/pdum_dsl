@@ -887,7 +887,10 @@ def _k_subscript(ctx, node):
                 for v, n in zip(vals, names)
             ):
                 return base  # the identity load: the view itself
-            lifted = [v if isinstance(v, Node) else ctx.emit("core.const", node=node, type=f64, value=float(v)) for v in vals]
+            def lift_ix(v):
+                return v if isinstance(v, Node) else ctx.emit("core.const", node=node, type=f64, value=float(v))
+
+            lifted = [lift_ix(v) for v in vals]
             return ctx.emit("tl.read", base, *lifted, node=node)
     return _value_subscript(ctx, node)
 
