@@ -470,7 +470,6 @@ def test_fragment_taps_bind_render_buffers_mrt():
     assert gbuf.to_numpy().max() > 0.0  # the f-interior distance field, second target
 
 
-@P8
 def test_textures_are_runtime_objects_recognized_not_tensors():
     """A texture is a proper RUNTIME object (the wgpu-py texture) that the
     type system RECOGNIZES as its own leaf kind — never a dressed-up
@@ -480,7 +479,14 @@ def test_textures_are_runtime_objects_recognized_not_tensors():
     interpolation object); explicit-LOD mips first; auto-LOD is ANALYTIC
     (log2 footprint from the wrt-ambient gradient), no 2x2 quad."""
     from pdum.dsl import jit
-    from pdum.tl.graphics import sample, sampler, upload  # noqa: F821
+
+    pytest.importorskip("wgpu")  # textures ARE wgpu runtime objects: the honest skip
+    from pdum.tl.graphics import _device, sample, sampler, upload
+
+    try:
+        _device()
+    except Exception as exc:  # no adapter on this host — skip, never fake
+        pytest.skip(f"no WebGPU device available: {exc}")
 
     src = T(np.zeros((16, 16)), ("y", "x"))
     tex = upload(src)  # a wgpu texture, rgba8unorm-srgb — NOT a Tensor

@@ -45,6 +45,7 @@ from pdum.dsl.pack import ABI_OPS, pack_into
 from pdum.dsl.registry import DEFAULT
 
 from .dialect import TL_OPS, TensorType, capture_shim, run_region, tensor_type
+from .encoding import FormatEncoding
 from .ir import Token, _store
 from .kernel import _ARG_BINDINGS, KERNEL_RULES, _code_fp, _env_fp, _lookup
 from .lifting import _Intrinsic
@@ -482,3 +483,140 @@ def render(pso, *args, target: Tensor):
         merged = np.where(covered, tv.to_numpy(order=dim_names), buf.to_numpy(order=dim_names))
         _store(Token(), buf, Tensor.from_numpy(merged, dim_names))
     return None
+
+
+# --- textures v1 (S.4 amendment): runtime objects, ONE format ----------------
+
+_RGBA8_SRGB = FormatEncoding("unorm8-srgb")
+_GPU: list = []  # the lazy device singleton (first upload/sampler creates it)
+
+
+from pdum.dsl.types import Type
+
+
+@dataclass(frozen=True)
+class VocabType(Type):
+    """Captured VOCABULARY — an intrinsic riding a closure. Code, not
+    data: identity is the name; nothing marshals."""
+
+    name: str
+
+
+class _VocabKind:
+    def typeof(self, v, table):
+        return VocabType(v.name)
+
+    def fingerprint(self, v, table):
+        return ("vocab", v.name)
+
+    def flatten(self, v, table):
+        return ()
+
+
+DEFAULT.table.register(_Intrinsic, _VocabKind())
+
+
+@dataclass(frozen=True)
+class TextureType(Type):
+    """The texture LEAF KIND (S.4): a runtime object the type system
+    recognizes — never a dressed-up tensor. v1 has exactly one format."""
+
+    fmt: str = "rgba8unorm-srgb"
+
+
+@dataclass(frozen=True)
+class SamplerType(Type):
+    """The sampler leaf kind — the interpolation object."""
+
+
+def _register_wgpu_kinds(wgpu):
+    """RECOGNITION, not impersonation: the wgpu classes get leaf
+    ValueKinds so textures/samplers capture and fingerprint as their own
+    types (type-keyed, never by value)."""
+    if getattr(_register_wgpu_kinds, "_done", False):
+        return
+
+    class _Leaf:
+        def __init__(self, t):
+            self._t = t
+
+        def typeof(self, v, table):
+            return self._t
+
+        def fingerprint(self, v, table):
+            return (type(self._t).__name__,)
+
+        def flatten(self, v, table):
+            return (v,)  # the leaves channel: runtime handles never byte-pack
+
+    DEFAULT.table.register(wgpu.GPUTexture, _Leaf(TextureType()))
+    DEFAULT.table.register(wgpu.GPUSampler, _Leaf(SamplerType()))
+    _register_wgpu_kinds._done = True
+
+
+def _device():
+    """The WebGPU device. Textures and samplers are wgpu RUNTIME objects
+    (owned by the runtime, recognized by our type system, never
+    impersonated) — so they exist only where a WebGPU adapter does; the
+    refusal names the dependency."""
+    try:
+        import wgpu
+    except ImportError:
+        raise RuntimeError(
+            "textures are wgpu runtime objects — install wgpu (the workspace dev group carries it)"
+        ) from None
+    _register_wgpu_kinds(wgpu)
+    if not _GPU:
+        adapter = wgpu.gpu.request_adapter_sync(power_preference="high-performance")
+        _GPU.append(adapter.request_device_sync())
+    return _GPU[0]
+
+
+def upload(t: Tensor):
+    """The upload door: a TEXTURE built from a tensor — rgba8unorm-srgb,
+    the ONE v1 format, encoded through the existing FormatEncoding (the
+    format registry is later work). The result is the wgpu texture —
+    never a Tensor."""
+    import wgpu
+
+    hd, wd = t.layout.dims
+    lum = _RGBA8_SRGB.encode(t.to_numpy(order=(hd.name, wd.name)))
+    rgba = np.stack([lum, lum, lum, np.full_like(lum, 255)], axis=-1)  # luminance replicated, alpha 1
+    device = _device()
+    tex = device.create_texture(
+        size=(wd.size, hd.size, 1),
+        format=wgpu.TextureFormat.rgba8unorm_srgb,
+        usage=wgpu.TextureUsage.COPY_DST | wgpu.TextureUsage.TEXTURE_BINDING,
+    )
+    device.queue.write_texture(
+        {"texture": tex},
+        np.ascontiguousarray(rgba).tobytes(),
+        {"bytes_per_row": 4 * wd.size, "rows_per_image": hd.size},
+        (wd.size, hd.size, 1),
+    )
+    return tex
+
+
+def sampler(*, filter: str = "linear", address: str = "clamp"):
+    """The SAMPLER — the interpolation object, a wgpu runtime object like
+    the texture. v1 vocabulary: filter linear|nearest, address
+    clamp|repeat."""
+    import wgpu
+
+    modes = {"clamp": wgpu.AddressMode.clamp_to_edge, "repeat": wgpu.AddressMode.repeat}
+    filters = {"linear": wgpu.FilterMode.linear, "nearest": wgpu.FilterMode.nearest}
+    if filter not in filters or address not in modes:
+        raise ValueError(f"sampler: filter is linear|nearest, address is clamp|repeat (got {filter!r}, {address!r})")
+    return _device().create_sampler(
+        address_mode_u=modes[address],
+        address_mode_v=modes[address],
+        mag_filter=filters[filter],
+        min_filter=filters[filter],
+    )
+
+
+# Sampling vocabulary: lowers inside device bodies. Explicit-LOD first;
+# auto-LOD is ANALYTIC (log2 footprint from the wrt-ambient gradient, no
+# 2x2 quad) — the lowering arrives with the conformance executor's
+# translation table, where sampling has real hardware semantics to match.
+sample = _Intrinsic("sample")
