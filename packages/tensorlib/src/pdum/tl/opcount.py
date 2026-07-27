@@ -26,6 +26,11 @@ Counts follow the REFERENCE semantics, sizes from `ir.infer` shadows:
 - scan: (numel_in - lines) combine ops.
 - materialize: numel "copy" (the one moving op — counted in its own bucket,
   never conflated with arithmetic).
+- take: numel_out in the "take" bucket — one read+write per output element
+  (200 §1.9), in its OWN bucket, never "copy": random access vs sequential
+  copy is a machine property the cost model prices, so the count keeps them
+  apart. scatter_add: numel_values "scatter" (the movement) + numel_values
+  "add" (the accumulate) — the dual: one read+add+write per input element.
 - layout ops, iota, const, metadata: zero. Guarded operands count over the
   guard BOX (the reference layer evaluates fills too) — a λ-proportional
   refinement can come later; no silent narrowing here.
@@ -113,6 +118,17 @@ def ops_count(prog: Program, input_layouts: dict, fuse_mac: bool = False) -> Pro
                 c += _scale(project, lines if ins.op == "reduce" else nin)
         elif ins.op == "materialize":
             c["copy"] = _numel(shadows[ins.var])
+        elif ins.op == "take":
+            c["take"] = _numel(shadows[ins.var])
+        elif ins.op == "scatter_add":
+            n = _numel(shadows[ins.operands[0]])
+            c["scatter"] = n
+            c["add"] = n
+        elif ins.op in ("argtopk", "argsort"):
+            # one bucket entry per element examined; a sort's comparison
+            # count is an algorithm's property, not a layout fact — the
+            # bucket is priced by the cost model (the exp doctrine)
+            c[ins.op] = _numel(shadows[ins.operands[0]])
         elif ins.op == "fold":
             # per-step cost x step count, recursively (nested folds compose)
             start, stop = _fold_extent(ins, shadows)

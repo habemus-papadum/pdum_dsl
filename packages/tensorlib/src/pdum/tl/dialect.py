@@ -60,6 +60,10 @@ from .compute import reduce as _eager_reduce
 from .compute import repeat_like as _eager_repeat_like
 from .compute import scan as _eager_scan
 from .coords import Frame
+from .indexing import argsort as _eager_argsort
+from .indexing import argtopk as _eager_argtopk
+from .indexing import scatter_add as _eager_scatter_add
+from .indexing import take as _eager_take
 from .ir import _LAYOUT_OPS, Instr, Token, _dense_like, _store, eval_instr, infer_instr, pw_marker
 from .lifting import _HOST_BIN, _HOST_CMP, _METHODS, _STRUCTURAL_SLOT, _Intrinsic
 from .markers import Marker
@@ -252,9 +256,20 @@ def _r_bridge(base):
     return rule
 
 
-_BRIDGED = ("reduce", "scan", "materialize", "round_to", "repeat_like", "random", "with_value_units", "const") + tuple(
-    _LAYOUT_OPS
-)
+_BRIDGED = (
+    "reduce",
+    "scan",
+    "materialize",
+    "round_to",
+    "repeat_like",
+    "random",
+    "with_value_units",
+    "const",
+    "take",
+    "scatter_add",
+    "argtopk",
+    "argsort",
+) + tuple(_LAYOUT_OPS)
 
 TL_OPS = {
     # per-launch scalar slots are abi.slot — the dsl's marshaling dialect,
@@ -505,6 +520,14 @@ def _tl_call(ctx, node):
                 return t.type.frame.size  # the coordinate face: the frame's width, a host INT
             want = _host(ctx, node.args[1])
             return next(d.size for d in t.type.dims if d.name == want)
+        if obj in (_eager_take, _eager_scatter_add, _eager_argtopk, _eager_argsort):  # the §1.9 family
+            name = obj.__name__
+            arity = 2 if obj in (_eager_take, _eager_scatter_add) else 1
+            if len(node.args) != arity:
+                raise TypeError(f"{name} takes {arity} tensor operand(s) — dim/extent/k/k_name are keywords")
+            ops = tuple(ctx.lower(a) for a in node.args)
+            kw = {k.arg: _host(ctx, k.value) for k in node.keywords}
+            return ctx.emit(f"tl.{name}", *ops, node=node, **kw)
         if obj is _eager_contract:  # ONE visible line over the primitives (S.1)
             a, bb = (ctx.lower(x) for x in node.args)
             axis = _host(ctx, node.keywords[0].value) if node.keywords else _host(ctx, node.args[2])

@@ -17,8 +17,10 @@ communication off the existing algebra applied to machine-bound dims:
   or viewing a shard of it — the mesh analogue of "masks are free")
 
 Everything the model does NOT cover refuses loudly (D17): lattice surgery
-on bound dims, scan/fold along a bound dim, unknown levels, mesh extents
-exceeding the level count. Forward programs only in v1 — gradients do not
+on bound dims, scan/fold along a bound dim, take along a bound taken dim /
+scatter_add over a bound consumed dim (all-to-all and partial-sum
+all-reduce — 200 §1.9's later work; the refusals quote the fix), unknown
+levels, mesh extents exceeding the level count. Forward programs only in v1 — gradients do not
 yet carry bindings (PLACEMENT.md out-of-scope list).
 """
 
@@ -138,6 +140,42 @@ def traffic(prog: Program, input_layouts: dict, machine: Machine) -> TrafficRepo
                     p = d.size
                     nbytes = int(Fraction(p - 1, p) * local_bytes(shadows[ins.var]))
                     events.append(Collective(ins.var, "all_gather", d.level, nbytes))
+        elif ins.op == "take":
+            # v1 (200 §1.9): a take whose taken lattice is distributed is an
+            # all-to-all — refuse toward the fix; modeled all-to-all is later
+            # work. Bound RIDING dims (a sharded batch) ride for free: each
+            # device gathers its own rows from the table it holds.
+            if shadows[ins.operands[0]].dim(ins.params["dim"]).level is not None:
+                raise NotImplementedError(
+                    f"take along machine-bound dim {ins.params['dim']!r} is an "
+                    f"all-to-all, not modeled in v1 — colocate (unbind the table) "
+                    f"or all-gather the table (merge the bound dim) first"
+                )
+        elif ins.op == "scatter_add":
+            # consumed dims sharded => per-device PARTIAL sums that need an
+            # all-reduce — not modeled; and both operands must agree on the
+            # consumed lattice's placement (colocation), or the indices
+            # address rows a device does not hold.
+            vsh, ish = shadows[ins.operands[0]], shadows[ins.operands[1]]
+            for n in ish.names:
+                lv, li = vsh.dim(n).level, ish.dim(n).level
+                if lv != li:
+                    raise NotImplementedError(
+                        f"scatter_add: values and idx place consumed dim {n!r} on "
+                        f"different machine levels ({lv!r} vs {li!r}) — colocate them"
+                    )
+                if li is not None:
+                    raise NotImplementedError(
+                        f"scatter_add over machine-bound dim {n!r} leaves per-device "
+                        f"partial sums that need an all-reduce, not modeled in v1 — "
+                        f"unbind (gather) the consumed dim first"
+                    )
+        elif ins.op in ("argtopk", "argsort"):
+            if shadows[ins.operands[0]].dim(ins.params["dim"]).level is not None:
+                raise NotImplementedError(
+                    f"{ins.op} along a machine-bound dim (a distributed sort) is "
+                    f"not modeled — gather (merge the bound dim) first"
+                )
         elif ins.op == "scan":
             if shadows[ins.operands[0]].dim(ins.params["dim"]).level is not None:
                 raise NotImplementedError("scan along a machine-bound dim (distributed scan) is not modeled")

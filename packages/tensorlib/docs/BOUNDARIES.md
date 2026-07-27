@@ -51,6 +51,26 @@ live in the workspace spec, `docs/design/200_the-spec.md` §8.
   layout's scale**; layout ops preserve alignment by construction, so
   only hand-built offsets can misalign — loudly, never silently.
 
+## The indexing family (200 §1.9, 250 §10)
+
+- **Indices are lattice positions, never labels.** `take`/`scatter_add`
+  index the taken dim's lattice `[start, stop)`; a label-space gather
+  would be a different door, adopted when a concrete need appears.
+- **The reference refuses out-of-range indices loudly at RUN time** —
+  the data complement of the coordinate law's in-bounds-by-construction.
+  Device-tier OOB behavior is a descent-license matter, never silent.
+- **`scatter_add`'s output frame is declared** (dim + extent); the new
+  dim is born plain. Bool values refuse (no sum); float indices refuse
+  (a float never rounds itself into an address).
+- **Under placement, the taken/consumed lattice must be colocated and
+  unbound**: take along a bound dim (all-to-all) and scatter_add over a
+  bound consumed dim (partial-sum all-reduce) refuse quoting the fix;
+  modeled all-to-all is later work. Bound RIDING dims ride free.
+- **Producers sort whole lines in memory** (`argtopk`/`argsort`): the
+  distributed sort refuses; comparison counts are an algorithm property,
+  so opcount gives one bucket entry per element examined and the cost
+  model prices the bucket.
+
 ## Cost models and transforms
 
 - **opcount counts names, not flops.** Exact per-instruction tallies;

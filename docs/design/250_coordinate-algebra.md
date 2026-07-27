@@ -286,7 +286,8 @@ The stratification is load-bearing: coordinate arithmetic with
 bounds provable at lowering time, the stencil/window family surfacing
 as subscript syntax. **Dynamic** (value-computed) indices are a
 different door — P9's gather/scatter family, value-typed, with the
-reference refusing out-of-bounds. Neither bleeds into the other.
+reference refusing out-of-bounds. Neither bleeds into the other. The
+value door's own law is §10.
 
 ## 9. Recorded future work
 
@@ -300,3 +301,50 @@ reference refusing out-of-bounds. Neither bleeds into the other.
 - **Fancier index sets** (unions, reflections, rolls) belong to the
   piecewise-guarded-affine family, adopted as a family decision when a
   concrete need appears (BOUNDARIES).
+- **A frame-typed index tensor** — an integer tensor BLESSED as "these
+  values are positions in frame v", making `take`'s `dim=` redundant
+  and turning the runtime bounds check into a declared property — is a
+  possible future face of the value door. Not built: the declaration
+  would need its own maintenance law under arithmetic (what preserves
+  the blessing?), and the plain spelling is one keyword.
+
+## 10. The value door — tensor-typed indices (200 §1.9, lands at P9)
+
+The dynamic complement of the coordinate law. An index tensor is
+**data**: integer-carrier, unitless; its values are lattice positions
+in the indexed dim's frame. It never becomes a Coordinate — CoordType
+stays an ambient credential — and no frame ever coerces itself onto
+data. The two doors meet at the frame's domain and nowhere else.
+
+**Enforcement splits by what can be known when.** Structural facts —
+the dim exists, index dims don't collide with surviving dims, consumed
+domains agree — refuse at build time, in the one structural law shared
+by eager evaluation, Program inference, and the dialect's type rules.
+Data facts — carrier, bounds — refuse at run time: coordinates are
+in-bounds BY CONSTRUCTION, data cannot be, so the reference refuses
+out-of-range indices loudly (device-tier behavior is a descent-license
+matter, never silent).
+
+**`take(table, idx, dim="v")`** — a computation, never a view — replaces
+the taken dim IN PLACE with idx's dims; every surviving dim keeps its
+frame verbatim (chart, labels, level ride); the consumed frame
+disappears — its lattice went data. **`scatter_add(values, idx,
+dim="v", extent=…)`** DECLARES its output frame (name + extent,
+repeat's convention) — never inferred from the data; the new dim is
+born plain, `with_charts` glues physics back on. Duplicates SUM:
+addition is order-independent, hence deterministic — and `take† =
+scatter_add`, `scatter_add† = take`, a self-dual adjoint pair with
+`d_idx = None`.
+
+**The factoring.** Index producers (`argtopk` — descending, ties
+first-wins; `argsort` — ascending, stable; `argmax` IS `argtopk(k=1)`)
+produce lattice positions with NO adjoint rules — piecewise-constant in
+the data, zero a.e., the partition law. Their outputs range over a
+plain rank lattice (rank order is not the physical axis, so the sorted
+dim's chart does not survive onto it). Top-k values are
+`take(x, argtopk(x, …))`, the gradient correct by composition; any
+differentiable reordering is `take` by sorted indices.
+
+Spelling note: the family is FREE FUNCTIONS, not Tensor methods — the
+method/function split is the view/computation line made syntactic
+(methods are views; computations are functions).

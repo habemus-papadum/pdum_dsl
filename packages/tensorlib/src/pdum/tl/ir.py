@@ -76,6 +76,10 @@ _COMPUTE_OPS = (
     "round_to",
     "repeat_like",
     "store",
+    "take",
+    "scatter_add",
+    "argtopk",
+    "argsort",
 )
 
 
@@ -405,6 +409,32 @@ def eval_instr(ins: Instr, env: dict, inputs: dict | None = None):
         return _store(env[ins.operands[0]], env[ins.operands[1]], env[ins.operands[2]])
     elif ins.op == "fold":
         return _run_fold(ins, env)
+    elif ins.op == "take":
+        from .indexing import take
+
+        return take(env[ins.operands[0]], env[ins.operands[1]], dim=ins.params["dim"])
+    elif ins.op == "scatter_add":
+        from .indexing import scatter_add
+
+        return scatter_add(
+            env[ins.operands[0]],
+            env[ins.operands[1]],
+            dim=ins.params["dim"],
+            extent=ins.params["extent"],
+        )
+    elif ins.op == "argtopk":
+        from .indexing import argtopk
+
+        return argtopk(
+            env[ins.operands[0]],
+            dim=ins.params["dim"],
+            k=ins.params["k"],
+            k_name=ins.params["k_name"],
+        )
+    elif ins.op == "argsort":
+        from .indexing import argsort
+
+        return argsort(env[ins.operands[0]], dim=ins.params["dim"])
     elif ins.op == "with_value_units":
         return env[ins.operands[0]].with_value_units(ins.params["value_units"])
     else:
@@ -487,6 +517,18 @@ def infer_instr(ins: Instr, shadows: dict, input_layouts: dict | None = None):
         return x
     if ins.op == "fold":
         return _fold_infer(ins, shadows)
+    if ins.op == "take":
+        from .indexing import infer_take
+
+        return infer_take(shadows, ins)
+    if ins.op == "scatter_add":
+        from .indexing import infer_scatter
+
+        return infer_scatter(shadows, ins)
+    if ins.op in ("argtopk", "argsort"):
+        from .indexing import infer_producer
+
+        return infer_producer(shadows, ins)
     if ins.op == "pad":
         return pad_layout(shadows[ins.operands[0]], ins.params["extents"])
     if ins.op == "stencil":

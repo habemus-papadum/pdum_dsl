@@ -877,6 +877,11 @@ def _grad(
         if ins.op in ("input", "const", "iota", "random"):
             continue  # leaves: gradient stops (iota/const/random are gradient-free —
             # a mask field acts as a constant; AD through dropout needs no rule)
+        if ins.op in ("argtopk", "argsort"):
+            # index producers have NO adjoint rules by declaration (200 §1.9):
+            # integer indices are piecewise-constant in the data — zero a.e.,
+            # the partition law. Their gradient path is take's, by composition.
+            continue
         if ins.op == "repeat_like":
             # adjoint: reduce-sum over the ADDED dims (layout-derived, from
             # the shadows); the like operand is layout-only — no gradient
@@ -889,6 +894,23 @@ def _grad(
             # make every quantized parameter untrainable; zero by declaration
             if ins.params.get("grad", "straight_through") != "zero":
                 contribute(ins.operands[0], c)
+        elif ins.op == "take":
+            # take† = scatter_add (200 §1.9): duplicates SUM — the embedding
+            # gradient — and addition is order-independent, hence
+            # deterministic. Indices are integer-carrier: gradient-free
+            # (d_idx = None), so only the table receives a contribution.
+            d = shadows[ins.operands[0]].dim(ins.params["dim"])
+            gv = b.emit(
+                "scatter_add",
+                (c, ins.operands[1]),
+                {"dim": d.name, "extent": (d.start, d.stop)},
+            )
+            contribute(ins.operands[0], gv)
+        elif ins.op == "scatter_add":
+            # scatter_add† = take at the same indices — the self-dual pair
+            # (like repeat† = reduce); indices stay gradient-free.
+            gv = b.emit("take", (c, ins.operands[1]), {"dim": ins.params["dim"]})
+            contribute(ins.operands[0], gv)
         elif ins.op == "pointwise":
             pw_rule(ins, c)
         elif ins.op == "reduce":

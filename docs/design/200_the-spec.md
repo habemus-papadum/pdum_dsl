@@ -1340,8 +1340,8 @@ def make_gpt2(s, cfg):
 
     @unit
     def embed(ids):
-        tok = wte.take(ids, dim="v")                   # gather (§1.9)
-        e   = tok + wpe.slice(t=(0, ids.extent("t")))
+        tok = take(wte, ids, dim="v")                  # gather (§1.9)
+        e   = tok + wpe.slice(t=(0, extent(ids, "t")))
         return dropout(e, cfg.p_embd, s / "embd_drop")
 
     trunk = s.seq("h", make_block, cfg, n=cfg.layers)  # h.0.attn.wq, h.1.mlp.w1, ...
@@ -1465,8 +1465,9 @@ Partitioning operates on dataflow plus names; the kernel boundary is an
 annotation anyway; a block-scope annotation is available as an
 erasure-preserving addition if L4 partition search wants it.
 
-**(f) Gather — carried by §1.9.** Token embedding (`wte.take(ids,
-dim="v")`) trains the tied `wte` through the scatter-add adjoint;
+**(f) Gather — carried by §1.9.** Token embedding (`take(wte, ids,
+dim="v")` — a free function: computations are functions, views are
+methods) trains the tied `wte` through the scatter-add adjoint;
 one-hot-contract is rejected by the no-waste law. Deferred beyond the
 family: top-k/MoE beyond the capacity-factor form; sampling stays
 **host-side** in the inference loop (logits out, host samples, next

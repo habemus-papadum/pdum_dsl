@@ -21,6 +21,7 @@ from .compute import Marker, Reducer, extent, iota, pointwise, pw, red, reduce, 
 from .coords import Coordinate, Displacement, Frame, Slice
 from .dtypes import CARRIERS, as_dtype, bfloat16, carrier_of
 from .guarded import Guard, GuardedLayout, pad_layout, stencil_layout
+from .indexing import argsort, argtopk, scatter_add, take
 from .kernel import (
     Config,
     block_idx,
@@ -61,6 +62,10 @@ __all__ = [
     "mesh",
     "peak_memory",
     "traffic",
+    "take",
+    "scatter_add",
+    "argtopk",
+    "argsort",
     "uniform",
     "ProgramOps",
     "SignatureError",
