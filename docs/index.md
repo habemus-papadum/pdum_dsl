@@ -1,30 +1,19 @@
-# pdum.dsl
+# The pdum workspace
 
-A Python **DSL compiler framework**: a numba-like `@jit` decorator workflow
-with **Julia-like type-keyed caching**. A closure is *(code identity, typed
-environment, environment values)*; compiled artifacts are cached on the
-**types** of captures and arguments — never their values — so a tight Python
-loop that rebuilds closures with fresh parameter values every iteration never
-recompiles. First proven use case: Python functions compiled to WebGPU/WGSL
-fragment shaders whose captured values become uniforms.
+Two packages, one lockstep version (see `docs/design/200_the-spec.md` — THE
+specification and the reference for execution):
 
-## Project status
+- **`pdum.dsl`** (`packages/dsl`) — type-keyed DSL compiler infrastructure:
+  reflection capture, the two-tier type-keyed cache, the Node/Region IR with
+  rewrite and lowering machinery, marshaling, the registry and its extension
+  surfaces, the events seam, the value language (device functions over
+  `is_bits` value types), the fuse pipe, and the reference evaluator (the
+  always-spelled oracle: `reference(f)(...)`).
+- **`pdum.tl`** (`packages/tensorlib`) — the assemblage tensor language:
+  the exact layout algebra, carriers, the compute primitives, the
+  Program/Instr IR, reverse-mode AD with derived adjoints, the transforms,
+  the cost semantics, placement, and the model zoo. (Promoted from
+  `explorations/` at migration P2.)
 
-The project is in a **ground-up redesign**. The proof of concept (Milestone 0)
-is complete, frozen, and preserved; the redesigned kernel is being built
-step by step, with each step ending in an executable book chapter.
-
-| What | Where |
-|---|---|
-| The redesign brief (wants, influences, open questions) | [Desiderata](desiderata.md) |
-| The synthesized architecture (primitives, hooks, structure) | [`docs/design/010_proposed-architecture.md`](https://github.com/habemus-papadum/pdum_dsl/blob/main/docs/design/010_proposed-architecture.md) |
-| The step-by-step implementation plan | [`docs/design/020_implementation-plan.md`](https://github.com/habemus-papadum/pdum_dsl/blob/main/docs/design/020_implementation-plan.md) |
-| The research corpus behind the architecture (R/V/P/J) | [`docs/design/research/`](https://github.com/habemus-papadum/pdum_dsl/tree/main/docs/design/research) |
-| The book (bottom-up chapters, one per implementation step) | `docs/book/` — *forthcoming* |
-| The frozen M0 proof of concept | [M0 reference asset](m0/index.md) · [`reference/README.md`](https://github.com/habemus-papadum/pdum_dsl/blob/main/reference/README.md) |
-
-!!! note "Reading the M0 section"
-    Everything under **M0 reference asset** documents the frozen proof of
-    concept (`pdum.dsl_reference`), kept runnable as a worked example and
-    baseline. It is historical: it does **not** describe the redesigned
-    kernel, whose documentation is the book.
+Design history (010–195) lives in `docs/design/history/`; git history is the
+archive. Distilled backend knowledge: `docs/design/210_backend-notes.md`.

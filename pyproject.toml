@@ -1,9 +1,12 @@
 [project]
-name = "habemus-papadum-dsl"
+# The UNPUBLISHED workspace root (design 200 §2): workspace glue, dev groups, docs tooling.
+# The published dists are the members: packages/dsl -> habemus-papadum-dsl (pdum.dsl),
+# packages/tensorlib -> habemus-papadum-tl (pdum.tl).
+name = "dsl_workspace"
 # Managed by the release workflow (scripts/_versioning.py); between releases it carries a
 # "+dev" marker (a PEP 440 local version, which PyPI refuses to upload). Do not hand-edit.
 version = "0.0.0+dev"
-description = "A Python DSL toolkit"
+description = "Workspace root for the pdum.dsl / pdum.tl packages (unpublished)"
 readme = "README.md"
 license = { file = "LICENSE" }
 keywords = []
@@ -20,11 +23,7 @@ authors = [
     { name = "Nehal Patel", email = "nehal@alum.mit.edu" }
 ]
 requires-python = ">=3.14"
-dependencies = [
-    "glfw>=2.10.0",
-    "rendercanvas>=2.6.3",
-    "wgpu>=0.31.1",
-]
+dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/habemus-papadum/pdum_dsl"
@@ -32,28 +31,26 @@ Repository = "https://github.com/habemus-papadum/pdum_dsl"
 Documentation = "https://github.com/habemus-papadum/pdum_dsl"
 
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+# The root is VIRTUAL (design 200 §2): it is never built or published; it manages the
+# workspace env. The members are the packages.
+[tool.uv]
+package = false
 
-[tool.hatch.build.targets.wheel]
-# pdum is a PEP 420 implicit namespace package (no src/pdum/__init__.py), shared with the
-# sibling habemus-papadum-* distributions, which contribute pdum.rfb, pdum.nvenc, …
-# Don't add pdum/__init__.py: a regular package here would shadow their portions.
-packages = ["src/pdum"]
-
-# --- uv workspace: this repo hosts habemus-papadum-dsl (root) + packages/* ---
-# One workspace, one lock. No members yet — the glob is here so adding one (a native
-# backend, say) is a pure add: scripts/_versioning.py already discovers members and bumps
-# them in lockstep, and the release workflow builds the root package by name.
+# --- uv workspace: unpublished root + published members under packages/* ---
+# One workspace, one lock. Members: packages/dsl (habemus-papadum-dsl), packages/tensorlib
+# (habemus-papadum-tl) — versioned and published in LOCKSTEP (scripts/_versioning.py
+# discovers members; release.yml builds and publishes all of them in one tagged run).
 [tool.uv.workspace]
 members = ["packages/*"]
 
 [tool.uv.sources]
-# A workspace member the root depends on is declared here as { workspace = true }.
+habemus-papadum-dsl = { workspace = true }
+habemus-papadum-tl = { workspace = true }
 
 [dependency-groups]
 dev = [
+    "habemus-papadum-dsl",
+    "habemus-papadum-tl",
     "hatch>=1.14.2",
     "pytest>=8.0.0",
     "pytest-cov>=7.0.0",
@@ -71,35 +68,37 @@ dev = [
     "egglog>=13.2.0",
     "numpy>=2.5.0",
     "xarray>=2026.7.0",
+    "wgpu>=0.19",
 ]
 
 [tool.ruff]
 target-version = "py314"
 line-length = 120
-exclude = ["archive"]  # historical material, not maintained code
 
 [tool.ruff.lint.per-file-ignores]
 # Battery/overload names (clamp, sqrt, smoothstep, …) are DSL vocabulary
 # resolved at lower time through the registry — undefined to static analysis
-# BY DESIGN, and the book must show them bare.
-"docs/book/*.ipynb" = ["F821"]
-"src/pdum/dsl/stdlib/batteries.py" = ["F821"]  # battery cross-refs resolve via the overload table
-"src/pdum/dsl/demo/graphics.py" = ["F821"]  # same: sqrt/mix are overload-table names, not globals
-"scripts/book/build_chapters.py" = ["E501"]  # chapter PROSE inside string literals wraps at its own width
+# BY DESIGN.
+"packages/dsl/src/pdum/dsl/intrinsics.py" = ["F821"]  # battery cross-refs resolve via the overload table
+"packages/dsl/tests/*.py" = ["F821"]  # kernels in tests use bare DSL vocabulary
+# The tensorlib notebooks are teaching material with their own conventions (00–06
+# canonical; 07–13 re-authored or dropped as APIs change during P4–P6).
+"packages/tensorlib/notebooks/*.ipynb" = ["E501", "I001", "E402", "E702", "E743"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 ignore = []
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-s"
+testpaths = ["packages/dsl/tests", "packages/tensorlib/tests", "conformance"]
+# importlib mode: the two members' suites may share test basenames (test_ir.py)
+addopts = "-s --import-mode=importlib"
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 
 [tool.coverage.run]
-source = ["src/pdum/dsl"]
+source = ["packages/dsl/src/pdum/dsl", "packages/tensorlib/src/pdum/tl"]
 relative_files = true
 omit = [
     "*/tests/*",

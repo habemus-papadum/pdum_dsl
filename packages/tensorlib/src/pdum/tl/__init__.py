@@ -1,0 +1,129 @@
+"""pdum.tl — the assemblage tensor language (design 200 §1.1).
+
+The exact layout algebra (affine map + box domain, guards + fill, units and
+per-dim charts over the unchanged lattice), the compute primitives, the
+Program/Instr IR, reverse-mode AD, the transforms (DCE, checkpointing), the
+cost semantics, placement, signatures, and the model zoo. Promoted from
+explorations/tensorlib at migration P2; onto the core since P3 — the
+marker/reducer registries are cache-backed (pdum.dsl.cache, idempotent,
+derivation-under-cache), name assignment is the core's (pdum.dsl.naming),
+and Program build / adjoint derivation announce themselves on the events
+seam (pdum.dsl.events), so forbid() can pin "this loop builds nothing".
+
+Version of record: this distribution is version-locked with
+``habemus-papadum-dsl`` (scripts/_versioning.py); the anchor lives in
+``pdum.dsl.__version__``.
+"""
+
+from .buffer import Buffer, FunctionalBuffer
+from .chart import Chart, characteristic, chart
+from .compute import Marker, Reducer, extent, iota, pointwise, pw, red, reduce, scan
+from .coords import Coordinate, Displacement, Frame, Slice
+from .dtypes import CARRIERS, as_dtype, bfloat16, carrier_of
+from .guarded import Guard, GuardedLayout, pad_layout, stencil_layout
+from .indexing import argsort, argtopk, scatter_add, take
+from .kernel import (
+    Config,
+    block_idx,
+    compute,
+    config,
+    f32,
+    global_idx,
+    global_thread_idx,
+    grid_layout,
+    i32,
+    rename,
+    thread_idx,
+)
+from .layout import Dim, Injectivity, Layout, as_range
+from .mdsl import CompositeMarker, CompositeReducer, defmarker, defreducer, node_digest
+from .memory import MemoryReport, peak_memory
+from .opcount import ProgramOps, ops_count
+from .placement import Collective, Level, Machine, TrafficReport, mesh, traffic
+from .random import fold_in, normal, uniform
+from .signatures import SignatureError, VInfo, infer_signatures, marker_signature
+from .tensor import Misalignment, Tensor, aligned, alignment
+from .transforms import CheckpointReport, checkpoint, dce
+from .units import Quantity, Unit, UnitRegistry, q, u
+
+__all__ = [
+    "Buffer",
+    "CARRIERS",
+    "CheckpointReport",
+    "checkpoint",
+    "dce",
+    "CompositeMarker",
+    "CompositeReducer",
+    "Collective",
+    "Level",
+    "Machine",
+    "MemoryReport",
+    "TrafficReport",
+    "mesh",
+    "peak_memory",
+    "traffic",
+    "take",
+    "scatter_add",
+    "argtopk",
+    "argsort",
+    "uniform",
+    "ProgramOps",
+    "SignatureError",
+    "VInfo",
+    "defmarker",
+    "defreducer",
+    "compute",
+    "fold_in",
+    "config",
+    "extent",
+    "f32",
+    "i32",
+    "rename",
+    "Config",
+    "thread_idx",
+    "block_idx",
+    "grid_layout",
+    "global_idx",
+    "global_thread_idx",
+    "infer_signatures",
+    "marker_signature",
+    "node_digest",
+    "normal",
+    "ops_count",
+    "FunctionalBuffer",
+    "Marker",
+    "carrier_of",
+    "scan",
+    "Misalignment",
+    "Reducer",
+    "iota",
+    "pointwise",
+    "pw",
+    "red",
+    "reduce",
+    "aligned",
+    "alignment",
+    "characteristic",
+    "Chart",
+    "Coordinate",
+    "Dim",
+    "Displacement",
+    "Frame",
+    "Slice",
+    "Guard",
+    "GuardedLayout",
+    "Injectivity",
+    "Layout",
+    "Quantity",
+    "Tensor",
+    "Unit",
+    "UnitRegistry",
+    "as_dtype",
+    "as_range",
+    "bfloat16",
+    "chart",
+    "pad_layout",
+    "q",
+    "stencil_layout",
+    "u",
+]

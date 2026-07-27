@@ -13,11 +13,14 @@ Versioning model (see AGENTS.md):
     guard. The release writes the clean ``X.Y.Z`` before building, so artifacts are never +dev;
   * **lockstep** — every published package shares one version, agreement is enforced.
 
-This repo is a uv workspace (``[tool.uv.workspace] members = ["packages/*"]``) that currently
-ships ONE package. ``discover_version_files`` globs the members, so adding one needs no edit
-here. A workspace member that the root depends on WOULD need its constraint repinned in lockstep
-(cf. pdum_rfb's ``rewrite_internal_constraints``); there are no such deps today, so that
-machinery is deliberately absent rather than speculatively ported.
+This repo is a uv workspace (``[tool.uv.workspace] members = ["packages/*"]``). The ROOT is
+the unpublished virtual root (design 200 §2); the published dists are the members —
+packages/dsl (habemus-papadum-dsl, providing ``pdum.dsl``) and packages/tensorlib
+(habemus-papadum-tl, providing ``pdum.tl``) — all sharing one lockstep version.
+``discover_version_files`` globs the members, so adding one needs no edit here. The version
+ANCHOR is ``packages/dsl/src/pdum/dsl/__init__.py``. A member depending on a sibling pins it
+EXACTLY (``habemus-papadum-dsl==V`` in packages/tensorlib, since P3); the pin is rewritten in
+lockstep with every bump and participates in the agreement check.
 """
 
 from __future__ import annotations
@@ -29,10 +32,16 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT_TOML = REPO_ROOT / "pyproject.toml"
-INIT_PY = REPO_ROOT / "src" / "pdum" / "dsl" / "__init__.py"
+INIT_PY = REPO_ROOT / "packages" / "dsl" / "src" / "pdum" / "dsl" / "__init__.py"
+# Transitional mirror: the legacy tree's __version__, deleted with that tree at migration P1.
+# The exists() check in discover_version_files makes the P1 deletion edit-free here.
+LEGACY_INIT_PY = REPO_ROOT / "src" / "pdum" / "dsl" / "__init__.py"
 
 _TOML_VERSION_RE = r'^(version = ")([^"]+)(")'
 _INIT_VERSION_RE = r'(__version__ = ")([^"]+)(")'
+# A member depending on a sibling pins it EXACTLY (lockstep, 200 §2); the pin
+# is rewritten with every bump and checked by the lockstep invariant.
+_INTERNAL_PIN_RE = r'("habemus-papadum-[a-z0-9-]+==)([^"]+)(")'
 
 
 class VersionError(RuntimeError):
@@ -62,13 +71,16 @@ def _toml_name(path: Path) -> str:
 def discover_version_files() -> list[VersionFile]:
     """Find every version-bearing file across the workspace, dynamically.
 
-    The root pyproject + every ``packages/*/pyproject.toml`` workspace member, plus the
-    ``__init__.py`` mirror. Adding a workspace member needs no edit here.
+    The (unpublished) root pyproject + every ``packages/*/pyproject.toml`` workspace member,
+    plus the ``pdum.dsl.__version__`` anchor mirror. Adding a workspace member needs no edit
+    here.
     """
     files = [
-        VersionFile(PYPROJECT_TOML, "toml", _toml_name(PYPROJECT_TOML), True),
+        VersionFile(PYPROJECT_TOML, "toml", _toml_name(PYPROJECT_TOML), False),
         VersionFile(INIT_PY, "init_py", "pdum.dsl.__version__", False),
     ]
+    if LEGACY_INIT_PY.exists():  # transitional; the P1 purge deletes the legacy tree
+        files.append(VersionFile(LEGACY_INIT_PY, "init_py", "legacy pdum.dsl.__version__", False))
     for pyproject in sorted((REPO_ROOT / "packages").glob("*/pyproject.toml")):
         files.append(VersionFile(pyproject, "toml", _toml_name(pyproject), True))
     return files
@@ -87,23 +99,30 @@ def read_version_of(vf: VersionFile) -> str:
 
 
 def write_version_of(vf: VersionFile, new_version: str) -> None:
-    """Write a new version into a discovered file."""
+    """Write a new version into a discovered file (internal sibling pins ride along)."""
     content = re.sub(
         _pattern_for(vf),
         rf"\g<1>{new_version}\g<3>",
         vf.path.read_text(),
         flags=re.MULTILINE,
     )
+    if vf.kind == "toml":
+        content = re.sub(_INTERNAL_PIN_RE, rf"\g<1>{new_version}\g<3>", content)
     vf.path.write_text(content)
 
 
 def read_current_version(files: list[VersionFile] | None = None) -> str:
-    """Read the version from every file and require agreement (lockstep invariant)."""
+    """Read the version from every file and require agreement (lockstep invariant).
+    Internal sibling pins (``habemus-papadum-x==V``) participate in the check."""
     files = files or discover_version_files()
-    versions = {vf: read_version_of(vf) for vf in files}
+    versions = {f"{vf.path.relative_to(REPO_ROOT)}": read_version_of(vf) for vf in files}
+    for vf in files:
+        if vf.kind == "toml":
+            for m in re.finditer(_INTERNAL_PIN_RE, vf.path.read_text()):
+                versions[f"{vf.path.relative_to(REPO_ROOT)} pin {m.group(1)[1:-2]}"] = m.group(2)
     unique = set(versions.values())
     if len(unique) != 1:
-        lines = "\n".join(f"  {vf.path.relative_to(REPO_ROOT)}: {v}" for vf, v in versions.items())
+        lines = "\n".join(f"  {where}: {v}" for where, v in versions.items())
         raise VersionError(f"Version mismatch across packages:\n{lines}")
     return next(iter(unique))
 
