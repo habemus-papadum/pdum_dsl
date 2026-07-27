@@ -55,7 +55,7 @@ def _device():
 
 
 def _dims_of(node):
-    return tuple(d[0] for d in node.type.dims)
+    return tuple(d.name for d in node.type.dims)
 
 
 def _translate(art) -> tuple[str, dict]:
@@ -70,7 +70,7 @@ def _translate(art) -> tuple[str, dict]:
     if len(axes) > 2:
         raise Untranslatable("rank-3+ lattices (the 2D/1D subset translates today)")
     comp = {name: c for name, c in zip(axes, ("y", "x") if len(axes) == 2 else ("x",))}
-    extents = {d[0]: (d[1], d[2]) for d in lattice.type.dims}
+    extents = {d.name: (d.start, d.stop) for d in lattice.type.dims}
 
     slots = list(art.uniforms)  # (name, offset, fmt) — the kernel's own captures
     for _, _, _, base, plan, _ in art.arg_slots:  # spliced fn-arg blocks
@@ -92,12 +92,12 @@ def _translate(art) -> tuple[str, dict]:
         strides, acc = [], 1
         for d in reversed(dims):
             strides.append(acc)
-            acc *= d[2] - d[1]
+            acc *= d.size
         parts = []
         for d, s in zip(dims, reversed(strides)):
-            if d[0] not in comp:
-                raise Untranslatable(f"a buffer dim {d[0]!r} outside the launch lattice")
-            parts.append(f"i32(gid.{comp[d[0]]}) * {s}")
+            if d.name not in comp:
+                raise Untranslatable(f"a buffer dim {d.name!r} outside the launch lattice")
+            parts.append(f"i32(gid.{comp[d.name]}) * {s}")
         return " + ".join(parts) or "0"
 
     def as_f32(nid, expr):
@@ -184,7 +184,7 @@ def _translate(art) -> tuple[str, dict]:
             strides, acc = [], 1
             for d in reversed(dims):
                 strides.append(acc)
-                acc *= d[2] - d[1]
+                acc *= d.size
             parts = []
             for ix, d, s in zip(idx, dims, reversed(strides)):
                 parts.append(f"i32({operand(ix)}) * {s}")  # no bounds check: reference-certified

@@ -336,23 +336,23 @@ def _launch_form(ctx, lattice):
     if len(dims) == len(blocks):  # a flat target: internal tiling
         tiles = []
         for d, b, t in zip(dims, blocks, threads):
-            if b * t != d[2] - d[1]:
+            if b * t != d.size:
                 raise ValueError(
                     f"config(blocks={blocks}, threads={threads}) does not tile the writable "
-                    f"lattice {tuple((x[0], x[2] - x[1]) for x in dims)} — blocks·threads must "
+                    f"lattice {tuple((x.name, x.size) for x in dims)} — blocks·threads must "
                     f"equal each extent, or split the target to the geometry yourself"
                 )
-            tiles.append((d[0], b, t))
+            tiles.append((d.name, b, t))
         return ("tile", tiles)
     pairs, i = [], 0
     for b, t in zip(blocks, threads or ()):
-        if i + 1 < len(dims) and dims[i][2] - dims[i][1] == b and dims[i + 1][2] - dims[i + 1][1] == t:
-            pairs.append((dims[i][0], dims[i + 1][0]))
+        if i + 1 < len(dims) and dims[i].size == b and dims[i + 1].size == t:
+            pairs.append((dims[i].name, dims[i + 1].name))
             i += 2
         else:
             raise ValueError(
                 f"config(blocks={blocks}, threads={threads}): the raw pair indexes a launch-"
-                f"lattice-shaped target, and this writable's dims {tuple(d[0] for d in dims)} "
+                f"lattice-shaped target, and this writable's dims {tuple(d.name for d in dims)} "
                 f"are neither split to the geometry nor tiled by it — split the target (raw "
                 f"indexing then aligns for free), or store at global indices via "
                 f"global_thread_idx(block_idx(...), thread_idx(...), grid_layout())"
@@ -389,7 +389,7 @@ def _ambient_iota(ctx, kind, axis, name, lattice, node):
     form, info = _launch_form(ctx, lattice)
     if form == "one":
         if kind == "block_idx":
-            dims = tuple((d[0], (d[1], d[2])) for d in lattice.type.dims)
+            dims = tuple((d.name, (d.start, d.stop)) for d in lattice.type.dims)
             return ctx.emit("tl.const", node=node, value=0.0, dims=dims)
         return ctx.emit("tl.iota", lattice, node=node, name=name)
     src = _grid_node(ctx, lattice)
@@ -821,7 +821,7 @@ def _k_assign(ctx, node):
         elif isinstance(value.type, TensorType):
             # a store at DECLARED GLOBAL indices merges the split-lattice value
             # back to the flat target, axis by axis (the tile form's other half)
-            present = {d[0] for d in value.type.dims}
+            present = {d.name for d in value.type.dims}
             for v in idx_nodes:
                 a = c["k.globals"].get(id(v))
                 if a and f"{a}.b" in present:
@@ -878,7 +878,7 @@ def _k_subscript(ctx, node):
         if isinstance(base, Node) and isinstance(base.type, TensorType):
             idx = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
             vals = [ctx.lower(i) for i in idx]
-            names = [d[0] for d in base.type.dims]
+            names = [d.name for d in base.type.dims]
             if len(vals) == len(names) and all(
                 isinstance(v, Node)
                 and v.op == "tl.iota"
@@ -1088,7 +1088,7 @@ def _compile(fn, args, tap_names=(), geom=None) -> _Artifact:
         params=tuple(p_nodes) + tuple(tap_params),
         body=(ctx.builder.emit("core.yield", tok),),
     )
-    tap_sites = {n: tuple(d[0] for d in v.type.dims) for n, v in c["k.claims"].items()}
+    tap_sites = {n: tuple(d.name for d in v.type.dims) for n, v in c["k.claims"].items()}
     return _Artifact(
         region=region,
         executor=ARTIFACTS.get_or_compile((region.key, _EXECUTOR_FP), lambda: _executor(region)),

@@ -59,6 +59,7 @@ from .compute import pointwise as _eager_pw
 from .compute import reduce as _eager_reduce
 from .compute import repeat_like as _eager_repeat_like
 from .compute import scan as _eager_scan
+from .coords import Frame
 from .ir import _LAYOUT_OPS, Instr, Token, _dense_like, _store, eval_instr, infer_instr, pw_marker
 from .lifting import _HOST_BIN, _HOST_CMP, _METHODS, _STRUCTURAL_SLOT, _Intrinsic
 from .markers import Marker
@@ -67,14 +68,12 @@ from .tensor import Tensor, alignment
 # --- types -------------------------------------------------------------------
 
 
-def _dim_key(d):
-    """One dim's identity entry: (name, start, stop), growing the labeling
-    frame (chart, labels, level) only when one exists — plain integer
-    indexing is the degenerate frame left implicit (chart.py's doctrine,
-    mirrored in the type)."""
-    if d.chart is None and d.labels is None and d.level is None:
-        return (d.name, d.start, d.stop)
-    return (d.name, d.start, d.stop, d.chart, d.labels, d.level)
+def _frame(d) -> Frame:
+    """One dim's identity entry: its observable Frame (design 250) — name,
+    domain, and the labeling frame (chart | labels | level), stride-free.
+    The degenerate frame (no chart/labels/level) needs no special casing:
+    Frame equality carries the Nones."""
+    return Frame(d.name, d.start, d.stop, d.chart, d.labels, d.level)
 
 
 @dataclass(frozen=True)
@@ -88,10 +87,10 @@ class TensorType(Type):
     until a backend column asks (C5+)."""
 
     layout: object = field(compare=False, repr=False)  # the shadow — required
-    dims: tuple = field(init=False)  # identity, derived from the layout
+    dims: tuple[Frame, ...] = field(init=False)  # identity, derived from the layout
 
     def __post_init__(self):
-        object.__setattr__(self, "dims", tuple(_dim_key(d) for d in self.layout.dims))
+        object.__setattr__(self, "dims", tuple(_frame(d) for d in self.layout.dims))
 
 
 @dataclass(frozen=True)
@@ -135,7 +134,7 @@ def _r_iota(args, attrs, regions):
     (t,) = args
     if not isinstance(t, TensorType):
         raise TypeError("tl.iota wants the lattice source tensor")
-    if attrs["name"] not in [d[0] for d in t.dims]:
+    if attrs["name"] not in [d.name for d in t.dims]:
         raise TypeError(f"tl.iota: the lattice has no dim {attrs['name']!r}")
     return TensorType(infer_instr(Instr("out", "iota", ("a0",), {"name": attrs["name"]}), {"a0": t.layout}))
 
@@ -395,7 +394,7 @@ def _host(ctx, node):
             t = ctx.lower(node.args[0])
             want = _host(ctx, node.args[1])
             if hasattr(t, "type") and isinstance(t.type, TensorType):
-                return next(d[2] - d[1] for d in t.type.dims if d[0] == want)
+                return next(d.size for d in t.type.dims if d.name == want)
         if callable(fn) and not hasattr(fn, "fp"):
             args = [_host(ctx, a) for a in node.args]
             kwargs = _host_kwargs(ctx, node.keywords)
@@ -460,7 +459,7 @@ def _tl_call(ctx, node):
         if obj is _eager_extent:  # a structural READ: host data from the TYPE
             t = ctx.lower(node.args[0])
             want = _host(ctx, node.args[1])
-            return next(d[2] - d[1] for d in t.type.dims if d[0] == want)
+            return next(d.size for d in t.type.dims if d.name == want)
         if obj is _eager_contract:  # ONE visible line over the primitives (S.1)
             a, bb = (ctx.lower(x) for x in node.args)
             axis = _host(ctx, node.keywords[0].value) if node.keywords else _host(ctx, node.args[2])
@@ -866,16 +865,16 @@ def _pullback(b, order: list, out, seed) -> dict:
             (operand,) = node.args
             rep = b.emit("tl.repeat_like", a, operand)
             if f == "mean":
-                red = {d[0] for d in operand.type.dims} - {d[0] for d in node.type.dims}
+                red = {d.name for d in operand.type.dims} - {d.name for d in node.type.dims}
                 n_red = 1
                 for d in operand.type.dims:
-                    if d[0] in red:
-                        n_red *= d[2] - d[1]
+                    if d.name in red:
+                        n_red *= d.size
                 rep = b.emit("tl.pointwise", rep, b.emit("core.const", type=f64, value=float(n_red)), f="div")
             acc(operand, rep)
         elif node.op == "tl.repeat_like":
             x = node.args[0]
-            added = tuple(d[0] for d in node.type.dims if d[0] not in {q[0] for q in x.type.dims})
+            added = tuple(d.name for d in node.type.dims if d.name not in {q.name for q in x.type.dims})
             acc(x, b.emit("tl.reduce", a, f="sum", dims=added))
     return adj
 
@@ -1054,7 +1053,7 @@ def run_region(region: Region, values: list, uniforms: bytes | None = None, text
         if n.op == "tl.fold":
             init, src = ev(n.args[0]), ev(n.args[1])
             dim = attrs["dim"]
-            lo, hi = next((d[1], d[2]) for d in n.args[1].type.dims if d[0] == dim)
+            lo, hi = next((d.start, d.stop) for d in n.args[1].type.dims if d.name == dim)
             s = init
             for q in range(lo, hi):
                 s = run_region(n.regions[0], [s, src.select(**{dim: q})])

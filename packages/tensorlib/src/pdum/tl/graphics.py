@@ -373,7 +373,7 @@ def _lower_vertex(vs: VertexShader, buffers: tuple):
     def as_field(v):  # scalars broadcast over the vid lattice
         if hasattr(v, "op") and isinstance(v.type, TensorType):
             return v
-        dims = tuple((d[0], (d[1], d[2])) for d in hidden.type.dims)
+        dims = tuple((d.name, (d.start, d.stop)) for d in hidden.type.dims)
         return ctx.builder.emit("tl.const", value=float(v), dims=dims) if not hasattr(v, "op") else lift(v)
 
     outs = (as_field(result.x), as_field(result.y)) + tuple(as_field(c["g.claims"][n]) for n in varying_names)
