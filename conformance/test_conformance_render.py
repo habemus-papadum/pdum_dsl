@@ -60,3 +60,61 @@ def test_the_quad_f_golden_runs_differentially():
         pytest.skip(f"no WGSL translation yet: {exc}")
     assert ref.to_numpy().min() == 0.0 and ref.to_numpy().max() == 1.0  # both colors present
     np.testing.assert_allclose(got, ref.to_numpy(), atol=1e-6)
+
+
+def _quad():
+    @vertex
+    def quad():
+        vid = vertex_index()
+        u = 1.0 if (vid == 1 or vid == 3 or vid == 4) else 0.0
+        v = 1.0 if (vid == 2 or vid == 4 or vid == 5) else 0.0
+        return position(u * 2.0 - 1.0, v * 2.0 - 1.0)
+
+    return quad
+
+
+def test_the_textured_quad_golden_nearest():
+    """The gate's other golden: a 16x16 pattern sampled by the fragment
+    (nearest, clamp). Texel SELECTION is exact (no pixel maps to a texel
+    boundary at these sizes); the residue is the hardware sRGB decode
+    unit, which the spec permits to deviate from the exact IEC curve by
+    ~0.5/255 in linear light — the tolerance states exactly that."""
+    _require_device()
+    from pdum.tl.graphics import sample, sampler, upload
+
+    pattern = T((np.arange(256.0).reshape(16, 16) % 16.0) / 16.0, ("y", "x"))
+    tex = upload(pattern)
+    smp = sampler(filter="nearest", address="clamp")
+
+    @fragment
+    def shade(varying):
+        return sample(tex, smp, (varying.v, varying.u), lod=0)
+
+    pso = pair(_quad(), shade)
+    ref = T(np.zeros((32, 32)), ("y", "x"))
+    render(pso, target=ref)
+    got = render_wgpu(pso, shape=(32, 32))
+    assert ref.to_numpy().std() > 0.0  # the pattern actually landed
+    np.testing.assert_allclose(got, ref.to_numpy(), atol=0.5 / 255.0)
+
+
+def test_the_textured_quad_linear_agrees_within_weight_precision():
+    """Bilinear filtering: hardware interpolates with ~8-bit fractional
+    weights, so the differential states its tolerance instead of
+    pretending exactness (recorded v1 limit)."""
+    _require_device()
+    from pdum.tl.graphics import sample, sampler, upload
+
+    rng = np.random.default_rng(3)
+    tex = upload(T(rng.random((16, 16)), ("y", "x")))
+    smp = sampler(filter="linear", address="clamp")
+
+    @fragment
+    def shade(varying):
+        return sample(tex, smp, (varying.v, varying.u), lod=0)
+
+    pso = pair(_quad(), shade)
+    ref = T(np.zeros((24, 40)), ("y", "x"))
+    render(pso, target=ref)
+    got = render_wgpu(pso, shape=(24, 40))
+    np.testing.assert_allclose(got, ref.to_numpy(), atol=1.0 / 64.0)

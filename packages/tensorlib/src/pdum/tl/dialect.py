@@ -162,6 +162,22 @@ def _r_read(args, attrs, regions):
     return TensorType(infer_instr(Instr("out", "pointwise", ("a0",), {}), {"a0": ts[0].layout}))
 
 
+def _r_sample(args, attrs, regions):
+    """Texture sampling (S.4 textures v1): two aligned normalized-coord
+    FIELDS (row, col); the texture/sampler are RUNTIME objects riding the
+    artifact's texture ledger (attrs carry the index and the sampler's
+    descriptor — compile constants). v1 limits, recorded: 2D, lod=0, one
+    format, R channel; mips/arrays/formats are future work."""
+    cy, cx = args
+    if not (isinstance(cy, TensorType) and isinstance(cx, TensorType)):
+        raise TypeError("tl.sample wants two coordinate fields (row, col), normalized to [0, 1]")
+    issues = alignment(SimpleNamespace(layout=cy.layout), SimpleNamespace(layout=cx.layout))
+    if issues:
+        details = "\n".join(f"  {m!r}" for m in issues)
+        raise TypeError(f"tl.sample wants ALIGNED coordinate fields:\n{details}")
+    return TensorType(infer_instr(Instr("out", "pointwise", ("a0",), {}), {"a0": cy.layout}))
+
+
 def _r_store(args, attrs, regions):
     tok, dst, val = args
     if not isinstance(tok, TokenType):
@@ -236,6 +252,7 @@ TL_OPS = {
     "tl.iota": OpDef("tl.iota", _r_iota, PURE),
     "tl.pointwise": OpDef("tl.pointwise", _r_pointwise, PURE),
     "tl.read": OpDef("tl.read", _r_read, PURE),
+    "tl.sample": OpDef("tl.sample", _r_sample, PURE),
     "tl.store": OpDef("tl.store", _r_store, PURE),  # the effect rides the token
     "tl.fold": OpDef("tl.fold", _r_fold, PURE, nregions=1),
     **{f"tl.{base}": OpDef(f"tl.{base}", _r_bridge(base), PURE) for base in _BRIDGED},
@@ -922,7 +939,7 @@ _HOST_OPS = {"core.add": "add", "core.sub": "sub", "core.mul": "mul", "core.div"
 _HOST_OPS["core.select"] = "where"
 
 
-def run_region(region: Region, values: list, uniforms: bytes | None = None):
+def run_region(region: Region, values: list, uniforms: bytes | None = None, textures: list | None = None):
     """Evaluate a dialect region over tl Tensors — fields slice at ABSOLUTE
     coordinates, so closed-form random fields regenerate exactly. Stores
     write through the target's buffer (the ONE effect, token-ordered);
@@ -981,6 +998,31 @@ def run_region(region: Region, values: list, uniforms: bytes | None = None):
             src = tex.to_numpy(order=tuple(d.name for d in tex.layout.dims))
             out = src[tuple(a - d.start for a, d in zip(arrs, tex.layout.dims))]
             return _tensor_like(np.asarray(out, dtype=np.float64), ref.layout.dims)
+        if n.op == "tl.sample":
+            cy, cx = (ev(a) for a in n.args)
+            mirror = (textures or [])[attrs["idx"]]
+            names_r = tuple(d.name for d in cy.layout.dims)
+            a_y = cy.to_numpy(order=names_r)
+            a_x = cx.to_numpy(order=names_r)
+            Hm, Wm = mirror.shape
+            wrap = attrs["address"] == "repeat"
+
+            def resolve(i, n_):
+                return np.mod(i, n_) if wrap else np.clip(i, 0, n_ - 1)
+
+            if attrs["filter"] == "nearest":
+                out = mirror[resolve(np.floor(a_y * Hm).astype(np.int64), Hm), resolve(np.floor(a_x * Wm).astype(np.int64), Wm)]
+            else:  # bilinear, texel centers at (i + 0.5)/N (the WebGPU convention)
+                ty, tx = a_y * Hm - 0.5, a_x * Wm - 0.5
+                y0, x0 = np.floor(ty).astype(np.int64), np.floor(tx).astype(np.int64)
+                fy, fx = ty - y0, tx - x0
+                m = mirror
+                v00 = m[resolve(y0, Hm), resolve(x0, Wm)]
+                v01 = m[resolve(y0, Hm), resolve(x0 + 1, Wm)]
+                v10 = m[resolve(y0 + 1, Hm), resolve(x0, Wm)]
+                v11 = m[resolve(y0 + 1, Hm), resolve(x0 + 1, Wm)]
+                out = (v00 * (1 - fx) + v01 * fx) * (1 - fy) + (v10 * (1 - fx) + v11 * fx) * fy
+            return _tensor_like(np.asarray(out, dtype=np.float64), cy.layout.dims)
         if n.op == "tl.store":
             tok, dst, val = (ev(a) for a in n.args)
             if not isinstance(val, Tensor):  # scalars broadcast (pointwise's law)

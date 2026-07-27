@@ -81,3 +81,18 @@ live in the workspace spec, `docs/design/200_the-spec.md` §8.
   tiny widths — denotation tests and cost-model corpora, not a numerics
   benchmark (adversarial input families arrive with the L4 flagships,
   200 §8).
+
+## Graphics (v1)
+
+- **Texture sampling is deliberately narrow.** One format
+  (rgba8unorm-srgb), 2D, `lod=0` only, the R channel, filter
+  nearest|linear, address clamp|repeat. Mip chains (explicit-LOD then
+  analytic auto-LOD from the wrt-ambient gradient), texture arrays,
+  cube faces, the format registry, and `sample` inside compute kernels
+  or oracle-class device functions are future work. The conformance
+  goldens state their tolerances: hardware sRGB decode may deviate
+  from the exact IEC curve by ~0.5/255 in linear light, and bilinear
+  weights carry ~8-bit fractional precision.
+- **The reference rasterizer has no depth buffer** — triangles compose
+  in draw order (painter's), and vertex buffers do not yet reach the
+  device render path (the vid-only subset renders there).

@@ -170,6 +170,43 @@ VERTEX_RULES = {
 }
 
 
+def _f_call(ctx, node):
+    """The fragment layer: ``sample(t, s, (row, col), lod=0)`` — the
+    texture/sampler resolve to REGISTERED runtime objects (captures or
+    locals), the coords lower as fields, and the node carries the ledger
+    index plus the sampler's descriptor. v1 limits, recorded in
+    BOUNDARIES.md: lod=0 only; textures in compute kernels are future
+    work."""
+    if isinstance(node.func, ast.Name):
+        obj = _lookup(ctx, node.func.id)
+        if obj is sample:
+            t = _lookup(ctx, node.args[0].id)
+            s_ = _lookup(ctx, node.args[1].id)
+            if _TEX_MIRRORS is None or t not in _TEX_MIRRORS:
+                raise ValueError("sample: the first argument must be an uploaded texture (upload(t))")
+            if _SAMPLER_DESCS is None or s_ not in _SAMPLER_DESCS:
+                raise ValueError("sample: the second argument must be a sampler (sampler(...))")
+            lod = 0
+            for kw in node.keywords:
+                if kw.arg == "lod":
+                    lod = ast.literal_eval(kw.value)
+            if lod != 0:
+                raise ValueError("sample: explicit lod=0 only today — mip chains are recorded future work")
+            cy, cx = (ctx.lower(e) for e in node.args[2].elts)
+            filt, addr = _SAMPLER_DESCS[s_]
+            ledger = ctx.context["g.textures"]
+            ledger.append((t, s_))
+            return ctx.emit(
+                "tl.sample", cy, cx, node=node, idx=len(ledger) - 1, lod=lod, filter=filt, address=addr
+            )
+    from .kernel import _k_call
+
+    return _k_call(ctx, node)
+
+
+FRAGMENT_RULES = {**KERNEL_RULES, ast.Call: _f_call}
+
+
 # --- the two kinds -----------------------------------------------------------
 
 
@@ -181,7 +218,7 @@ class VertexShader:
         """Introspection: every claimed site with its interpolation mode.
         Flat-ness is a production detail EXCLUDED from the interface type
         the fragment pairs against — it appears here, never there."""
-        _, vnames, flats, _, _ = _lower_vertex(self, ())
+        _, vnames, flats, _, _, _ = _lower_vertex(self, ())
         return {n: {"flat": n in flats} for n in vnames}
 
 
@@ -258,7 +295,7 @@ def pair(vs: VertexShader, fs: FragmentShader) -> PSO:
     iface = FRAGMENTS.get_or_compile(key, lambda: {"required": _required_fields(fs)})
     required = iface["required"]
     if vs.fn.__code__.co_argcount == 0:  # buffer-taking shaders check at render, when buffers exist
-        _, produced, _, _, _ = _lower_vertex(vs, ())
+        _, produced, _, _, _, _ = _lower_vertex(vs, ())
         _check_pairing(frozenset(produced), required)
     return PSO(vs, fs, required)
 
@@ -293,6 +330,7 @@ def _fresh_context(kind: str) -> dict:
         "g.claims": {},
         "g.invalid": {},
         "g.flat": set(),
+        "g.textures": [],
     }
 
 
@@ -341,7 +379,7 @@ def _lower_vertex(vs: VertexShader, buffers: tuple):
     outs = (as_field(result.x), as_field(result.y)) + tuple(as_field(c["g.claims"][n]) for n in varying_names)
     yielded = ctx.builder.emit("core.tuple", *outs)
     region = Region(params=all_params, body=(ctx.builder.emit("core.yield", yielded),))
-    return region, varying_names, frozenset(c["g.flat"]), count, lattice
+    return region, varying_names, frozenset(c["g.flat"]), count, lattice, c
 
 
 class _VaryingProbe:
@@ -370,7 +408,7 @@ def _lower_fragment(fs: FragmentShader, fn_args: tuple, varying_types: dict, tap
     fn = fs.fn
     handle = capture_shim(fn)
     check_coherence(handle)
-    ctx = Lowerer(handle, KERNEL_RULES, {**CORE_OPS, **TL_OPS, **ABI_OPS}, {}, context=_fresh_context("compute"))
+    ctx = Lowerer(handle, FRAGMENT_RULES, {**CORE_OPS, **TL_OPS, **ABI_OPS}, {}, context=_fresh_context("compute"))
     names = fn.__code__.co_varnames[: fn.__code__.co_argcount]
     if not names:
         raise TypeError(f"{fn.__qualname__}: a fragment shader's last parameter is the varying record")
@@ -433,6 +471,19 @@ def _rasterize(px, py, varys: dict, flats: frozenset, target: Tensor):
     return covered, fields
 
 
+def _env_staging(c, fn) -> bytes:
+    """A stage's captured-scalar staging bytes (the abi channel — the
+    uniform doctrine reaching the graphics kinds)."""
+    if not c["k.uniform_size"] or not c["k.uniforms"]:
+        return b""
+    staging = bytearray(c["k.uniform_size"])
+    env = _captured(fn)
+    for name, nd in c["k.uniforms"].items():
+        at = dict(nd.attrs)
+        struct.pack_into(at["fmt"], staging, at["offset"], env[name])
+    return bytes(staging)
+
+
 def render(pso, *args, target: Tensor):
     """One draw into the target: run the vertex stage over the vid
     lattice, rasterize through the reference interpolator, run the
@@ -446,10 +497,10 @@ def render(pso, *args, target: Tensor):
         pso = pso.pso
     n_vs = pso.vs.fn.__code__.co_argcount
     vs_args, fs_args = args[:n_vs], args[n_vs:]
-    region, vnames, flats, count, lattice = _lower_vertex(pso.vs, tuple(vs_args))
+    region, vnames, flats, count, lattice, v_ctx = _lower_vertex(pso.vs, tuple(vs_args))
     _check_pairing(frozenset(vnames), pso.required)  # the deferred half (buffer-taking shaders)
     values = list(vs_args) + ([lattice] if lattice is not None else [])
-    outs = run_region(region, values)
+    outs = run_region(region, values, uniforms=_env_staging(v_ctx, pso.vs.fn))
     order = ("vid",)
     px, py = outs[0].to_numpy(order=order), outs[1].to_numpy(order=order)
     varys = {n: v.to_numpy(order=order) for n, v in zip(vnames, outs[2:])}
@@ -476,7 +527,8 @@ def render(pso, *args, target: Tensor):
             view = memoryview(staging)[blk["base"] : blk["base"] + blk["plan"].staging_size]
             pack_into(blk["plan"], view, blk["extract"](f.captures, ()))
         staging = bytes(staging)
-    out = run_region(f_region, [f_tensors[n] for n in v_types], uniforms=staging)
+    mirrors = [_TEX_MIRRORS[t] for t, _ in f_ctx["g.textures"]]
+    out = run_region(f_region, [f_tensors[n] for n in v_types], uniforms=staging, textures=mirrors)
     color, tap_vals = (out, ()) if not taps else (out[0], out[1:])
     composed = np.where(covered, color.to_numpy(order=dim_names), target.to_numpy(order=dim_names))
     _store(Token(), target, Tensor.from_numpy(composed, dim_names))
@@ -490,6 +542,11 @@ def render(pso, *args, target: Tensor):
 
 _RGBA8_SRGB = FormatEncoding("unorm8-srgb")
 _GPU: list = []  # the lazy device singleton (first upload/sampler creates it)
+# runtime-object ledgers (weak: the wgpu runtime owns the objects):
+# texture -> its decoded linear-light mirror (what hardware sampling returns,
+# quantization included) for REFERENCE sampling; sampler -> its descriptor
+_TEX_MIRRORS = None  # created lazily (WeakKeyDictionary)
+_SAMPLER_DESCS = None
 
 
 
@@ -578,6 +635,11 @@ def upload(t: Tensor):
     never a Tensor."""
     import wgpu
 
+    global _TEX_MIRRORS
+    if _TEX_MIRRORS is None:
+        import weakref
+
+        _TEX_MIRRORS = weakref.WeakKeyDictionary()
     hd, wd = t.layout.dims
     lum = _RGBA8_SRGB.encode(t.to_numpy(order=(hd.name, wd.name)))
     rgba = np.stack([lum, lum, lum, np.full_like(lum, 255)], axis=-1)  # luminance replicated, alpha 1
@@ -593,6 +655,7 @@ def upload(t: Tensor):
         {"bytes_per_row": 4 * wd.size, "rows_per_image": hd.size},
         (wd.size, hd.size, 1),
     )
+    _TEX_MIRRORS[tex] = _RGBA8_SRGB.decode(lum)  # what hardware sampling returns
     return tex
 
 
@@ -606,6 +669,17 @@ def sampler(*, filter: str = "linear", address: str = "clamp"):
     filters = {"linear": wgpu.FilterMode.linear, "nearest": wgpu.FilterMode.nearest}
     if filter not in filters or address not in modes:
         raise ValueError(f"sampler: filter is linear|nearest, address is clamp|repeat (got {filter!r}, {address!r})")
+    global _SAMPLER_DESCS
+    if _SAMPLER_DESCS is None:
+        import weakref
+
+        _SAMPLER_DESCS = weakref.WeakKeyDictionary()
+    smp = _make_sampler(modes, filters, filter, address)
+    _SAMPLER_DESCS[smp] = (filter, address)
+    return smp
+
+
+def _make_sampler(modes, filters, filter, address):
     return _device().create_sampler(
         address_mode_u=modes[address],
         address_mode_v=modes[address],

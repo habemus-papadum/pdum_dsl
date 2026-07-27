@@ -44,7 +44,7 @@ class Untranslatable(Exception):
 
 _INFIX = {"add": "+", "sub": "-", "mul": "*", "div": "/"}
 _CMP = {"lt": "<", "gt": ">", "le": "<=", "ge": ">=", "eq": "==", "ne": "!="}
-_FNS = {"sqrt": "sqrt", "exp": "exp", "log": "log", "tanh": "tanh", "abs": "abs", "floor": "floor"}
+_FNS = {f: f for f in ("sqrt", "exp", "log", "tanh", "abs", "floor", "sin", "cos")}
 _CORE_INFIX = {"core.add": "+", "core.sub": "-", "core.mul": "*", "core.div": "/"}
 
 
@@ -381,6 +381,10 @@ class _Gen:
             if f in ("maximum", "minimum"):
                 a, b = (self.operand(x) for x in node.args)
                 return f"{'max' if f == 'maximum' else 'min'}({a}, {b})", False
+        if op == "tl.sample":
+            cy, cx = (self.operand(a) for a in node.args)
+            i = attrs["idx"]
+            return f"textureSampleLevel(tex{i}, smp{i}, vec2<f32>({cx}, {cy}), f32({attrs['lod']})).x", False
         raise Untranslatable(op)
 
 
@@ -398,7 +402,7 @@ def render_wgpu(pso, *fs_args, shape):
     import wgpu
 
     H, W = shape
-    v_region, vnames, flats, count, lattice = _lower_vertex(pso.vs, ())
+    v_region, vnames, flats, count, lattice, _v_ctx = _lower_vertex(pso.vs, ())
     if lattice is None:
         raise Untranslatable("vertex buffers on the device (the vid-only subset renders today)")
 
@@ -462,6 +466,11 @@ def render_wgpu(pso, *fs_args, shape):
     ]
     if slots:
         src_lines.append("@group(0) @binding(0) var<storage, read> U: array<f32>;")
+    tex_pairs = f_ctx["g.textures"]
+    base_b = 1 if slots else 0
+    for i in range(len(tex_pairs)):
+        src_lines.append(f"@group(0) @binding({base_b + 2 * i}) var tex{i}: texture_2d<f32>;")
+        src_lines.append(f"@group(0) @binding({base_b + 2 * i + 1}) var smp{i}: sampler;")
     src_lines += [
         "@vertex",
         "fn vs_main(@builtin(vertex_index) vid: u32) -> VOut {",
@@ -507,15 +516,18 @@ def render_wgpu(pso, *fs_args, shape):
         ]
     )
     rp.set_pipeline(pipeline)
+    entries = []
     if slots:
         uvals = [struct.unpack_from(fmt, staging, off)[0] for off, fmt in slots]
         ubuf = device.create_buffer_with_data(
             data=np.asarray(uvals, dtype=np.float32).tobytes(), usage=wgpu.BufferUsage.STORAGE
         )
-        bind = device.create_bind_group(
-            layout=pipeline.get_bind_group_layout(0),
-            entries=[{"binding": 0, "resource": {"buffer": ubuf, "offset": 0, "size": ubuf.size}}],
-        )
+        entries.append({"binding": 0, "resource": {"buffer": ubuf, "offset": 0, "size": ubuf.size}})
+    for i, (t, s_) in enumerate(tex_pairs):
+        entries.append({"binding": base_b + 2 * i, "resource": t.create_view()})
+        entries.append({"binding": base_b + 2 * i + 1, "resource": s_})
+    if entries:
+        bind = device.create_bind_group(layout=pipeline.get_bind_group_layout(0), entries=entries)
         rp.set_bind_group(0, bind)
     rp.draw(count)
     rp.end()
