@@ -42,7 +42,7 @@ jobs:
         run: uv run mkdocs build
 
       - name: Execute notebooks (rot guard)
-        run: uv run jupyter nbconvert --to notebook --execute --stdout packages/tensorlib/notebooks/*.ipynb > /dev/null
+        run: uv run jupyter nbconvert --to notebook --execute --stdout packages/tensorlib/notebooks/*.ipynb docs/design/*.ipynb > /dev/null
 
       - name: Workspace members — build + isolated install (migration P0 gate)
         run: |

@@ -5,7 +5,7 @@ not executed (nbclient's default skip tag)."""
 
 from pathlib import Path
 
-TOUR = Path(__file__).parent.parent / "notebooks" / "20_syntax_tour.ipynb"
+TOUR = Path(__file__).parents[3] / "docs" / "design" / "230_syntax_tour.ipynb"
 
 
 def test_the_syntax_tour_executes():

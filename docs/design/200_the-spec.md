@@ -1787,7 +1787,7 @@ reproduces the row-write); **device-resident persistent state** and the
 epoch/ownership handshake for adopted device buffers (on the
 DLPack-device Buffer, §4) — the COMMITTED residency contract is the
 skip-tagged render-loop cell in the executable syntax tour
-(notebooks/20_syntax_tour.ipynb): transfers are explicit one-time
+(docs/design/230_syntax_tour.ipynb): transfers are explicit one-time
 boundary acts, residency is a property of the tensor's buffer, the
 render binds the buffer the compute wrote (zero copies in the loop,
 bind groups never user-visible), readback is an explicit act; the **requested-output (tap) sets** of

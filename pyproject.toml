@@ -84,8 +84,6 @@ line-length = 120
 # The tensorlib notebooks are teaching material with their own conventions (00–06
 # canonical; 07–13 re-authored or dropped as APIs change during P4–P6).
 "packages/tensorlib/notebooks/*.ipynb" = ["E501", "I001", "E402", "E702", "E743"]
-# The examples zoo carries owner markup as prose comments; @jit bodies use dsl vocabulary
-"examples/dsl_zoo/*.py" = ["E501", "F821"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]

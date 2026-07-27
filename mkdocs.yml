@@ -20,12 +20,29 @@ nav:
   - "The spec (200)": design/200_the-spec.md
   - "Backend notes (210)": design/210_backend-notes.md
   - "The principles (220)": design/220_principles.md
-  - "The syntax tour (230)": design/230_syntax-tour.md
+  - "The syntax tour (230)": design/230_syntax_tour.ipynb
+  - "The coordinate algebra (250)": design/250_coordinate-algebra.md
   - Design: design/README.md
+  - Notebooks:
+      - "Units and quantities": notebooks/00_units_and_quantities.ipynb
+      - "Buffers, layouts, tensors": notebooks/01_buffers_layouts_tensors.ipynb
+      - "View ops": notebooks/02_view_ops.ipynb
+      - "Restructuring ops": notebooks/03_restructuring_ops.ipynb
+      - "Guarded layouts": notebooks/04_guarded_layouts.ipynb
+      - "Autodiff cheatsheet": notebooks/05_autodiff_cheatsheet.ipynb
+      - "Adjoints from scratch": notebooks/06_adjoints_from_scratch.ipynb
+      - "The marker DSL": notebooks/07_the_marker_dsl.ipynb
+      - "Fold: tensor state": notebooks/08_fold_tensor_state.ipynb
+      - "Peak memory": notebooks/10_peak_memory.ipynb
+      - "Memory transformations": notebooks/11_memory_transformations.ipynb
+      - "Binomial revolve": notebooks/12_binomial_revolve.ipynb
+      - "Placement": notebooks/13_placement.ipynb
 
 docs_dir: docs
 exclude_docs: |
   design/history/
+  notebooks/__pycache__/
+  notebooks/nbhelp.py
 
 markdown_extensions:
   - admonition
@@ -42,3 +59,6 @@ markdown_extensions:
 
 plugins:
   - search
+  - mkdocs-jupyter:
+      execute: false
+      include_source: true
