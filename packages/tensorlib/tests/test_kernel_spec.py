@@ -352,7 +352,6 @@ def test_record_taps_land_as_struct_tensors():
 # --- P8: the graphics tier (S.4 amendment) -----------------------------------
 
 
-@P8
 def test_quad_from_vertex_index_pairs_with_the_compute_zoo_f():
     """The whole S.4 flow in one spelling: a vertex shader with NO vertex
     buffers (corners computed from the raw ambient), a fragment shader
@@ -361,7 +360,7 @@ def test_quad_from_vertex_index_pairs_with_the_compute_zoo_f():
     through the reference interpolator. Return is MANDATORY (position /
     color0); everything else is claimed by naming it."""
     from pdum.dsl import jit
-    from pdum.tl.graphics import fragment, pair, position, render, vertex  # noqa: F821
+    from pdum.tl.graphics import fragment, pair, position, render, vertex, vertex_index  # noqa: F401
 
     def circle(cy, cx, r):
         @jit()
@@ -373,7 +372,7 @@ def test_quad_from_vertex_index_pairs_with_the_compute_zoo_f():
 
     @vertex
     def quad():
-        vid = vertex_index()  # noqa: F821 — raw ambient; two triangles, six ids
+        vid = vertex_index()  # raw ambient; two triangles, six ids
         u = 1.0 if (vid == 1 or vid == 3 or vid == 4) else 0.0
         v = 1.0 if (vid == 2 or vid == 4 or vid == 5) else 0.0  # claimed varyings
         return position(u * 2.0 - 1.0, v * 2.0 - 1.0)

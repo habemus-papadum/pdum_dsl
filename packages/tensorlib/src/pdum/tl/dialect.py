@@ -245,7 +245,7 @@ TL_OPS = {
 # --- the rule pack: ONE typed-rule factory; dialects extend by rows ----------
 
 _BIN_MARKER = {pyast.Add: "add", pyast.Sub: "sub", pyast.Mult: "mul", pyast.Div: "div"}
-_CMP_MARKER = {pyast.Lt: "lt", pyast.Gt: "gt", pyast.LtE: "le", pyast.GtE: "ge"}
+_CMP_MARKER = {pyast.Lt: "lt", pyast.Gt: "gt", pyast.LtE: "le", pyast.GtE: "ge", pyast.Eq: "eq", pyast.NotEq: "ne"}
 
 
 def _typed_rule(table, base_rule, pick):
