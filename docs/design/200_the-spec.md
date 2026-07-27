@@ -1086,8 +1086,16 @@ the body by name) and kernel-side statically-typed allocation; barriers
 are the token mechanism made explicit; both land at L4. The committed
 spellings live as SKIPPED tests in
 `packages/tensorlib/tests/test_kernel_spec.py` — each un-skips when its
-milestone (P8, P9, L4) lands; data-dependent indexing joins as the
-take/scatter_add pair (§1.9, P9).
+milestone (P8, P9, L4) lands. Data-dependent KERNEL stores were ruled
+OUT at P9 (owner): assignment never becomes a scatter — kernel stores
+stay ambient-indexed and bijective (the refusal is the theorem, pinned
+live); data-dependent accumulation is reduce-by-index, at home in the
+tensor tier's take/scatter_add (§1.9), and its kernel face is an L4
+door with a DECLARED monoid (the reducers' vocabulary) plus the
+atomics/determinism lowering licenses — float atomic accumulation is
+order-nondeterministic on devices, so the deterministic-by-addition
+guarantee is exactly the license conversation. Data-dependent READS
+remain the P8 value-read door, gradient-free through indices.
 
 ### S.4 Vertex/fragment [build — P8]
 

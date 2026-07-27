@@ -236,7 +236,7 @@ def test_kernels_return_nothing_and_data_dependent_indexing_refuses():
         (y,) = thread_idx("y")
         img[i32(y) * 2] = 1.0
 
-    with pytest.raises(ValueError, match=r"exactly the thread coordinates.*arriving P9"):
+    with pytest.raises(ValueError, match=r"exactly the thread coordinates.*NEVER becomes a scatter"):
         bad_index(T(np.zeros(3), ("y",)))
 
 

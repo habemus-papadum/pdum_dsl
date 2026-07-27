@@ -360,3 +360,9 @@ differentiable reordering is `take` by sorted indices.
 Spelling note: the family is FREE FUNCTIONS, not Tensor methods — the
 method/function split is the view/computation line made syntactic
 (methods are views; computations are functions).
+
+At the KERNEL tier the value door is READ-only (the P8 computed-read
+door). Assignment never becomes a scatter (owner-ruled): a store at a
+value index would be a many-to-one reduction hiding behind `=` — the
+banned pun — so it refuses toward this family; the kernel scatter face
+is reduce-by-index with a DECLARED monoid, an L4 door.

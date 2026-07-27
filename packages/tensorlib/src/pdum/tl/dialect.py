@@ -159,8 +159,9 @@ def _r_read(args, attrs, regions):
     """A buffer READ at computed integer indices (P8, S.3's third
     extension): one index FIELD per dim of the read tensor; the result
     lives on the index fields' lattice. Gradient-free through the
-    indices; the adjoint through the read tensor is scatter (P9) — the
-    VJP pass refuses until then."""
+    indices; the adjoint through the read tensor is a scatter — the
+    tensor tier owns it (scatter_add, 200 §1.9); the kernel VJP pass
+    refuses until its consumer arrives (an L4-era wiring)."""
     tex, *idx = args
     if not isinstance(tex, TensorType):
         raise TypeError("tl.read wants a tensor to read")

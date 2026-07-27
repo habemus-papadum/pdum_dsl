@@ -70,6 +70,11 @@ live in the workspace spec, `docs/design/200_the-spec.md` §8.
   distributed sort refuses; comparison counts are an algorithm property,
   so opcount gives one bucket entry per element examined and the cost
   model prices the bucket.
+- **Kernel stores never scatter** (owner-ruled at P9): assignment at a
+  value index refuses — kernel stores are ambient-indexed and bijective,
+  and data-dependent accumulation is reduce-by-index, at home in the
+  tensor tier. The kernel face is an L4 door: a DECLARED monoid over
+  the thread lattice, with atomics/determinism as lowering licenses.
 
 ## Cost models and transforms
 

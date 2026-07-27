@@ -4,8 +4,11 @@ A kernel body IS the value language plus the dialect extensions (the
 one-body-language law, 200 §S.3 amendment): the thread AMBIENT
 (``thread_idx("y", "x")`` — coordinates are never positional
 parameters), explicit token-threaded STORES into writable arguments
-(``img[y, x] = v``), and — arriving P8/P9 — buffer READS at computed
-indices. Function-valued arguments apply at the thread coordinates,
+(``img[y, x] = v``), and buffer READS at computed indices (the P8
+value-read door). Stores stay ambient-indexed and bijective —
+assignment NEVER becomes a scatter (owner-ruled at P9): data-dependent
+accumulation is reduce-by-index, at home in the tensor tier's
+take/scatter_add; its kernel face is an L4 door with a declared monoid. Function-valued arguments apply at the thread coordinates,
 including tuple-returning ones (``v, (dy, dx) = f(y, x)`` — the
 destructuring pattern declares the structure). Writability is inferred
 from the body: an argument is writable iff it is stored to.
@@ -855,9 +858,13 @@ def _check_indices(ctx, sub):
         v = ctx.lower(i)
         if not (isinstance(v, Node) and isinstance(v.type, CoordType)):
             raise ValueError(
-                "kernel subscripts take exactly the thread coordinates — raw, or the "
-                "declared global_thread_idx pair (data-dependent indexing is "
-                "take/scatter_add, arriving P9)"
+                "kernel stores are ambient-indexed and bijective: subscripts take "
+                "exactly the thread coordinates — raw, or the declared "
+                "global_thread_idx pair. Assignment NEVER becomes a scatter "
+                "(owner-ruled): data-dependent accumulation is a DIFFERENT "
+                "operation — reduce-by-index, whose semantic home is the tensor "
+                "tier's take/scatter_add (200 §1.9); its kernel face arrives at L4 "
+                "with a declared monoid and the atomics/determinism licenses"
             )
         out.append(v)
     return out

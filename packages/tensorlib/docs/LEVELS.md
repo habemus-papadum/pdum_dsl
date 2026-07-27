@@ -250,19 +250,18 @@ round-trip (split's ordered parts exposed it at P9 — attrs-as-data
 wants a first-class ordered mapping); Instr params as stringly dicts
 vs typed attrs; the double bookkeeping in lift_step's `names_of`.
 
-## P9 — awaiting owner ratification
+## P9 — ruled (owner, 2026-07-27)
 
-- **The aligned law + `over=`** (250 §10 as now written): idx dims
-  shared with surviving table dims ALIGN by name in `take` (the
-  naming law; batched reorder/gate-gather fall out); `scatter_add`
-  DECLARES its consumed dims via `over=` (reduce's precedent, default
-  all). §1.9's text described only the splice form — this is the
-  extension that made the spec's own batched claims spellable.
-- **The kernel-tier data-dependent STORE face** (the P9 spec test,
-  still skipped): proposal — `img[j] = v` at value (i32) indices
-  lowers to scatter_add over the ambient lattice with the WHOLE
-  writable as the declared output (zeros where no thread lands, the
-  pointwise-store law's scatter face; duplicates SUM, deterministic).
-  The alternative reading (accumulate INTO prior buffer contents) is
-  a read-modify-write the spelling does not say. Not built until
-  ruled.
+- **The aligned law + `over=`: RATIFIED.** 250 §10 is normative: idx
+  dims shared with surviving table dims align by name in `take` (the
+  naming law); `scatter_add` declares its consumed dims via `over=`.
+- **Kernel stores never scatter: RULED.** Assignment at a value index
+  is a many-to-one reduction hiding behind `=` — the banned pun — so
+  it REFUSES permanently toward the tensor tier's family (the refusal
+  is the theorem, pinned live in test_kernel_spec). The kernel scatter
+  face is a NEW L4 door: reduce-by-index with a DECLARED monoid (the
+  reducers' vocabulary — never hard-coded add), whose lowering
+  licenses (integer atomics exact; float atomic accumulation is
+  order-nondeterministic → ordered/segmented reduction or a declared
+  tolerance) are K-A–K-F material. Add it to the L4 conversation as
+  **K-G: reduce-by-index on device**.

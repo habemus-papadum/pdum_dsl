@@ -56,7 +56,6 @@ class _GBuf:  # the record-tap record: a G-buffer's element
 
 
 P8 = pytest.mark.skip(reason="specified now; lands at P8 (graphics + the value-tier derivative engine)")
-P9 = pytest.mark.skip(reason="specified now; lands at P9 (the indexing family)")
 L4 = pytest.mark.skip(reason="specified now; lands with the tile tier (L4)")
 
 
@@ -586,9 +585,6 @@ def test_shared_memory_config_linked_and_kernel_side_static():
     k_static(img)
 
 
-# --- P9: data-dependent indexing joins as take/scatter_add -------------------
-
-
 # --- P8.6: the coordinate law (250 §6) ---------------------------------------
 
 
@@ -762,7 +758,19 @@ def test_global_idx_is_geometry_robust():
     np.testing.assert_allclose(b.to_numpy(), np.fromfunction(lambda i, j: i * 100.0 + j, (8, 16)))
 
 
-@P9
-def test_data_dependent_stores_are_scatter_add():
-    """Kernel subscripts at NON-thread indices become the take/scatter_add
-    pair (200 §1.9) — deterministic by addition, first-wins at ties."""
+def test_data_dependent_stores_refuse_toward_the_tensor_family():
+    """The theorem (owner-ruled at P9): assignment NEVER becomes a scatter.
+    Kernel stores are ambient-indexed and bijective — `img[j] = v` at a
+    value index would be a many-to-one reduction hiding behind `=`, the
+    banned pun. Data-dependent accumulation is reduce-by-index: its
+    semantic home is the tensor tier's take/scatter_add (200 §1.9, landed);
+    the kernel face arrives at L4 with a DECLARED monoid and the
+    atomics/determinism lowering licenses. The refusal is the API."""
+
+    @compute
+    def hist(src, out):
+        (i,) = thread_idx("t")
+        out[src[i]] = 1.0  # the bin is DATA — a value index in store position
+
+    with pytest.raises(ValueError, match="NEVER becomes a scatter.*reduce-by-index.*L4"):
+        hist(T(np.array([0.0, 1.0, 0.0]), ("t",)), T(np.zeros(2), ("t",)))
