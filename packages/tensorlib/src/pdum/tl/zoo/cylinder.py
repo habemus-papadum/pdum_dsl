@@ -56,8 +56,8 @@ def spun(angle: float):
         world = theta + angle  # rotation -> world space, in-shader
         px = sin(world) * 0.85
         py = h * 0.7 + cos(world) * 0.12  # a hint of tilt
-        u = theta * (1.0 / TAU)  # periodic surface coordinate: seam-safe
-        v = h * 0.5 + 0.5
+        u = theta * (1.0 / TAU)  # noqa: F841 — a claimed varying (the tagless law)
+        v = h * 0.5 + 0.5  # noqa: F841 — a claimed varying
         return position(px, py)
 
     return vs
