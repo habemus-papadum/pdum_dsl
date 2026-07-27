@@ -257,7 +257,6 @@ def test_derivative_type_law_records_mirror_their_value():
 # --- P8: buffer reads — the third dialect extension --------------------------
 
 
-@P8
 def test_element_reads_at_computed_indices():
     """The kernel dialect reads buffers at COMPUTED integer indices —
     a value-language load, gradient-free through the indices (the carrier
@@ -274,7 +273,6 @@ def test_element_reads_at_computed_indices():
     np.testing.assert_allclose(img.to_numpy(), [0.0, 4.0, 8.0])
 
 
-@P8
 def test_neighborhood_static_loop_unrolls_to_scalar_ops():
     """A statically-known loop over element loads — 'converted into a
     series of scalar operations'. (The tensor-tier stencil view is the
@@ -294,7 +292,6 @@ def test_neighborhood_static_loop_unrolls_to_scalar_ops():
     np.testing.assert_allclose(img.to_numpy(), [1.0, 2.0, 3.0])
 
 
-@P8
 def test_fuzz_as_a_combinator_closes_over_a_buffer():
     """The combinator FORM of fuzz: a device function closing over a noise
     texture — buffer closure at the f tier (arg-rooted buffer slots)."""

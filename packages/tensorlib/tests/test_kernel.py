@@ -311,6 +311,22 @@ def test_all_scalar_subtrees_stay_value_dialect():
     np.testing.assert_allclose(img.to_numpy(), np.arange(3.0) * -5.0)
 
 
+def test_the_reference_refuses_out_of_bounds_reads():
+    """P8 buffer reads + the keying-ladder ruling: an out-of-bounds
+    computed read REFUSES at the reference — an oracle has no undefined
+    behavior, so running on reference IS the UB detector; device
+    backends need not check."""
+
+    @compute
+    def shift_read(tex, img):
+        (y,) = thread_idx("y")
+        img[y] = tex[y + 3.0]
+
+    tex, img = T(np.arange(5.0), ("y",)), T(np.zeros(3), ("y",))
+    with pytest.raises(ValueError, match="out of bounds.*oracle has no undefined behavior"):
+        shift_read(tex, img)
+
+
 def test_fn_arg_with_loops_and_module_global_name():
     """Two pins: (a) per-pixel LOOPS/BRANCHES live in @jit device functions
     (the value language) — the kernel body stays straight-line plumbing;

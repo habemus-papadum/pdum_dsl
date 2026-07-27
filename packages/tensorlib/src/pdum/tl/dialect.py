@@ -41,6 +41,7 @@ import struct
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
+import numpy as np
 from pdum.dsl.derivative import TABLE, Const, Prim
 from pdum.dsl.ir import Builder, Region
 from pdum.dsl.lower import Lowerer, check_coherence
@@ -50,7 +51,7 @@ from pdum.dsl.registry import DEFAULT
 from pdum.dsl.types import Type, f64
 from pdum.dsl.value import LOWER_RULES, _assign, _binop, _call, _compare
 
-from .compute import const_like
+from .compute import _tensor_like, const_like
 from .compute import contract as _eager_contract
 from .compute import extent as _eager_extent
 from .compute import iota as _eager_iota
@@ -139,6 +140,28 @@ def _r_iota(args, attrs, regions):
     return TensorType(infer_instr(Instr("out", "iota", ("a0",), {"name": attrs["name"]}), {"a0": t.layout}))
 
 
+def _r_read(args, attrs, regions):
+    """A buffer READ at computed integer indices (P8, S.3's third
+    extension): one index FIELD per dim of the read tensor; the result
+    lives on the index fields' lattice. Gradient-free through the
+    indices; the adjoint through the read tensor is scatter (P9) — the
+    VJP pass refuses until then."""
+    tex, *idx = args
+    if not isinstance(tex, TensorType):
+        raise TypeError("tl.read wants a tensor to read")
+    ts = [i for i in idx if isinstance(i, TensorType)]
+    if len(idx) != len(tex.dims) or not ts:
+        raise TypeError(
+            f"tl.read wants one integer index field per dim of the read tensor "
+            f"({len(tex.dims)} dims, {len(idx)} indices given)"
+        )
+    issues = alignment(*(SimpleNamespace(layout=t.layout) for t in ts))
+    if issues:
+        details = "\n".join(f"  {m!r}" for m in issues)
+        raise TypeError(f"tl.read wants ALIGNED index fields:\n{details}")
+    return TensorType(infer_instr(Instr("out", "pointwise", ("a0",), {}), {"a0": ts[0].layout}))
+
+
 def _r_store(args, attrs, regions):
     tok, dst, val = args
     if not isinstance(tok, TokenType):
@@ -212,6 +235,7 @@ TL_OPS = {
     "tl.token": OpDef("tl.token", lambda a, at, r: TokenType(), PURE),
     "tl.iota": OpDef("tl.iota", _r_iota, PURE),
     "tl.pointwise": OpDef("tl.pointwise", _r_pointwise, PURE),
+    "tl.read": OpDef("tl.read", _r_read, PURE),
     "tl.store": OpDef("tl.store", _r_store, PURE),  # the effect rides the token
     "tl.fold": OpDef("tl.fold", _r_fold, PURE, nregions=1),
     **{f"tl.{base}": OpDef(f"tl.{base}", _r_bridge(base), PURE) for base in _BRIDGED},
@@ -936,6 +960,27 @@ def run_region(region: Region, values: list, uniforms: bytes | None = None):
             ref = next(v for v in ops_v if isinstance(v, Tensor))
             ops_v = [v if isinstance(v, Tensor) else const_like(ref, float(v)) for v in ops_v]
             return _eager_pw(pw_marker(attrs["f"]), *ops_v)
+        if n.op == "tl.read":
+            tex, *idxs = (ev(a) for a in n.args)
+            ref = next(v for v in idxs if isinstance(v, Tensor))
+            names = tuple(d.name for d in ref.layout.dims)
+            shape = [d.size for d in ref.layout.dims]
+            arrs = []
+            for v in idxs:
+                a = v.to_numpy(order=names) if isinstance(v, Tensor) else np.full(shape, float(v))
+                if not np.all(np.floor(a) == a):
+                    raise ValueError("tl.read: read indices must be exact integers (the carrier discipline)")
+                arrs.append(a.astype(np.int64))
+            for a, d in zip(arrs, tex.layout.dims):
+                if np.any((a < d.start) | (a >= d.stop)):
+                    raise ValueError(
+                        f"tl.read: index out of bounds on dim {d.name!r} (domain [{d.start}, {d.stop})) — "
+                        f"the reference REFUSES out-of-bounds (an oracle has no undefined behavior); "
+                        f"device backends need not check"
+                    )
+            src = tex.to_numpy(order=tuple(d.name for d in tex.layout.dims))
+            out = src[tuple(a - d.start for a, d in zip(arrs, tex.layout.dims))]
+            return _tensor_like(np.asarray(out, dtype=np.float64), ref.layout.dims)
         if n.op == "tl.store":
             tok, dst, val = (ev(a) for a in n.args)
             if not isinstance(val, Tensor):  # scalars broadcast (pointwise's law)

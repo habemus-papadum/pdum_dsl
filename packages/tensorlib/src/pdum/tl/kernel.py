@@ -78,6 +78,12 @@ from .dialect import (
     tensor_type,
     walk_region,
 )
+from .dialect import (
+    NotHost as _NotHost,
+)
+from .dialect import (
+    _host as _dialect_host,
+)
 from .lifting import _Intrinsic
 from .markers import Marker
 from .producer import _captured
@@ -821,13 +827,50 @@ def _k_assign(ctx, node):
 
 
 def _k_subscript(ctx, node):
-    """A LOAD at the thread coordinates: the view itself."""
+    """A LOAD. At exactly the thread coordinates it is the view itself;
+    at COMPUTED integer indices it is a value-language gather (``tl.read``
+    — P8 buffer reads, the fuzz/texture door), gradient-free through the
+    indices. Data-dependent STORES remain P9 (scatter)."""
     if isinstance(node.value, ast.Name):
         base = ctx.locals.get(node.value.id)
         if isinstance(base, Node) and isinstance(base.type, TensorType):
-            _check_indices(ctx, node)
-            return base
+            idx = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
+            vals = [ctx.lower(i) for i in idx]
+            names = [d[0] for d in base.type.dims]
+            if len(vals) == len(names) and all(
+                isinstance(v, Node)
+                and v.op == "tl.iota"
+                and dict(v.attrs).get("name") == n
+                and any(v == t for t in ctx.context["k.iotas"])
+                for v, n in zip(vals, names)
+            ):
+                return base  # the identity load: the view itself
+            return ctx.emit("tl.read", base, *vals, node=node)
     return _value_subscript(ctx, node)
+
+
+def _k_for(ctx, node):
+    """A statically-known loop UNROLLS to scalar operations (S.3): the
+    iterator must be a structural host value (a range over build-time
+    ints); per-element data-dependent trip counts stay with the oracle
+    class until predication."""
+    if node.orelse:
+        raise ValueError("for/else has no kernel meaning")
+    if not isinstance(node.target, ast.Name):
+        raise ValueError("kernel loops bind one name")
+    try:
+        seq = tuple(_dialect_host(ctx, node.iter))
+    except _NotHost:
+        raise ValueError(
+            "kernel loops UNROLL: the iterator must be statically known "
+            "(a range over build-time values) — data-dependent trip counts "
+            "have no kernel spelling yet"
+        ) from None
+    for v in seq:
+        ctx.locals[node.target.id] = v
+        for stmt in node.body:
+            ctx.lower(stmt)
+    return None
 
 
 def _k_name(ctx, node):
@@ -867,6 +910,7 @@ KERNEL_RULES = {
     ast.Call: _k_call,
     ast.Subscript: _k_subscript,
     ast.Name: _k_name,
+    ast.For: _k_for,  # statically-known loops unroll (S.3); steps keep the straight-line refusal
 }
 
 
