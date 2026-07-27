@@ -1,3 +1,10 @@
+> [!WARNING]
+> **ARCHIVAL MATERIAL — NOT THE SOURCE OF TRUTH.** Frozen history from
+> before the ratified spec; kept for archaeology only, not maintained —
+> statements below may be wrong about the current system. The living
+> canon is `docs/design/200_the-spec.md` (with 210/220/230/250/260).
+> Index: `docs/design/history/README.md`.
+
 # 150 — Critical assessment report (run of the 140 charter)
 
 **Status:** as-run report of the team-of-agents assessment chartered by 140. Findings below survived adversarial verification (3 candidates were refuted and dropped; findings that failed verification are dropped, not softened). Collisions with decided positions in either stream are flagged for human arbitration per 140 section 8 — nothing here is self-ratifying.

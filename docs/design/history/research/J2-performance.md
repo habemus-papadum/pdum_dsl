@@ -1,3 +1,10 @@
+> [!WARNING]
+> **ARCHIVAL MATERIAL — NOT THE SOURCE OF TRUTH.** Frozen history from
+> before the ratified spec; kept for archaeology only, not maintained —
+> statements below may be wrong about the current system. The living
+> canon is `docs/design/200_the-spec.md` (with 210/220/230/250/260).
+> Index: `docs/design/history/README.md`.
+
 # J2 — Judgment: the three proposals through the PERFORMANCE lens
 
 *Judge report for the pdum.dsl redesign bake-off. Lens: hot-loop per-call cost in

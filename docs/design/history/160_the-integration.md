@@ -1,3 +1,10 @@
+> [!WARNING]
+> **ARCHIVAL MATERIAL — NOT THE SOURCE OF TRUTH.** Frozen history from
+> before the ratified spec; kept for archaeology only, not maintained —
+> statements below may be wrong about the current system. The living
+> canon is `docs/design/200_the-spec.md` (with 210/220/230/250/260).
+> Index: `docs/design/history/README.md`.
+
 # 160 — The integration: one workspace, tensorlib as the assemblage language
 
 **Status: PROPOSED — for owner review before any code changes.** Produced by a planning workflow from the owner's post-150 decisions. Prior canon: 010–150; 150 is the critical-assessment report this document acts on, 140 its charter. Tensorlib lives at `explorations/tensorlib/` until M3 below. Nothing in this document is executed until the owner ratifies it; §7 lists the decisions only the owner can make.

@@ -1,3 +1,10 @@
+> [!WARNING]
+> **ARCHIVAL MATERIAL — NOT THE SOURCE OF TRUTH.** Frozen history from
+> before the ratified spec; kept for archaeology only, not maintained —
+> statements below may be wrong about the current system. The living
+> canon is `docs/design/200_the-spec.md` (with 210/220/230/250/260).
+> Index: `docs/design/history/README.md`.
+
 # V1 — Verdict: frontend strategy for the pdum.dsl redesign
 
 *Consolidation verdict, July 2026. Inputs: R1 (numba), R2 (DaCe), R4 (JAX), R5

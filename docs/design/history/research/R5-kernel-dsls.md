@@ -1,3 +1,10 @@
+> [!WARNING]
+> **ARCHIVAL MATERIAL — NOT THE SOURCE OF TRUTH.** Frozen history from
+> before the ratified spec; kept for archaeology only, not maintained —
+> statements below may be wrong about the current system. The living
+> canon is `docs/design/200_the-spec.md` (with 210/220/230/250/260).
+> Index: `docs/design/history/README.md`.
+
 # R5 — The kernel-embedding DSL family: how small Python-subset kernel compilers actually work
 
 Research report for the pdum.dsl redesign. Investigates four systems on a spectrum
