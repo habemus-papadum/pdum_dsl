@@ -1640,6 +1640,22 @@ serve every incumbent consumer until each retargets. The pivot's
 ledger lives in `history/240_cleanup-pivot.md`; the crystallized
 principle is 220 §15.
 
+**P8.6 — The coordinate algebra (M; design ratified 2026-07-27).** A
+second pivot inserted mid-P8, before vertex buffers and records,
+because both build on the indexing law. Four host-tier objects —
+`Frame` (the observable dim identity, reified), `Coordinate` (affine
+point, in-bounds by construction), `Displacement` (vector),
+`Slice` (coordinate endpoints + step displacement) — with the torsor
+algebra, the explicit-coercion doctrine (no arithmetic on a Coordinate
+without a stated value type; nothing degrades to float silently), the
+typed order-free subscript law (strict frame identity, containment
+extent), never-promote-to-scalar, and the one store-side scalar
+promotion. `thread_idx` yields Coordinates in every kind. Lands as
+five green stages (objects → identity reification → host indexing →
+kernel law + respells → vertex tier), the Layout kwargs methods as the
+unchanging normal form, and the conformance goldens numerically
+identical across the respells. Normative: `250_coordinate-algebra.md`.
+
 **P9 — The indexing family; runway handoff (S).** The §1.9 family
 lands: `take` + `scatter_add` (the adjoint pair) + `argtopk`/`argsort`
 (gradient-free) + reference OOB refusal + cost entries + the

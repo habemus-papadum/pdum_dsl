@@ -13,8 +13,11 @@ live in the workspace spec, `docs/design/200_the-spec.md` §8.
   piecewise layouts is a family decision to make consciously when a
   concrete need appears. Constant-fill pad covers convolutional practice.
 - **`Quantity` arithmetic cannot tell a position from a displacement** —
-  `q("1 um") + q("2 um")` is unpoliced. A dedicated affine Position type
-  would close this at the cost of doubling the arithmetic surface.
+  `q("1 um") + q("2 um")` is unpoliced, deliberately: Quantity is the
+  engine room. The affine distinction is policed one layer up by the
+  coordinate algebra (Frame/Coordinate/Displacement/Slice — design
+  ratified, `docs/design/250_coordinate-algebra.md`, landing as the
+  P8.6 pivot) without doubling Quantity's arithmetic surface.
 - **Select's promotion rule is a convention, not a theorem.** When an
   axis's position dim is selected away, the removed label folds into the
   widest-step displacement sibling (tie: name order), which becomes the
