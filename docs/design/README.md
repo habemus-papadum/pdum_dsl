@@ -9,7 +9,9 @@ builders. `220_principles.md` is the living canon of mechanisms;
 (Frame/Coordinate/Displacement/Slice and the §10 value door) across all
 tiers. `260_l4-brief.md` is the onboarding brief for the L4 work — the
 reading order, the ruled-and-closed decisions, the excavation-first
-plan, and the traps already sprung once. The syntax tour (230) is an
+plan, and the traps already sprung once. `270_owners-guidance.md` is
+the owner's own guidance for the efficiency era — it rides on top of
+260 and wins where they differ. The syntax tour (230) is an
 EXECUTABLE NOTEBOOK — `230_syntax_tour.ipynb`, run in CI and under
 pytest with committed-future cells skip-tagged (so it can never rot),
 and rendered into the documentation site with the rest of the
