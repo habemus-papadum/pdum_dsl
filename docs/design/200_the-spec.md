@@ -945,8 +945,8 @@ ecosystem packages through the same surfaces; the stdlib stays small
 ```python
 @compute
 def my_shader(f, img):
-    y, x = thread_idx("y", "x")                # ambient intrinsic, NOT positional params
-    img[y, x] = f(y, x)                        # explicit store into a WRITABLE ARGUMENT
+    i, j = global_idx("y", "x")                # my position in the WRITABLE — any geometry
+    img[i, j] = f(i, j)                        # coordinates pass through; f casts (250)
 
 f = twill(4, 3) | weave | zoom(center=(20, 50), r=20, scale=5)
 my_shader(f, img, launch=grid(blocks=ceil_div(img.shape, 16), threads=(16, 16)))
@@ -1036,12 +1036,20 @@ explicit coercion doors — `f32(c)` for value math, `i32(c)` for index
 math (f64 interior per 210; the name records declared intent) — and
 nothing degrades to float silently. Value-indexed reads (`tex[i32(y)
 + dy]`) remain the computed-read door; mixing Coordinates and value
-indices in one bracket refuses. Application at coordinates —
-`f(y, x)` — is a DECLARED consumer, not arithmetic: the splice takes
-each Coordinate's backing as the argument (the ambient application
-semantic; this is what keeps device functions scalar-language
-citizens). Coordinate arithmetic returning Coordinates (SDFs, window
-reads) arrives with its first consumer, per 250 §9.
+indices in one bracket refuses. Coordinates cross call boundaries AS
+Coordinates (the P8.6 veto): no coercion happens at an application —
+the caller casts (`f(f32(i), f32(j))`, f a plain spliced scalar
+citizen) or the callee casts (`f(i, j)`, a frame-aware fn inlining
+through the kernel rules, where `extent(c)` reads the domain width
+from the same argument). **The index algebra** (250): layout
+isomorphisms induce coordinate maps — `rename`, and the merge map
+`global_thread_idx` whose intrinsic face `global_idx("y", "x")` is
+the STANDARD door: my position in the writable under any geometry,
+defined over the raws, degenerating to the thread pair under one
+block; `thread_idx` is re-scoped to genuinely block-local work; store
+legality is typed (a flat-frame index IS the declared global).
+Coordinate arithmetic returning Coordinates (SDFs, window reads)
+arrives with its first consumer, per 250 §9.
 
 *The invocation config.* `kernel[config(...)](args)` brackets the
 launch; each component has its own specialization regime, stated

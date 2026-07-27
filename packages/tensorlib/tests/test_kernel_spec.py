@@ -31,6 +31,7 @@ from pdum.tl import (  # noqa: F401 — ambient vocabulary resolved from bodies'
     compute,
     extent,
     f32,
+    global_idx,
     global_thread_idx,
     grid_layout,
     i32,
@@ -640,7 +641,7 @@ def test_coordinates_cross_call_boundaries_as_coordinates():
 
     @compute
     def shade(f, img):
-        i, j = thread_idx("y", "x")
+        i, j = global_idx("y", "x")
         img[i, j] = f(i, j)  # coordinates pass through UNCHANGED
 
     img = T(np.zeros((2, 4)), ("y", "x"))
@@ -691,6 +692,28 @@ def test_the_coercion_doors_promote_host_ints_explicitly():
 
     with pytest.raises(TypeError, match="already a value"):
         bad(T(np.zeros(3), ("y",)))
+
+
+def test_global_idx_is_geometry_robust():
+    """The standard door (250: the index algebra): my position in the
+    WRITABLE lattice under ANY launch geometry — defined as the merge map
+    applied to the raw pair; under one block it degenerates to the raws
+    structurally (the grid IS the flat lattice). One spelling, every
+    geometry — thread_idx stays the primitive for block-LOCAL work."""
+
+    @compute
+    def shade(img):
+        i, j = global_idx("y", "x")
+        img[i, j] = f32(i) * 100.0 + f32(j)
+
+    a = T(np.zeros((4, 8)), ("y", "x"))
+    shade(a)  # the default one-block geometry
+    want4x8 = np.fromfunction(lambda i, j: i * 100.0 + j, (4, 8))
+    np.testing.assert_allclose(a.to_numpy(), want4x8)
+
+    b = T(np.zeros((8, 16)), ("y", "x"))
+    shade[config(blocks=(2, 2), threads=(4, 8))](b)  # tile form: SAME kernel body
+    np.testing.assert_allclose(b.to_numpy(), np.fromfunction(lambda i, j: i * 100.0 + j, (8, 16)))
 
 
 @P9

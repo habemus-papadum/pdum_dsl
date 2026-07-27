@@ -324,7 +324,6 @@ def _fresh_context(kind: str) -> dict:
         "k.uniform_size": 0,
         "k.arg_plans": {},
         "k.geom": None,
-        "k.globals": {},
         "k.grid_node": None,
         "g.claims": {},
         "g.invalid": {},

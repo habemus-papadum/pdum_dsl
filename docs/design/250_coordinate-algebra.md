@@ -106,6 +106,35 @@ the style is `x * 0.5`, never `x / 2`. (Blanket enforcement of the
 int/float boundary awaits the carrier machinery of the dtype era;
 recorded, not half-built.)
 
+**The index algebra (owner-ruled, P8.6c).** Coordinates admit no
+arithmetic — but **layout isomorphisms induce coordinate maps**, and
+that is the whole index algebra: the layout algebra acting on points,
+one map per op as consumers appear. `rename` is the trivial map. The
+merge map is `global_thread_idx(block, thread, grid)` — the coordinate
+face of layout `merge`: it consumes the raw (block, thread) pair and
+returns Coordinates on the writable's FLAT frames, the affine
+evaluation `b·T + t` performed inside the algebra with `T` read from
+the grid layout — correct by construction. The inverse direction
+(global→raw) stays banned: div/mod is piecewise, and the algebra is
+deliberately fine→coarse. `global_idx("y", "x")` is the STANDARD door
+— an ambient intrinsic *defined* as the merge over the raws (the raws
+remain the primitives; a backend may bind the name to
+`thread_position_in_grid`): my position in the writable lattice, one
+uniform meaning under every geometry, degenerating to the thread pair
+structurally under one block (the grid IS the flat lattice — the old
+coincidence as a theorem, not a spelling). `thread_idx` is thereby
+re-scoped, not deprecated: it is the primitive for genuinely
+block-local work (split-aligned tensors, shared memory, the tile
+tier) and the definitional substrate of `global_idx`. Store legality
+is TYPED: a store index whose frame is the writable's flat dim IS the
+declared global — only the merge map mints those — so the merge-back
+needs no registry. Derivative slopes ride the maps (`f32` slope 1,
+`rename` slope 1, merge slope 1 in the thread direction and `T` in
+the block direction), which is what makes `with_respect_to` a
+frame-targeted operator when the AA work returns to it — d/d(unit
+step of the writable frame), well-defined under any geometry; with
+charts, d/d(phys) exactly.
+
 ## 4. Factories — where coordinates come from
 
 Each tier has one factory, and they rhyme:

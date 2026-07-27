@@ -21,7 +21,19 @@ from .compute import Marker, Reducer, extent, iota, pointwise, pw, red, reduce, 
 from .coords import Coordinate, Displacement, Frame, Slice
 from .dtypes import CARRIERS, as_dtype, bfloat16, carrier_of
 from .guarded import Guard, GuardedLayout, pad_layout, stencil_layout
-from .kernel import Config, block_idx, compute, config, f32, global_thread_idx, grid_layout, i32, rename, thread_idx
+from .kernel import (
+    Config,
+    block_idx,
+    compute,
+    config,
+    f32,
+    global_idx,
+    global_thread_idx,
+    grid_layout,
+    i32,
+    rename,
+    thread_idx,
+)
 from .layout import Dim, Injectivity, Layout, as_range
 from .mdsl import CompositeMarker, CompositeReducer, defmarker, defreducer, node_digest
 from .memory import MemoryReport, peak_memory
@@ -66,6 +78,7 @@ __all__ = [
     "thread_idx",
     "block_idx",
     "grid_layout",
+    "global_idx",
     "global_thread_idx",
     "infer_signatures",
     "marker_signature",

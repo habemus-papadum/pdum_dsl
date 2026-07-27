@@ -110,9 +110,14 @@ f32 = _Intrinsic("f32")  # the explicit coercion doors (250 §3): a Coordinate
 i32 = _Intrinsic("i32")  # is not a number; these name the value type it becomes
 rename = _Intrinsic("rename")  # the first adapter: re-associate a Coordinate with another dim name
 # The stdlib device function over the full triple (block, thread, grid) — layout
-# evaluation. The kernel tier binds the NAME to the computed affine map
-# (S.3: declarations over recognition; CUDA's computed floor, Metal's built-in).
+# evaluation: the MERGE MAP, the coordinate face of layout merge (250). The
+# kernel tier binds the NAME to the computed affine map (S.3: declarations
+# over recognition; CUDA's computed floor, Metal's built-in).
 global_thread_idx = _Intrinsic("global_thread_idx")
+# The standard door: my position in the WRITABLE lattice, any geometry —
+# DEFINED as the merge map over the raws; under one block it degenerates
+# to the thread pair structurally (the grid IS the flat lattice).
+global_idx = _Intrinsic("global_idx")
 
 
 @dataclass(frozen=True)
@@ -459,7 +464,6 @@ def _global_from_raws(ctx, blocks, threads, g, node):
             raise ValueError("global_thread_idx wants the raw (block, thread) Coordinate pair and grid_layout()")
         t_name = t.type.frame.name
         if _norm_geom(c["k.geom"]) is None:  # one block: the identity map — the raw IS the global coordinate
-            c["k.globals"][id(t)] = t_name
             out.append(t)
             continue
         extent = next((d.size for d in g.dims if d.name == t_name), None)
@@ -474,9 +478,7 @@ def _global_from_raws(ctx, blocks, threads, g, node):
         if frame is None:  # pairs form: no flat dim exists — a value-only coordinate frame
             bsize = b.type.frame.size if isinstance(b, Node) and isinstance(b.type, CoordType) else 1
             frame = Frame(t_name, 0, extent * bsize)
-        gnode = ctx.emit("tl.coord", chain, node=node, frame=frame)
-        c["k.globals"][id(gnode)] = axis
-        out.append(gnode)
+        out.append(ctx.emit("tl.coord", chain, node=node, frame=frame))
     return tuple(out)
 
 
@@ -495,6 +497,12 @@ def _k_call(ctx, node):
         if isinstance(obj, _Intrinsic) and obj.name == "global_thread_idx":
             b_arg, t_arg, g = _lower_args(ctx, node)
             return _global_from_raws(ctx, b_arg, t_arg, g, node)
+        if isinstance(obj, _Intrinsic) and obj.name == "global_idx":
+            lattice = ctx.root.params[-1]
+            names = [cst.value for cst in node.args]
+            b = tuple(_ambient_iota(ctx, "block_idx", i, n, lattice, node) for i, n in enumerate(names))
+            t = tuple(_ambient_iota(ctx, "thread_idx", i, n, lattice, node) for i, n in enumerate(names))
+            return _global_from_raws(ctx, b, t, _grid_layout_of(ctx), node)
         if isinstance(obj, _Intrinsic) and obj.name in ("f32", "i32"):
             (v,) = _lower_args(ctx, node)
             return _coerce_scalar(obj.name, v)
@@ -633,7 +641,7 @@ def _fn_arg(ctx, handle, args, out_spec, node):
     return _fn_arg_oracle(ctx, handle, args, out_spec, node, pname, wrap)
 
 
-_AMBIENT_NAMES = frozenset({"thread_idx", "block_idx", "grid_layout", "global_thread_idx"})
+_AMBIENT_NAMES = frozenset({"thread_idx", "block_idx", "grid_layout", "global_thread_idx", "global_idx"})
 
 
 def _references_ambient(handle) -> bool:
@@ -870,12 +878,14 @@ def _k_assign(ctx, node):
             dims = tuple((d.name, (d.start, d.stop)) for d in target.type.layout.dims)
             value = ctx.emit("tl.const", node=node, value=float(value), dims=dims)
         elif isinstance(value.type, TensorType):
-            # a store at DECLARED GLOBAL indices merges the split-lattice value
-            # back to the flat target, axis by axis (the tile form's other half)
+            # a store at GLOBAL indices merges the split-lattice value back
+            # to the flat target, axis by axis (the tile form's other half);
+            # the check is TYPED — a coordinate whose frame is the flat dim
+            # IS the declared global (only the merge map mints those)
             present = {d.name for d in value.type.dims}
             for v in idx_nodes:
-                a = c["k.globals"].get(id(v))
-                if a and f"{a}.b" in present:
+                a = v.type.frame.name
+                if f"{a}.b" in present:
                     value = ctx.emit("tl.merge", value, node=node, parts=(f"{a}.b", f"{a}.t"), name=a)
         tok = c.get("tl.token") or ctx.emit("tl.token", node=node)
         c["tl.token"] = ctx.emit("tl.store", tok, target, value, node=node)
@@ -1120,7 +1130,6 @@ def _compile(fn, args, tap_names=(), geom=None) -> _Artifact:
             "k.uniform_size": 0,
             "k.arg_plans": {},
             "k.geom": geom,
-            "k.globals": {},
             "k.grid_node": None,
         }
     )
