@@ -8,7 +8,6 @@ from pdum.dsl import jit
 from pdum.dsl.markers import sqrt  # noqa: F401 — bare in device bodies
 from pdum.tl import Tensor
 from pdum.tl.graphics import fragment, pair, position, render, vertex, vertex_index  # noqa: F401
-
 from wgsl_executor import Untranslatable, render_wgpu
 
 
