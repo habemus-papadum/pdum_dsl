@@ -17,6 +17,9 @@ Chosen to SPAN mechanisms, not to crawl the architecture gallery:
   staggered grid (exact half-integer charts, recharted differences)
 - moe: capacity-factor top-k routing — the §1.9 indexing family end to
   end (argtopk, aligned take, prefix-sum slots, over-scatter, take-back)
+- trainer: the unrolled trainer (§6.7) — K sampled decode chunks in ONE
+  Program: §1.8 straight-through top-k sampling over the §1.9 family,
+  KV reuse as ordinary dataflow (pad+add concat), checkpoint-replay gate
 
 Recorded boundaries (LEVELS.md): KV-cache decode (mutation), dynamic
 shapes, fully dynamic MoE dispatch (a dynamic-shapes problem).
@@ -28,6 +31,7 @@ from .llama import LlamaConfig, llama_block
 from .megatron import MegatronConfig, megatron_block
 from .moe import MoEConfig, moe
 from .physics import fdtd1d_staggered, heat2d
+from .trainer import TrainerConfig, unrolled_trainer
 from .zoo_common import ZooModel
 
 __all__ = [
@@ -36,6 +40,8 @@ __all__ = [
     "MegatronConfig",
     "MoEConfig",
     "moe",
+    "TrainerConfig",
+    "unrolled_trainer",
     "ZooModel",
     "megatron_block",
     "fdtd1d_staggered",

@@ -14,6 +14,7 @@ from pdum.tl.zoo import (
     moe,
     qknorm_attention,
     sliding_attention,
+    unrolled_trainer,
 )
 
 ENTRIES = {
@@ -27,6 +28,7 @@ ENTRIES = {
     "heat2d": heat2d,
     "fdtd": fdtd1d_staggered,
     "moe": moe,
+    "trainer": unrolled_trainer,
 }
 
 
@@ -97,3 +99,32 @@ def test_fdtd_gradient_carries_the_staggered_chart():
     assert xd.chart == m.inputs["E0"].layout.dim("x").chart  # integer grid
     gH = env[grads["H0"]]
     assert gH.layout.dim("x").chart == m.inputs["H0"].layout.dim("x").chart  # half grid
+
+
+def test_the_unrolled_trainer_is_the_p9_end_to_end_gate():
+    """200 §6.7: K sampled decode chunks in ONE Program — indexing (§1.9),
+    sampling (§1.8 straight-through; objective-FD is blind to the declared
+    estimator BY DESIGN, so the gates are the declared facts), KV reuse as
+    ordinary dataflow, and checkpointing-with-replay together."""
+    from pdum.tl.transforms import checkpoint
+
+    m = unrolled_trainer()
+    jp, grads = grad(m.program, m.out, m.inputs)
+    env = run(jp, m.inputs)
+    # integer inputs are gradient-free; noise participates through the soft path
+    assert grads["ids"] is None and grads["tgt"] is None
+    assert grads["gum1"] is not None
+    # the temperature genuinely trains (through the straight-through soft path)
+    d_tau = env[grads["tau"]].to_numpy()
+    assert np.isfinite(d_tau).all() and float(np.abs(d_tau)) > 0
+    # the tied wte accumulates from every chunk (embedding gathers + heads)
+    d_wte = env[grads["wte"]].to_numpy()
+    assert np.isfinite(d_wte).all() and (np.abs(d_wte).sum(axis=1) > 0).any()
+    # THE REPLAY GATE: checkpointed recompute reproduces every gradient
+    # exactly (deterministic replay — argtopk/take included), while the
+    # fwd/bwd boundary shrinks
+    ck = checkpoint(jp, m.out, m.inputs)
+    assert ck.bytes_after < ck.bytes_before
+    ec = run(ck.program, m.inputs)
+    for v in ("tau", "wte", "wq", "wk", "wv", "wo", "wpe"):
+        np.testing.assert_allclose(ec[grads[v]].to_numpy(), env[grads[v]].to_numpy(), rtol=1e-10, err_msg=v)

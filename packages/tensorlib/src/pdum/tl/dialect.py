@@ -500,8 +500,10 @@ def _tl_call(ctx, node):
                 v = None
             if isinstance(v, int) and not isinstance(v, bool):
                 # the literal's own type is the carrier declaration (the
-                # eager face's law): an int broadcasts at integer carrier —
-                # index arithmetic (§1.9 linearizations) never rides f64
+                # eager face's law): an int MATERIALIZES at integer carrier
+                # over the ref's lattice — index arithmetic (§1.9
+                # linearizations) never rides f64. Floats stay the DEFERRED
+                # scalar (pointwise's broadcast law; fold steps require it).
                 ref = ctx.lower(node.args[0])
                 dims = tuple((d.name, (d.start, d.stop)) for d in ref.type.layout.dims)
                 return ctx.emit("tl.const", node=node, value=v, dims=dims, dtype="int64")
@@ -537,8 +539,15 @@ def _tl_call(ctx, node):
             arity = 2 if obj in (_eager_take, _eager_scatter_add) else 1
             if len(node.args) != arity:
                 raise TypeError(f"{name} takes {arity} tensor operand(s) — dim/extent/k/k_name are keywords")
-            ops = tuple(ctx.lower(a) for a in node.args)
+            ops = [ctx.lower(a) for a in node.args]
             kw = {k.arg: _host(ctx, k.value) for k in node.keywords}
+            if name == "scatter_add" and not hasattr(ops[0], "type"):
+                # a scalar values operand (a deferred const_like float)
+                # materializes over the IDX lattice: one contribution per
+                # index element — the count-scatter
+                idx_lay = ops[1].type.layout
+                dims = tuple((d.name, (d.start, d.stop)) for d in idx_lay.dims)
+                ops[0] = ctx.emit("tl.const", node=node, value=float(ops[0]), dims=dims)
             return ctx.emit(f"tl.{name}", *ops, node=node, **kw)
         if obj is _eager_contract:  # ONE visible line over the primitives (S.1)
             a, bb = (ctx.lower(x) for x in node.args)
