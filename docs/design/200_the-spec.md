@@ -1785,7 +1785,12 @@ boundary sample with both instances (KV-decode and the audio delay
 line) and its erasure obligation (the same surface program, bufferized,
 reproduces the row-write); **device-resident persistent state** and the
 epoch/ownership handshake for adopted device buffers (on the
-DLPack-device Buffer, §4); the **requested-output (tap) sets** of
+DLPack-device Buffer, §4) — the COMMITTED residency contract is the
+skip-tagged render-loop cell in the executable syntax tour
+(notebooks/20_syntax_tour.ipynb): transfers are explicit one-time
+boundary acts, residency is a property of the tensor's buffer, the
+render binds the buffer the compute wrote (zero copies in the loop,
+bind groups never user-visible), readback is an explicit act; the **requested-output (tap) sets** of
 derived programs, which define what escapes and therefore what may be
 reused; and the token mechanism from P7, which bufferization consumes
 directly.

@@ -152,3 +152,26 @@ def spiky(img):
 
 def test_markers_and_predicates():
     differential(spiky, lambda: (T(np.zeros((5, 7)), ("y", "x")),))
+
+
+def _wrt_probe():
+    @jit()
+    def go(y, x):
+        d = sqrt(y * y + x * x + 1.0)
+        return with_respect_to(d, y)  # noqa: F821 — = y / sqrt(y² + x² + 1)
+
+    return go
+
+
+@compute
+def ambient_derivative(f, img):
+    i, j = global_idx("y", "x")
+    img[i, j] = f(f32(i), f32(j))
+
+
+def test_ambient_derivative_differential():
+    """The wrt-ambient derivative on the DEVICE: the tangent engine
+    splices at lower time, so the derivative reaches WGSL as ordinary
+    scalar rows — differentially exact against the f64 reference within
+    the stated f32 tolerance."""
+    differential(ambient_derivative, lambda: (_wrt_probe(), T(np.zeros((5, 7)), ("y", "x"))))
