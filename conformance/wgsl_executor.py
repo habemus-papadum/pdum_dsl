@@ -298,3 +298,232 @@ def wgpu_artifact(art):
     swapped — launch() then runs staging/rebind/overlap identically and
     lands on the device."""
     return replace(art, executor=compile_wgsl(art))
+
+
+# --- the render path: the quad+f golden (the P8 gate's named item) -----------
+
+
+def _lit_of(v) -> str:
+    s = repr(float(v))
+    return s if ("." in s or "e" in s or "inf" in s or "nan" in s) else s + ".0"
+
+
+class _Gen:
+    """A per-stage expression generator over the shared marker tables;
+    the stage supplies its LEAF row (ambient / params / slots)."""
+
+    def __init__(self, leaf):
+        self.leaf = leaf
+        self.lines: list[str] = []
+        self.names: dict[int, str] = {}
+        self.bools: set[int] = set()
+        self.n = 0
+
+    def go(self, node):
+        if id(node) in self.names:
+            return self.names[id(node)]
+        expr, is_bool = self.expr(node)
+        var = f"e{self.n}"
+        self.n += 1
+        self.lines.append(f"  let {var}: {'bool' if is_bool else 'f32'} = {expr};")
+        self.names[id(node)] = var
+        if is_bool:
+            self.bools.add(id(node))
+        return var
+
+    def operand(self, node):
+        v = self.go(node)
+        return f"select(0.0, 1.0, {v})" if id(node) in self.bools else v
+
+    def cond(self, node):
+        v = self.go(node)
+        return v if id(node) in self.bools else f"({v} != 0.0)"
+
+    def expr(self, node):
+        got = self.leaf(node, self)
+        if got is not None:
+            return got
+        attrs = dict(node.attrs)
+        op = node.op
+        if op in ("core.const", "tl.const"):
+            return _lit_of(attrs["value"]), False
+        if op == "tl.pointwise":
+            f = attrs["f"]
+            ops = [self.operand(a) for a in node.args]
+            if f in _INFIX:
+                return f"({ops[0]} {_INFIX[f]} {ops[1]})", False
+            if f == "neg":
+                return f"(-{ops[0]})", False
+            if f in _CMP:
+                return f"({ops[0]} {_CMP[f]} {ops[1]})", True
+            if f == "where":
+                return f"select({ops[2]}, {ops[1]}, {self.cond(node.args[0])})", False
+            if f in ("maximum", "minimum"):
+                return f"{'max' if f == 'maximum' else 'min'}({ops[0]}, {ops[1]})", False
+            if f in _FNS:
+                return f"{_FNS[f]}({ops[0]})", False
+            raise Untranslatable(f"marker {f!r}")
+        if op in _CORE_INFIX:
+            a, b = (self.operand(x) for x in node.args)
+            return f"({a} {_CORE_INFIX[op]} {b})", False
+        if op == "core.neg":
+            return f"(-{self.operand(node.args[0])})", False
+        if op == "core.cmp":
+            a, b = (self.operand(x) for x in node.args)
+            return f"({a} {_CMP[attrs['pred']]} {b})", True
+        if op == "core.select":
+            t_, e_ = self.operand(node.args[1]), self.operand(node.args[2])
+            return f"select({e_}, {t_}, {self.cond(node.args[0])})", False
+        if op.startswith("pw."):
+            f = op[3:]
+            if f in _FNS:
+                return f"{_FNS[f]}({self.operand(node.args[0])})", False
+            if f in ("maximum", "minimum"):
+                a, b = (self.operand(x) for x in node.args)
+                return f"{'max' if f == 'maximum' else 'min'}({a}, {b})", False
+        raise Untranslatable(op)
+
+
+def render_wgpu(pso, *fs_args, shape):
+    """The PSO through a REAL vertex/fragment pipeline into an offscreen
+    r32float target — the reference interpolator's device twin (exact
+    f32 readback, no rgba8 quantization). Returns the (H, W) image in
+    the reference's row convention (row 0 at NDC y = -1; WebGPU's y-up
+    flips at readback)."""
+    from pdum.dsl.pack import pack_into
+    from pdum.tl.graphics import _lower_fragment, _lower_vertex
+    from pdum.tl.producer import _captured
+
+    device = _device()
+    import wgpu
+
+    H, W = shape
+    v_region, vnames, flats, count, lattice = _lower_vertex(pso.vs, ())
+    if lattice is None:
+        raise Untranslatable("vertex buffers on the device (the vid-only subset renders today)")
+
+    def v_leaf(n, g):
+        if n.op == "tl.iota" and dict(n.attrs).get("name") == "vid":
+            return "f32(vid)", False
+        if n.op == "core.param":
+            raise Untranslatable("a vertex buffer param on the device")
+        return None
+
+    vg = _Gen(v_leaf)
+    v_outs = [vg.operand(a) for a in v_region.body[-1].args[0].args]  # (px, py, *varyings)
+
+    # the fragment, lowered over the pixel lattice with varyings as params
+    ref_lat = Tensor.from_numpy(np.zeros((H, W)), ("y", "x"))
+    from pdum.tl.dialect import tensor_type
+
+    v_types = {n2: tensor_type(ref_lat) for n2 in vnames}
+    f_region, f_ctx, _, fparams = _lower_fragment(pso.fs, tuple(fs_args), v_types)
+    if f_ctx["k.fn_markers"]:
+        raise Untranslatable("an oracle-class fragment fn-argument on the device")
+    bound = dict(zip(fparams, fs_args))
+
+    slots, staging = [], bytearray(f_ctx["k.uniform_size"])
+    env = _captured(pso.fs.fn) if f_ctx["k.uniforms"] else {}
+    for name, nd in f_ctx["k.uniforms"].items():
+        at = dict(nd.attrs)
+        struct.pack_into(at["fmt"], staging, at["offset"], env[name])
+        slots.append((at["offset"], at["fmt"]))
+    for blk in f_ctx["k.arg_plans"].values():
+        f = bound[blk["pname"]] if blk["pname"] is not None else blk["fixed"]
+        if blk["wrap"] is not None:
+            f = blk["wrap"](f)
+        view = memoryview(staging)[blk["base"] : blk["base"] + blk["plan"].staging_size]
+        pack_into(blk["plan"], view, blk["extract"](f.captures, ()))
+        for s2 in blk["plan"].slots:
+            slots.append((blk["base"] + s2.dest.offset, s2.dest.fmt))
+    slots.sort()
+    slot_index = {off: i for i, (off, _) in enumerate(slots)}
+    f_params = list(f_region.params)
+
+    def f_leaf(n, g):
+        if n.op == "core.param":
+            return f"vin.f{f_params.index(n)}", False
+        if n.op == "abi.slot":
+            return f"U[{slot_index[dict(n.attrs)['offset']]}]", False
+        return None
+
+    fg = _Gen(f_leaf)
+    f_out = fg.operand(f_region.body[-1].args[0])
+
+    fields = []
+    for i, n2 in enumerate(vnames):
+        interp = " @interpolate(flat)" if n2 in flats else ""
+        fields.append(f"  @location({i}){interp} f{i}: f32,")
+    src_lines = [
+        "struct VOut {",
+        "  @builtin(position) pos: vec4<f32>,",
+        *fields,
+        "}",
+    ]
+    if slots:
+        src_lines.append("@group(0) @binding(0) var<storage, read> U: array<f32>;")
+    src_lines += [
+        "@vertex",
+        "fn vs_main(@builtin(vertex_index) vid: u32) -> VOut {",
+        *vg.lines,
+        "  var o: VOut;",
+        f"  o.pos = vec4<f32>({v_outs[0]}, {v_outs[1]}, 0.0, 1.0);",
+        *[f"  o.f{i} = {v};" for i, v in enumerate(v_outs[2:])],
+        "  return o;",
+        "}",
+        "@fragment",
+        "fn fs_main(vin: VOut) -> @location(0) f32 {",
+        *fg.lines,
+        f"  return {f_out};",
+        "}",
+    ]
+    source = "\n".join(src_lines)
+
+    module = device.create_shader_module(code=source)
+    pipeline = device.create_render_pipeline(
+        layout="auto",
+        vertex={"module": module, "entry_point": "vs_main", "buffers": []},
+        primitive={"topology": wgpu.PrimitiveTopology.triangle_list},
+        fragment={
+            "module": module,
+            "entry_point": "fs_main",
+            "targets": [{"format": wgpu.TextureFormat.r32float}],
+        },
+    )
+    tex = device.create_texture(
+        size=(W, H, 1),
+        format=wgpu.TextureFormat.r32float,
+        usage=wgpu.TextureUsage.RENDER_ATTACHMENT | wgpu.TextureUsage.COPY_SRC,
+    )
+    enc = device.create_command_encoder()
+    rp = enc.begin_render_pass(
+        color_attachments=[
+            {
+                "view": tex.create_view(),
+                "clear_value": (0.0, 0.0, 0.0, 0.0),
+                "load_op": wgpu.LoadOp.clear,
+                "store_op": wgpu.StoreOp.store,
+            }
+        ]
+    )
+    rp.set_pipeline(pipeline)
+    if slots:
+        uvals = [struct.unpack_from(fmt, staging, off)[0] for off, fmt in slots]
+        ubuf = device.create_buffer_with_data(
+            data=np.asarray(uvals, dtype=np.float32).tobytes(), usage=wgpu.BufferUsage.STORAGE
+        )
+        bind = device.create_bind_group(
+            layout=pipeline.get_bind_group_layout(0),
+            entries=[{"binding": 0, "resource": {"buffer": ubuf, "offset": 0, "size": ubuf.size}}],
+        )
+        rp.set_bind_group(0, bind)
+    rp.draw(count)
+    rp.end()
+    bpr = (W * 4 + 255) // 256 * 256
+    out_buf = device.create_buffer(size=bpr * H, usage=wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.COPY_SRC)
+    enc.copy_texture_to_buffer(
+        {"texture": tex}, {"buffer": out_buf, "bytes_per_row": bpr, "rows_per_image": H}, (W, H, 1)
+    )
+    device.queue.submit([enc.finish()])
+    raw = np.frombuffer(device.queue.read_buffer(out_buf), dtype=np.float32).reshape(H, bpr // 4)[:, :W]
+    return np.flipud(raw).astype(np.float64)  # WebGPU y-up -> the reference row convention
