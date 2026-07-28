@@ -136,16 +136,35 @@ machine, so cross-vendor exactness is untested until CUDA/Vulkan).
   `max_compute_workgroups_per_dimension` at 65535 where Metal has no
   such limit.
 - **Op rows are near-universal across C-family shading languages**:
-  100% of emitted WGSL statements convert to MSL under three lexical
-  rules (cast spelling, float-literal suffix, declaration form); no
+  100% of emitted WGSL statements convert to MSL under FOUR lexical
+  rules — cast spelling, float-literal suffix, declaration form, and
+  (render-era addendum, measured over the full vertex+fragment
+  pipeline: 91/91 statements) **vector type spelling**
+  (`vec4<f32>` → `float4`), which fires exactly once, on the
+  clip-space position, because compute is scalar-only today. No
   operator/builtin row differs, `select` argument order included.
   Expect similar for CUDA C — the expression emitter and marker tables
   should exist once, not per backend (they exist three times today).
-- **The binding table is contract DATA, never implicit in text.**
-  WebGPU's `layout="auto"` prunes unused bindings (a runtime rule the
-  backend must anticipate in source); Metal has no bind-group object
-  (buffers set by index, unused arguments harmless); CUDA passes
-  pointers. Implicit binding-in-text does not survive three targets.
+  The vector rule is the load-bearing one for the CUDA era: the core
+  IR already carries a `Vec` type that `typeof` never produces, and
+  the standard coalescing idiom (vectorized `float4`/`ldg` loads) will
+  be the first compute consumer — the evidence says admitting it costs
+  the emitter ONE row, and the real cost lives in the shell
+  (declarations, binding tables), not the expression language.
+- **The binding table is contract DATA, never implicit in text — and
+  it is PER-STAGE data.** WebGPU's `layout="auto"` prunes unused
+  bindings (a runtime rule the backend must anticipate in source);
+  Metal has no bind-group object (buffers set by index, unused
+  arguments harmless); CUDA passes pointers. Implicit binding-in-text
+  does not survive three targets. The per-stage half is the render-era
+  sharpening: WGSL gives both pipeline stages ONE shared index space,
+  while Metal's `setVertexBuffer:atIndex:` and
+  `setFragmentBuffer:atIndex:` index two separate tables — the same
+  logical resource carries two different indices depending on which
+  stage reads it (measured: the fragment slot buffer is `@binding(2)`
+  in WGSL and `[[buffer(0)]]` in MSL for one program). A backend
+  interface returning one flat binding list is a WebGPU-shaped
+  assumption.
 - **The staging plan needs a device-representation clause.** The plan
   describes HOST staging bytes only; every backend so far has
   independently invented "uniforms arrive as a flat f32 array" — and
@@ -180,6 +199,58 @@ machine, so cross-vendor exactness is untested until CUDA/Vulkan).
   backend — the device's share is under one part in a thousand. Until
   that path is fixed or routed around, a transform-run-measure loop
   over device executors measures the repack, not the program.
+
+## Warm-loop learnings (the dual-backend windowed demo, 2026-07)
+
+Evidence: `explorations/graphics/demo/FINDINGS.md` on
+`worktree-graphics-design` (origin) — one program, five mouse-driven
+uniforms, native WebGPU and Metal windows, cross-backend
+bitwise-identical including rasterization, compile-once asserted in
+code across the animated run. These are the learnings that only
+appear once a compiled artifact is REUSED across many launches with
+changing uniforms — the shape every L4-era measured-optimization loop
+will have.
+
+- **The encode primitive is `encode(encoder, target, clear=...)`,
+  never `encode(pass)`.** WebGPU begins a pass and hands over a pass
+  object; Metal requires the full pass descriptor — attachment, load
+  op, clear — BEFORE any encoder exists, so there is no portable
+  "pass" to hand around: the target and its load op are inseparable
+  from pass creation. This joins workgroup size and the bounds guard
+  in the launch-contract clause family (a per-target decision the
+  backend/runtime pair negotiates, never universal structure).
+- **In-flight synchronization is a launch-contract clause, and the
+  stream/overlap design (200 §8) inherits it.** On unified memory a
+  uniform-slot refresh IS a direct host-memory write — no staging
+  copy exists to hide behind — so a frame still in flight can read
+  torn uniforms. The demo serializes (`waitUntilCompleted` per
+  frame); the real discipline is an in-flight semaphore plus rotating
+  slot buffers. The same applies verbatim to overlapped compute
+  launches over pinned/managed memory in the CUDA era: the moment two
+  launches are in flight, the slot channel needs rotation or
+  versioning. Concrete requirement for the stream design, discovered
+  empirically.
+- **Warmth is unobservable today, and the capture fingerprint makes
+  cold loops SILENT.** The environment fingerprint discriminates
+  `float` from `numpy.float64` — correctly, by the no-magic doctrine
+  (a value's own type is a carrier declaration) — so a uniform
+  derived through numpy math keys a DIFFERENT artifact and the loop
+  recompiles every iteration with no warning; the only symptom is
+  that it quietly stops being warm (measured: a mouse cursor built
+  with `np.cos` recompiled the pipeline per frame). The fix is not
+  coercion (that would be magic); it is OBSERVABILITY: warmth must be
+  assertable, and the existing events seam (exact counts, `expect()`
+  budgets) is the mechanism — a warm loop should pin "zero lowerings,
+  zero pipeline builds" the way budgets pin op counts. The demo's
+  closure-swap guard (layout-compatibility check on a swapped
+  closure) belongs at library tier, not spike tier.
+- **A device golden whose upstream compute ran on the host is quietly
+  a host golden.** f64 `sin` narrowed to f32 is not f32 `sin`
+  (measured: 1.8e-07 on one frame — small enough to pass a loose
+  tolerance, wrong enough to mask real drift). Differential batteries
+  must run the WHOLE upstream chain on the device column, not just
+  the stage under test — directly relevant to the where/select and
+  adversarial-input battery work.
 
 ## Instrumentation methodology (bench, deleted with its demo consumers)
 
