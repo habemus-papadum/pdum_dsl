@@ -202,8 +202,13 @@ This is a test to write the day the store path exists — not a memory.
 ## The refusal voice (seeded as the joint battery at P3)
 
 One shape: **what happened, the principle violated, the quoted fix, the
-source location.** Refusal messages are frozen behavior (the refusal
-contract battery pins them by wording); a drifted message is an API break.
+source location.** Refusal wording is a tripwire, not a wall (owner-relaxed
+2026-07-28, same standing as the line budget): the refusal-contract battery
+pins wording so drift stays deliberate, but a message whose quoted fix or
+principle has changed — or that can say the same thing more clearly in the
+same four-part shape — changes without ceremony, battery repinned in the
+same commit. The owner adjudicates only when the refusal's principle is
+itself changing.
 The oracle rule rides with it: per-element host dispatch is
 debug/oracle-grade; reference execution is always spelled
 (`reference(f)(...)`); a plain call on an unrouted kind refuses — it never

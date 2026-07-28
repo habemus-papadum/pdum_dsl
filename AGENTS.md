@@ -34,7 +34,12 @@ do not suggest releasing unless the user asks about the process.
 ### Design discipline (from 200)
 - The line budget is a tripwire, not a wall: crossing a cap in `scripts/loc_budget.py` is a
   conscious act with the reason recorded there — never silent growth.
-- Refusal messages are frozen behavior (the refusal-contract battery pins wording).
+- Refusal wording is a tripwire, not a wall (owner-relaxed 2026-07-28, same standing as
+  the line budget): the refusal-contract battery pins wording so drift stays DELIBERATE,
+  but a pinned message may change without ceremony when the fix or principle it quotes
+  has changed, or for clarity in the same four-part shape — repin the battery in the
+  same change, batch repins when convenient. Ask the owner only when the PRINCIPLE the
+  refusal states is itself changing, or when in doubt.
 - Oracle execution is always spelled: `reference(f)(...)`. Plain calls on unrouted kinds
   refuse by design — do not "fix" that refusal.
 - Git history is the archive: delete, don't accrete; distill before deleting.
