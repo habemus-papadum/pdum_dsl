@@ -182,16 +182,46 @@ class Tensor:
         return self.buffer.read(loc, self.dtype)
 
     def to_numpy(self, order: tuple[str, ...] | None = None) -> np.ndarray:
-        """Materialize (naively) for testing, coordinates re-based to 0.
+        """Materialize for export/testing, coordinates re-based to 0.
 
         Axis order defaults to the stored (presentation) dim order; pass
         `order` to choose the export order explicitly — order is a property
-        of the export, not of the tensor."""
+        of the export, not of the tensor.
+
+        A plain affine layout over host bytes exports as ONE strided view +
+        copy (the launch-repack fix — the per-element loop was 88–100% of
+        every device launch, 211 §4); guarded layouts (fill) and functional
+        buffers keep the per-element loop, which stays as the differential's
+        ground truth (``_to_numpy_oracle``)."""
         dims = self.layout.dims
         if order is not None:
             if sorted(order) != sorted(self.names):
                 raise KeyError(f"order {order} must be a permutation of {self.names}")
             dims = tuple(self.layout.dim(n) for n in order)
+        fast = self._strided_export(dims)
+        return fast if fast is not None else self._to_numpy_oracle(dims)
+
+    def _strided_export(self, dims) -> np.ndarray | None:
+        """The affine fast path: ``get_loc`` is offset + Σ stride·coord, which
+        IS numpy's strided model — one ndarray-over-the-buffer (the
+        constructor bounds-checks, negative strides included), one copy.
+        None when this tensor's read path is not a pure strided map."""
+        if type(self.layout) is not Layout or type(self.buffer) is not Buffer or self.buffer.data is None:
+            return None
+        try:
+            view = np.ndarray(
+                shape=[d.size for d in dims],
+                dtype=self.dtype,
+                buffer=self.buffer.data,
+                offset=self.layout.offset + sum(d.stride * d.start for d in dims),
+                strides=[d.stride for d in dims],
+            )
+        except (ValueError, TypeError, BufferError):
+            return None  # anything the strided model can't carry: the oracle serves it
+        return view.copy()  # materialize — the export never aliases the buffer
+
+    def _to_numpy_oracle(self, dims) -> np.ndarray:
+        """The per-element ground truth (item() at every coordinate)."""
         names = [d.name for d in dims]
         out = np.zeros([d.size for d in dims], dtype=self.dtype)
         for tup in itertools.product(*(range(d.start, d.stop) for d in dims)):

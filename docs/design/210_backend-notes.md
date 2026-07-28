@@ -180,6 +180,14 @@ machine, so cross-vendor exactness is untested until CUDA/Vulkan).
   backend — the device's share is under one part in a thousand. Until
   that path is fixed or routed around, a transform-run-measure loop
   over device executors measures the repack, not the program.
+  **FIXED (2026-07-28, with the 290 era):** the affine law made the fix
+  one strided view — `get_loc = offset + Σ stride·coord` IS numpy's
+  strided model, so plain layouts over host bytes export as one
+  bounds-checked ndarray + copy (measured 550–1000× on 256²–1024²;
+  guarded/functional reads keep the per-element loop, which survives as
+  `_to_numpy_oracle`, the differential's ground truth). Re-measure the
+  launch split before trusting the old ratios; adoption-era zero-copy
+  paths remain the real target.
 
 ## Instrumentation methodology (bench, deleted with its demo consumers)
 
