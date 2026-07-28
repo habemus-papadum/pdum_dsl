@@ -11,7 +11,7 @@
 #
 # Bump `version` on any row change; conformance skips quote their row.
 
-version = 1
+version = 2
 
 # --- op rows: compute-tier vocabulary with no device row (WGSL/MSL row sets
 # are identical — 211 §2c) -----------------------------------------------------
@@ -78,7 +78,7 @@ guard = "test_multi_block_geometry_is_ledgered"
 [[facets]]
 tier = "compute"
 key = "oracle-fn-arg"
-reason = "unliftable fn-arg bodies drop to per-element oracle dispatch — LOUDLY (kernel.oracle_fallback event)"
+reason = "unliftable fn-arg bodies drop to per-element oracle dispatch — LOUDLY (kernel.oracle_fallback event); bounded loops left this class at 300 (the flat masked form splices and translates)"
 guard = "test_oracle_fallback_is_loud"
 
 [[facets]]

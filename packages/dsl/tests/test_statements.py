@@ -1,13 +1,14 @@
 """Step 11 — statement `if`/`for`: strict joins, loop carries, single tail
 return, and the refusals that define the bounded-loop subset."""
 
-import pdum.dsl  # noqa: F401
 import pytest
 from pdum.dsl.api import jit
 from pdum.dsl.cache import no_compile
 from pdum.dsl.ir import VerifyError
 from pdum.dsl.lower import MissingRule
 from pdum.dsl.reference import reference
+
+import pdum.dsl  # noqa: F401
 
 
 def test_if_statement_joins_and_stays_lazy():
@@ -211,10 +212,11 @@ def test_loop_binder_keys_are_deterministic():
     kernel must produce the SAME content key no matter what lowered before
     it through a shared rules dict (review-caught: a shared counter made
     artifact keys depend on process history)."""
-    from pdum.dsl import types as T
     from pdum.dsl.lower import lower_handle
     from pdum.dsl.ops import CORE_OPS
     from pdum.dsl.registry import DEFAULT
+
+    from pdum.dsl import types as T
 
     def build():
         @jit()
@@ -253,3 +255,100 @@ def test_strict_join_type_mismatch_is_loud():
 
     with pytest.raises((TypeError, VerifyError), match="strict join"):
         reference(f)(1.0)
+
+
+# --- the bounded loop's declared early-exit (300) -----------------------------
+
+
+def test_bounded_loop_early_exit_matches_python_break():
+    """`if cond: break` is the DECLARED early-exit: reference semantics =
+    run to the bound and mask after exit — for values, identical to a real
+    break, which is exactly what the host renders."""
+
+    @jit()
+    def march(x):
+        t = 0.0
+        for _ in range(8):
+            h = x - t
+            if h < 0.125:
+                break
+            t = t + h * 0.5
+        return t
+
+    def py(x):
+        t = 0.0
+        for _ in range(8):
+            h = x - t
+            if h < 0.125:
+                break
+            t = t + h * 0.5
+        return t
+
+    for x in (0.05, 0.5, 1.0, 3.0, 10.0):  # never-entered, mid-exit, runs-to-bound
+        assert reference(march)(x) == py(x)
+
+
+def test_bounded_loop_exit_before_update_keeps_break_point_values():
+    """The value AT the break point wins: updates after the exit clause in
+    the firing iteration do not apply."""
+
+    @jit()
+    def f(x):
+        acc = x
+        for i in range(5):
+            acc = acc + 1.0
+            if acc > 3.0:
+                break
+            acc = acc + 100.0  # post-exit update: masked away when the exit fires
+        return acc
+
+    def py(x):
+        acc = x
+        for _ in range(5):
+            acc = acc + 1.0
+            if acc > 3.0:
+                break
+            acc = acc + 100.0
+        return acc
+
+    for x in (0.0, 2.5, 300.0):
+        assert reference(f)(x) == py(x)
+
+
+def test_bounded_loop_refusals():
+    @jit()
+    def two_exits(x):
+        acc = x
+        for _ in range(4):
+            if acc > 1.0:
+                break
+            acc = acc + 1.0
+            if acc > 2.0:
+                break
+        return acc
+
+    with pytest.raises(MissingRule, match="one declared early-exit"):
+        reference(two_exits)(0.0)
+
+    @jit()
+    def bare_break(x):
+        acc = x
+        for _ in range(4):
+            break
+        return acc
+
+    with pytest.raises(MissingRule, match="`break` is not in the base pack"):
+        reference(bare_break)(0.0)
+
+    @jit()
+    def nested_break(x):
+        acc = x
+        for _ in range(4):
+            if acc > 1.0:
+                if acc > 2.0:
+                    break
+                acc = acc + 1.0
+        return acc
+
+    with pytest.raises(MissingRule, match="`break` is not in the base pack"):
+        reference(nested_break)(0.0)

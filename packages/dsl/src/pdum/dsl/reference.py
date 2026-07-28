@@ -125,6 +125,9 @@ def render(region: Region, plan: PackPlan, backend=None, name: str = "kernel") -
         out.append(f"{ind}    {nm[id(carry)]} = {res}")
         out += emit_block((*path, (id(node), 0)), ind + "    ")
         out.append(f"{ind}    {res} = {result_of(0)}")
+        if dict(node.attrs).get("exit"):  # 300: (carry, done) — the host takes the break license
+            out.append(f"{ind}    {res}, _done = {res}")
+            out.append(f"{ind}    if _done: break")
         return out
 
     lines, names, result = emit_dominated(region, statement, branch_join, indent="    ", loop=loop_join)

@@ -61,14 +61,14 @@ from dataclasses import replace as _dc_replace
 
 import numpy as np
 from pdum.dsl.cache import ArtifactCache, Memo
-from pdum.dsl.ir import Node, Region
+from pdum.dsl.ir import Builder, Node, Region
 from pdum.dsl.lower import Lowerer, check_coherence, lower_handle
 from pdum.dsl.lower import fmt as _fmt
 from pdum.dsl.ops import CORE_OPS
 from pdum.dsl.pack import _FMTS, ABI_OPS, NORMALIZE_ENV, build_extractor, pack_into, plan_from_types
 from pdum.dsl.registry import DEFAULT
 from pdum.dsl.rewrite import run_stage
-from pdum.dsl.types import LiteralValue, Record, f64
+from pdum.dsl.types import LiteralValue, Record, boolean, f64, i64
 from pdum.dsl.value import _assign as _value_assign
 from pdum.dsl.value import _name as _value_name
 from pdum.dsl.value import _subscript as _value_subscript
@@ -604,6 +604,77 @@ def _scalar_region(handle, nargs):
     return run_stage(region, NORMALIZE_ENV, ops), named
 
 
+def _flatten_fors(region, named):
+    """The bounded loop's kernel lowering (300): unroll static-bound
+    ``core.for`` loops into the FLAT MASKED FORM — straight-line select
+    chains the existing lift machinery serves. With a declared early-exit
+    (the ``exit`` attr; the region yields ``(carry, done)``) the carry
+    freezes once done fires, so values are IDENTICAL to a real break;
+    only cost differs (the ruled 2.2–4.0×, 211 §1.4). Loops with
+    non-static bounds stay structured — the oracle serves them, loudly.
+    ``named`` remaps through the rebuild; per-iteration bindings drop
+    (a name bound every iteration could never claim — the tagless law)."""
+    b = Builder({**CORE_OPS, **ABI_OPS})
+
+    def go(n, memo):
+        got = memo.get(id(n))
+        if got is not None:
+            return got
+        if n.op == "core.param":
+            out = n
+        elif (
+            n.op == "core.for"
+            and all(a.op == "core.const" for a in n.args[:2])
+            and (not dict(n.attrs).get("exit") or n.regions[0].body[-1].args[0].op == "core.tuple")
+        ):
+            lo, hi = (dict(a.attrs)["value"] for a in n.args[:2])
+            iv, carry = n.regions[0].params
+            yielded = n.regions[0].body[-1].args[0]
+            cur = go(n.args[2], memo)
+            if dict(n.attrs).get("exit"):
+                stopped = None  # accumulated exit — pure select-chains, no bool consts
+                for k in range(lo, hi):
+                    it = dict(memo)
+                    it[id(iv)] = b.emit("core.const", type=i64, value=k)
+                    it[id(carry)] = cur
+                    stepped, done = (go(a, it) for a in yielded.args)
+                    if stopped is None:  # the first iteration always runs
+                        cur, stopped = stepped, done
+                    else:
+                        cur = b.emit("core.select", stopped, cur, stepped, type=cur.type, loc=n.loc)
+                        stopped = b.emit("core.select", stopped, stopped, done, type=boolean, loc=n.loc)
+            else:
+                for k in range(lo, hi):
+                    it = dict(memo)
+                    it[id(iv)] = b.emit("core.const", type=i64, value=k)
+                    it[id(carry)] = cur
+                    cur = go(yielded, it)
+            out = cur
+        else:
+            args = tuple(go(a, memo) for a in n.args)
+            regions, rebuilt = [], False
+            for r in n.regions:
+                ny = go(r.body[-1].args[0], memo)
+                if ny is r.body[-1].args[0]:
+                    regions.append(r)
+                else:
+                    rebuilt = True
+                    regions.append(Region(params=r.params, body=(b.emit("core.yield", ny, loc=n.loc),)))
+            if not rebuilt and all(a is o for a, o in zip(args, n.args)):
+                out = n
+            else:
+                out = b.emit(n.op, *args, regions=tuple(regions), type=n.type, loc=n.loc, **dict(n.attrs))
+        memo[id(n)] = out
+        return out
+
+    memo: dict[int, object] = {}
+    yielded = go(region.body[-1].args[0], memo)
+    if yielded is region.body[-1].args[0]:
+        return region, named
+    flat = Region(params=region.params, body=(b.emit("core.yield", yielded),))
+    return flat, [(nm, memo[id(nd)]) for nm, nd in named if id(nd) in memo]
+
+
 def _liftable(region) -> bool:
     """Is this scalar region pointwise-liftable over the thread lattice?
     Straight-line value ops, plus ``core.if`` whose branches are
@@ -652,6 +723,7 @@ def _fn_arg(ctx, handle, args, out_spec, node):
         if _references_ambient(handle):
             return _inline_ambient(ctx, handle, args, out_spec, node)
         region, named = _scalar_region(handle, len(args))
+        region, named = _flatten_fors(region, named)  # bounded loops -> the flat masked form (300)
         if _liftable(region):
             return _splice_fn(ctx, handle, region, named, args, out_spec, node, pname, wrap)
         # the LOUD drop (211 §1.4 / 290 §5): an unliftable body (bounded control

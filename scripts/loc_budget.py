@@ -62,7 +62,8 @@ FILE_CAPS = {
     "naming.py": 55,  # P3: claim/derive — the naming law's core mechanism seed
     "events.py": 60,  # the seam (emit/span/forbid)
     "recorder.py": 170,  # the observability satellite, now in-package
-    "value.py": 330,  # the value language: statements, joins, loops, refusals
+    # +15 (2026-07-28): the bounded loop's declared early-exit lowering (300)
+    "value.py": 345,  # the value language: statements, joins, loops, refusals
     "surfaces.py": 80,  # the five registration surfaces' helpers
     "intrinsics.py": 60,  # scalar intrinsics + DSL batteries
     "pipe.py": 175,  # the fuse pipe: stages, vocabulary checks, build rule

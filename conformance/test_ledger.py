@@ -88,15 +88,14 @@ def test_multi_block_geometry_is_ledgered():
 
 
 def test_oracle_fallback_is_loud():
-    """compute/oracle-fn-arg: an unliftable fn-arg body (bounded control
-    flow) drops to per-element oracle dispatch — and SAYS so (211 §1.4)."""
+    """compute/oracle-fn-arg: an unliftable fn-arg body drops to
+    per-element oracle dispatch — and SAYS so (211 §1.4). Bounded loops
+    stopped being this class when 300's flat masked form landed, so the
+    subject is `%` (core.mod: no lift row, no device row)."""
 
     @jit()
-    def loopy(a):
-        acc = a
-        for _ in range(3):
-            acc = acc * 0.5
-        return acc
+    def moddy(a):
+        return a % 3.0
 
     def k(f, img):
         y, x = thread_idx("y", "x")
@@ -106,12 +105,56 @@ def test_oracle_fallback_is_loud():
     events.SINKS.append(lambda name, key, dur, depth, detail: heard.append(name))
     try:
         img = T(np.zeros((2, 3)), ("y", "x"))
-        art = _compile(k, (loopy, img))
-        art.launch((loopy, img))
-        np.testing.assert_allclose(img.to_numpy(), np.add.outer(np.arange(2.0), np.arange(3.0)) * 0.125)
+        art = _compile(k, (moddy, img))
+        art.launch((moddy, img))
+        np.testing.assert_allclose(img.to_numpy(), np.fmod(np.add.outer(np.arange(2.0), np.arange(3.0)), 3.0))
     finally:
         events.SINKS.pop()
     assert "kernel.oracle_fallback" in heard, "the oracle drop must be loud"
+
+
+def test_bounded_loops_splice_and_translate():
+    """The 300 flat masked form: a loop-bodied fn-arg with a declared
+    early-exit SPLICES (no oracle drop), matches Python break semantics
+    exactly, and translates to WGSL — the raymarcher shape reaches the
+    device column."""
+
+    @jit()
+    def march(x):
+        t = 0.0
+        for _ in range(8):
+            h = x - t
+            if h < 0.125:
+                break
+            t = t + h * 0.5
+        return t
+
+    def py_march(x):
+        t = 0.0
+        for _ in range(8):
+            h = x - t
+            if h < 0.125:
+                break
+            t = t + h * 0.5
+        return t
+
+    def k(f, img):
+        y, x = thread_idx("y", "x")
+        img[y, x] = f(f32(y) * 0.7 + f32(x) * 0.3)
+
+    heard = []
+    events.SINKS.append(lambda name, key, dur, depth, detail: heard.append(name))
+    try:
+        img = T(np.zeros((3, 4)), ("y", "x"))
+        art = _compile(k, (march, img))
+        art.launch((march, img))
+    finally:
+        events.SINKS.pop()
+    assert "kernel.oracle_fallback" not in heard, "the bounded loop must SPLICE, not drop"
+    grid = np.meshgrid(np.arange(3.0), np.arange(4.0), indexing="ij")
+    want = np.vectorize(lambda y, x: py_march(y * 0.7 + x * 0.3))(*grid)
+    np.testing.assert_allclose(img.to_numpy(order=("y", "x")), want, rtol=1e-12)
+    _translate(art)  # the flat form is where/select chains: device-admissible
 
 
 def test_marker_beyond_rows_is_ledgered():

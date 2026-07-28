@@ -321,7 +321,19 @@ def _for_stmt(ctx, node):
     else:
         for k, n in enumerate(carried):
             ctx.locals[n] = ctx.emit("core.extract", carry, node=node, index=k)
-    _lower_block(ctx, node.body)
+    exits = [i for i, s in enumerate(node.body) if _is_exit(s)]
+    if len(exits) > 1:
+        raise MissingRule(f"one declared early-exit per loop, got {len(exits)} `if …: break` [{fmt(ctx.loc(node))}]")
+    done = None
+    if exits:  # the bounded loop's DECLARED early-exit (300): run to the bound, mask after
+        _lower_block(ctx, node.body[: exits[0]])
+        done = ctx.lower(node.body[exits[0]].test)
+        if getattr(done, "type", None) != boolean:
+            raise MissingRule(f"the early-exit condition must be bool [{fmt(ctx.loc(node))}]")
+        mids = {n: ctx.locals[n] for n in carried}  # values AT the break point win where done fires
+        _lower_block(ctx, node.body[exits[0] + 1 :])
+    else:
+        _lower_block(ctx, node.body)
     finals = [ctx.locals[n] for n in carried]
     final = finals[0] if len(finals) == 1 else ctx.emit("core.tuple", *finals, node=node)
     if final.type != init.type:
@@ -329,15 +341,25 @@ def _for_stmt(ctx, node):
             f"strict loop carry: {carried!r} enter as {init.type!r} but leave an iteration as "
             f"{final.type!r} [{fmt(ctx.loc(node))}]"
         )
+    if done is not None:
+        sel = [ctx.emit("core.select", done, mids[n], ctx.locals[n], node=node) for n in carried]
+        final = sel[0] if len(sel) == 1 else ctx.emit("core.tuple", *sel, node=node)
+        final = ctx.emit("core.tuple", final, done, node=node)  # the yield carries (carry, done)
     y = ctx.emit("core.yield", final, node=node)
     ctx.locals = before
-    res = ctx.emit("core.for", lo, hi, init, regions=(Region(params=(iv, carry), body=(y,)),), node=node)
+    attrs = {"exit": True} if done is not None else {}
+    res = ctx.emit("core.for", lo, hi, init, regions=(Region(params=(iv, carry), body=(y,)),), node=node, **attrs)
     if len(carried) == 1:
         ctx.locals[carried[0]] = res
     else:
         for k, n in enumerate(carried):
             ctx.locals[n] = ctx.emit("core.extract", res, node=node, index=k)
     return None
+
+
+def _is_exit(s) -> bool:
+    """The declared early-exit: exactly ``if <cond>: break``, no else."""
+    return isinstance(s, ast.If) and len(s.body) == 1 and isinstance(s.body[0], ast.Break) and not s.orelse
 
 
 def _refuse_while(ctx, node):
