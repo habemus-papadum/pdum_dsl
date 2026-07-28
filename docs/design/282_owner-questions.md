@@ -44,6 +44,7 @@ behavior.
 **Leaning: ratify as stated.**
 
 **Comments:**
+Claimed by L4 team -- see their comments on the PR.  
 
 ---
 
@@ -79,6 +80,8 @@ branch, effects may not."*
 **Leaning: ratify all three parts.**
 
 **Comments:**
+Is it possible to adjudicate if a kernel if statement has no stores?
+Could we just have it be that only those if statements are not allowed in the kernel? 
 
 ---
 
@@ -106,7 +109,7 @@ part-3 demos (3D meshes) are not credible without it, and doing it
 during the encodable build is the cheap moment.
 
 **Comments:**
-
+agreed -- do a
 ---
 
 ### 4. Where does the new code live?
@@ -139,7 +142,7 @@ and both the dsl tier and tensorlib will want it. (b) is the safe
 middle if the spec shouldn't be amended yet; take it over (c).
 
 **Comments:**
-
+Agree a
 ---
 
 ### 5. The bounded loop: who designs it, and when?
@@ -177,7 +180,7 @@ fragment. If their timeline leaves our demos blocked, revisit (c)
 with owner say-so.
 
 **Comments:**
-
+option a
 ---
 
 ### 6. Policy for "works on CPU but can't reach the GPU"
@@ -205,7 +208,7 @@ get explicitly marked as such.
 (b) fixes the actual problem, which is silence.
 
 **Comments:**
-
+accepted -- do b
 ---
 
 ## Bucket 2 — a one-line direction is enough
@@ -223,7 +226,7 @@ explicitly when someone needs one.** Nothing else to decide until a
 second pairing exists.
 
 **Comments:**
-
+Have user specify both generator and runtime -- make them dataclasses (nothing in them for now), and create dataclass to hold the pair. Then the user-facing names are just pre-assembled instances of that dataclass.
 ---
 
 ### 8. What replaces the `Buffer.device` string?
@@ -239,7 +242,7 @@ Full design lands with the residency/encoding-descriptor work already
 queued — not now.**
 
 **Comments:**
-
+Agreed
 ---
 
 ### 9. Test tolerance for frame-sweep conformance
@@ -256,7 +259,7 @@ pixels where the reference's local gradient is steeper than a stated
 threshold. Owner reviews the wording when it exists.**
 
 **Comments:**
-
+Agree
 ---
 
 ## Bucket 3 — postpone, and why
@@ -273,7 +276,7 @@ ships. **Postpone until a compute-bound consumer exists; the question
 is recorded in 280.**
 
 **Comments:**
-
+agree postpone
 ---
 
 ### 11. The per-target math-function registry
@@ -287,6 +290,7 @@ into the emitters during cleanup, and the test battery gains
 wide-range inputs so this class of bug can't hide.**
 
 **Comments:**
+agree postpone
 
 ---
 
@@ -301,3 +305,4 @@ standard fix touches the derivative table — which is frozen behavior
 — and *then* it becomes an owner decision.**
 
 **Comments:**
+agree postpone

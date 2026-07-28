@@ -316,6 +316,40 @@ incidental failure or silent acceptance, needs the ruled refusal),
    INCONSISTENT surfaces over the same law — unify per the
    statement-`if` open question below.
 
+## Rulings (owner, 2026-07-28, via the 282 comment pass)
+
+- **Kernel rulebook (282 §1): ratified as proposed — and the
+  tier-stratification implementation is CLAIMED BY THE L4 TEAM**
+  (their PR #7 comment); we consume it after their merge + our rebase.
+- **Control flow (282 §2): mask law and expression-`if`-everywhere
+  ratified; part (iii) AMENDED by the owner** — statement `if` in
+  kernel bodies is admitted when its arms are store-free (statically
+  adjudicable at lowering: a store is an assignment to a buffer
+  subscript; arms' locals join via select). Only an `if` containing a
+  store refuses, speaking the law: effects may not branch. Lands with
+  the L4 stratification.
+- **Depth (282 §3): IN for v2**, implemented with the encodable.
+- **Code home (282 §4): the third workspace package** (runtime +
+  emitters; name proposed at implementation).
+- **Bounded loop (282 §5): option (a) — handed WHOLE to the L4 team**
+  with the spike as exhibit; our demos avoid raymarching until it
+  lands (supersedes the "we design the surface" leaning).
+- **Coverage ledger (282 §6): (b) ratified** — the
+  not-yet-translatable set becomes a versioned, machine-checked
+  ledger; never-legal constructs refuse via the stratification.
+- **Selection spelling (282 §7): explicit dataclasses** — a generator
+  (backend) dataclass and a runtime dataclass (empty for now), a pair
+  dataclass holding both; user-facing names are pre-assembled
+  instances.
+- **`Buffer.device` (282 §8) and frame-sweep tolerance (282 §9):
+  directions agreed** as proposed. **282 §10–12: postponements
+  agreed.**
+- **Thread-sizing supersession (PR #7, resolved on-thread):** the
+  ruling OVERRULES the kernel tier's "geometry is validated launcher
+  data, never identity" policy for the THREADS half; block sizing
+  stays launcher data. kernel.py's policy comments and the frozen
+  geometry refusal get repinned deliberately in the same change.
+
 ## Open questions (for the owner)
 
 - Where the runtime/runner tier lives (`runtime/`? — "never
