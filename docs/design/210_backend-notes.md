@@ -70,8 +70,116 @@ without a representation change.
   u32; bool reads `!= 0u` — bool is not host-shareable), members FROM the
   plan (hole-free), reserved words prefixed. The plan IS the ABI; both
   renderer and launcher read it, neither invents layout.
-- Workgroup size is pipeline-creation-time (value-specialized bracket);
-  dispatch dimensions are launcher data.
+- **Thread sizing (threads per group) is a SPECIALIZATION parameter**
+  (owner-ruled 2026-07-28, generalizing the earlier WebGPU-shaped rule):
+  it keys the artifact and a change recompiles, whether or not the
+  target embeds it in source (WGSL: shader text; Metal: a
+  `dispatchThreadgroups:` argument appearing nowhere in source; CUDA:
+  blockDim, with launch bounds making it compile-relevant). **Block
+  sizing (group count) is launcher data everywhere** and never
+  specializes. Consequence: a backend cannot return only source text —
+  it returns (source, launch-contract), the contract carrying the
+  thread size as data. **Supersession, ruled on the PR thread
+  (owner, 2026-07-28): this OVERRULES the kernel tier's earlier
+  "geometry is validated launcher data, never identity" policy for
+  the THREADS half** — thread sizing enters identity; block sizing
+  stays validated launcher data. Scheduled deliberately, never by
+  builder discovery: kernel.py's geometry-policy comments rewrite to
+  the split, and the frozen geometry refusal ("…never identity") is
+  repinned in the same change — a refusal-contract API break made on
+  purpose.
+
+## Metal runtime learnings (measured on M3 Ultra, the graphics-campaign spikes, 2026-07)
+
+Evidence: rerunnable spikes on the `worktree-graphics-design` branch
+(pushed to origin; `explorations/graphics/spike_metal/` and siblings,
+a FINDINGS.md in each — the durable record for builders on non-Mac
+hardware). Differentials there are three-way: f64 reference, WGSL/wgpu,
+MSL/Metal — the two device columns bitwise-equal on every translatable
+subject (caveat recorded there: wgpu reaches Metal via Naga on that
+machine, so cross-vendor exactness is untested until CUDA/Vulkan).
+
+- **PyObjC is adequate for a Metal runtime** — no Swift/ObjC shim;
+  selector mangling is mechanical; reading buffer contents and adopting
+  host memory work directly on Python buffer objects. **JIT MSL needs
+  no Xcode**: `newLibraryWithSource:` compiles at runtime with Command
+  Line Tools only.
+- **Unified-memory adoption is real and bidirectional**:
+  `newBufferWithBytesNoCopy:` over a page-aligned host allocation —
+  kernel stores appear in the host array with NO readback call
+  (`waitUntilCompleted` is synchronization, not transfer); host writes
+  after buffer creation are seen by the next dispatch with no upload;
+  `MTLBuffer.contents()` IS the host pointer. The runtime interface
+  must carry "no transfer exists" as a first-class case, and
+  `Buffer.device`-as-string cannot answer "which device is this on"
+  when memory is simultaneously host and device.
+- **The bounds guard is a launch-contract clause, not universal
+  source.** WebGPU dispatches whole workgroups (the overhang guard is
+  required); Metal's `dispatchThreads:` launches exact grids and the
+  guard is dead code (guard-vs-exact proven bitwise equal); CUDA
+  dispatches whole blocks — WebGPU-shaped. Emit the guard per-runtime,
+  from the contract.
+- **OOB models differ structurally (recorded, deliberately untested):**
+  WebGPU implementations bounds-clamp storage accesses per the spec's
+  safety model; Metal raw `device` pointers are genuine UB; CUDA sits
+  on the Metal side. The keying-ladder ruling (reference certifies
+  in-bounds before device runs) covers all of them — never lean on a
+  device-side safety net, and record the per-target model in the
+  descent-license language BOUNDARIES reserves for device-tier OOB.
+- **GPU timing is free on Metal** (`GPUStartTime`/`GPUEndTime` on the
+  command buffer — no query set, no feature request), unlike WebGPU's
+  timestamp-query feature that must be requested at device creation —
+  so device acquisition must accept feature requests. Rig gotchas,
+  inherited: the last timestamp pair in a batch can resolve to zero
+  (encode a discard rep); the first program timed in a process reads
+  ~1.7× high (sustained warm-up, then minimum-of-samples); WebGPU caps
+  `max_compute_workgroups_per_dimension` at 65535 where Metal has no
+  such limit.
+- **Op rows are near-universal across C-family shading languages**:
+  100% of emitted WGSL statements convert to MSL under three lexical
+  rules (cast spelling, float-literal suffix, declaration form); no
+  operator/builtin row differs, `select` argument order included.
+  Expect similar for CUDA C — the expression emitter and marker tables
+  should exist once, not per backend (they exist three times today).
+- **The binding table is contract DATA, never implicit in text.**
+  WebGPU's `layout="auto"` prunes unused bindings (a runtime rule the
+  backend must anticipate in source); Metal has no bind-group object
+  (buffers set by index, unused arguments harmless); CUDA passes
+  pointers. Implicit binding-in-text does not survive three targets.
+- **The staging plan needs a device-representation clause.** The plan
+  describes HOST staging bytes only; every backend so far has
+  independently invented "uniforms arrive as a flat f32 array" — and
+  each silently narrows i64 slots to f32, which the numeric policy
+  above forbids. Fix once, at the shared tier; a true WGSL uniform
+  buffer additionally wants stride-16 emission from the plan.
+- **Backend identity must enter the content key BEFORE a second device
+  backend ships.** The WGSL and MSL artifacts of one kernel share an
+  identical region key: keyed today they would collide, and un-keyed
+  they recompile on every executor swap (8–9 ms per distinct pipeline
+  once the driver's shader cache stops flattering byte-identical
+  source). The fix is not new machinery: the content tier already
+  keys `(region.key, executor fp)` and `WGPU_FP` is declared as that
+  fp's second value — but `wgpu_artifact` bypasses the
+  `get_or_compile` door entirely (`dataclasses.replace` on an
+  already-compiled artifact). Route device compilation THROUGH the
+  existing door instead of around it.
+- **The target numeric contract is a category with no owner yet.**
+  Metal's f32 `tanh` returns NaN for |x| ≥ 44.3614 (exactly
+  `log(FLT_MAX)/2` — an `exp(2x)` implementation); `MTLMathModeSafe`
+  does not fix it; `tanh(clamp(x, -20, 20))` is bitwise-identical
+  wherever both are finite, so the fix row is free and provably so.
+  `exp`, `sinh`/`cosh`, `pow` are the usual company — survey them on
+  every new target. Per-target math rows and their freeness proofs
+  need a declared home; note the conformance battery cannot see this
+  class today (inputs too small to reach any math edge, and no
+  `where`/select subject exists) — the adversarial-input-families
+  doctrine applies to the battery itself.
+- **Measurement warning for the 270 thesis**: through today's
+  `_Artifact.launch`, host repack (`Tensor.to_numpy`, a per-element
+  reference-tier materializer) is 88–100% of launch cost on every
+  backend — the device's share is under one part in a thousand. Until
+  that path is fixed or routed around, a transform-run-measure loop
+  over device executors measures the repack, not the program.
 
 ## Instrumentation methodology (bench, deleted with its demo consumers)
 
