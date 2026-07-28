@@ -745,7 +745,7 @@ def _tl_call(ctx, node):
             if any(hasattr(a, "type") and isinstance(a.type, CoordType) for a in args):
                 raise TypeError(_COORD_MATH)
             if any(hasattr(a, "type") and isinstance(a.type, TensorType) for a in args):
-                if ctx.context.get("tl.kind") != "compute":  # the STEP tier spells pointwise
+                if ctx.context.get("tl.kind") not in KERNEL_KINDS:  # the tensor tiers spell pointwise
                     raise ValueError(
                         f"{obj2.name} is a marker — tensor-tier application is spelled "
                         f"pointwise({obj2.name}, ...) (bare names lower only inside "
@@ -1027,7 +1027,7 @@ def lower_body(
         if not all(hasattr(v, "type") and isinstance(v.type, TensorType) for v in flat):
             raise ValueError(f"a step must return tensors, got {flat!r}")
         yielded = result if not isinstance(result, tuple) else ctx.builder.emit("core.tuple", *result)
-        return Region(params=params, body=(ctx.builder.emit("core.yield", yielded),))
+        return check_tier(Region(params=params, body=(ctx.builder.emit("core.yield", yielded),)), kind)
     if kind != "compute":
         raise ValueError(f"unknown body kind {kind!r} — kinds declare their yields here")
     for stmt in tree.body:
@@ -1037,7 +1037,7 @@ def lower_body(
     tok = ctx.context.get("tl.token")
     if tok is None:
         raise ValueError(f"{fn.__qualname__} stores nothing — a kernel's effect is its stores")
-    return Region(params=params, body=(ctx.builder.emit("core.yield", tok),))
+    return check_tier(Region(params=params, body=(ctx.builder.emit("core.yield", tok),)), kind)
 
 
 # --- pass 1 of the two-pass mechanism ----------------------------------------
@@ -1058,6 +1058,97 @@ def walk_region(region: Region):
 
     for node in region.body:
         yield from go(node)
+
+
+# --- 290: the stratification — families once, tiers as unions ----------------
+# The one table (owner-ratified 2026-07-28). Families are declared HERE, at
+# the ops' home; a tier is a union of families plus named extras. The open
+# marker families (pw.*, math.*) admit by prefix; an op in no family admits
+# nowhere (290 §4.1 — the open-registry default).
+
+_FAMILIES = {
+    "STRUCTURAL": frozenset(
+        {"core.param", "core.env", "core.const", "core.yield", "core.tuple", "core.extract", "tl.const"}
+    ),
+    "SCALAR": frozenset(
+        {"core.add", "core.sub", "core.mul", "core.div", "core.neg", "core.mod", "core.pow"}
+        | {"core.cmp", "core.select", "core.cast"}
+    ),
+    "ABI": frozenset({"abi.slot"}),
+    "LATTICE": frozenset({"tl.iota", "tl.coord"}),
+    "POINTWISE": frozenset({"tl.pointwise"}),
+    "COMPUTE": frozenset(
+        {"tl.reduce", "tl.scan", "tl.fold", "tl.take", "tl.scatter_add", "tl.argtopk", "tl.argsort"}
+        | {"tl.random", "tl.materialize", "tl.round_to", "tl.repeat_like", "tl.with_value_units"}
+    ),
+    "LAYOUT": frozenset(f"tl.{n}" for n in LAYOUT_ADAPTERS),
+    "EFFECT": frozenset({"tl.store", "tl.read", "tl.token"}),
+    "GRAPHICS": frozenset({"tl.sample"}),
+}
+_FAMILY_OF = {op: fam for fam, ops in _FAMILIES.items() for op in ops}
+
+KERNEL_KINDS = frozenset({"compute", "vertex", "fragment"})  # bare markers spell here
+
+TIERS = {
+    "tensor": frozenset({"STRUCTURAL", "SCALAR", "POINTWISE", "COMPUTE", "LAYOUT"}),
+    "unit": frozenset({"STRUCTURAL", "SCALAR", "POINTWISE", "COMPUTE", "LAYOUT"}),
+    "step": frozenset({"STRUCTURAL", "SCALAR", "POINTWISE", "COMPUTE", "LAYOUT"}),
+    "compute": frozenset({"STRUCTURAL", "SCALAR", "ABI", "LATTICE", "POINTWISE", "EFFECT"}),
+    "vertex": frozenset({"STRUCTURAL", "SCALAR", "ABI", "POINTWISE"}),
+    "fragment": frozenset({"STRUCTURAL", "SCALAR", "ABI", "POINTWISE", "GRAPHICS"}),
+}
+_TIER_EXTRA = {
+    "tensor": frozenset({"tl.iota"}),
+    "unit": frozenset({"tl.iota"}),
+    "step": frozenset({"tl.iota"}),
+    "compute": frozenset({"tl.split", "tl.merge"}),  # machinery emissions (grid bracket,
+    # global-index stores) — never author-spelled, ledgered for device coverage (290 §4.1)
+    "vertex": frozenset({"tl.iota", "tl.select"}),  # select = the pulled read, params only
+}
+_QUOTED_TIER = {"tl.fold": "step"}  # ops carrying a foreign-tier region as DATA (290 §4.5)
+
+_TIER_FIX = {  # the rulebook's one refusal class: a family-appropriate quoted fix
+    "LAYOUT": "apply the view outside the body (stage it on the parameter) and pass the result in",
+    "COMPUTE": "compute it at the call site and pass the result in",
+    "EFFECT": "stores/reads are kernel effects — write a @compute kernel and launch it",
+    "GRAPHICS": "textures sample in fragment stages today",
+    "ABI": "captured scalars are build-time values at this tier, not launch uniforms",
+    "LATTICE": "thread position is a kernel/graphics fact — spell positions with iota here",
+}
+
+
+def tier_admits(op: str, tier: str) -> bool:
+    fam = _FAMILY_OF.get(op)
+    if fam is None and op.startswith(("pw.", "math.")):
+        fam = "SCALAR"  # the open marker families
+    return (fam is not None and fam in TIERS[tier]) or op in _TIER_EXTRA.get(tier, ())
+
+
+def check_tier(region: Region, tier: str) -> Region:
+    """The stratification gate (290 §4.3): every op a region carries must be
+    in its tier's vocabulary; sub-regions check under the tier the CARRYING
+    op declares (§4.5), never the ambient one. The first violation refuses
+    in the rulebook voice, quoting the node's own source."""
+    from pdum.dsl.ir import format_loc
+
+    for n in walk_region(region):
+        if not tier_admits(n.op, tier):
+            fam = _FAMILY_OF.get(n.op)
+            fix = _TIER_FIX.get(fam, f"it has no {tier}-tier meaning (290)")
+            where = f" [{format_loc(n.loc)}]" if n.loc is not None else ""
+            raise ValueError(
+                f"{n.op} is a host citizen here — the {tier} tier uses it at a call site, "
+                f"not as a value: {fix}{where}"
+            )
+        if tier == "vertex" and n.op == "tl.select" and n.args and n.args[0].op != "core.param":
+            where = f" [{format_loc(n.loc)}]" if n.loc is not None else ""
+            raise ValueError(
+                f"tl.select in a vertex stage reads a BUFFER PARAMETER at a coordinate (the "
+                f"pulled-read spelling) — layout algebra on derived values stages outside{where}"
+            )
+        for sub in n.regions:
+            check_tier(sub, _QUOTED_TIER.get(n.op, tier))
+    return region
 
 
 def check_fold_step_supported(step: Region) -> None:
@@ -1404,7 +1495,7 @@ def fold_region(
     if extent is not None:
         kwargs["extent"] = tuple(extent)
     fold = b.emit("tl.fold", *params, regions=(step,), **kwargs)
-    return Region(params=params, body=(b.emit("core.yield", fold),)), fold
+    return check_tier(Region(params=params, body=(b.emit("core.yield", fold),)), "tensor"), fold
 
 
 # --- the naming law over regions ---------------------------------------------

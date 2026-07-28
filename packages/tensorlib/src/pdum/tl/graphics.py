@@ -48,7 +48,7 @@ from pdum.dsl.registry import DEFAULT
 from pdum.dsl.types import Type
 
 from .coords import admit_frame
-from .dialect import TL_OPS, CoordType, TensorType, capture_shim, run_region, tensor_type
+from .dialect import TL_OPS, CoordType, TensorType, capture_shim, check_tier, run_region, tensor_type
 from .encoding import FormatEncoding
 from .kernel import _ARG_BINDINGS, KERNEL_RULES, _code_fp, _env_fp, _lookup
 from .lifting import _Intrinsic
@@ -141,32 +141,6 @@ def _v_assign(ctx, node):
     return _k_assign(ctx, node)
 
 
-def _v_ifexp(ctx, node):
-    """The committed vertex spelling ``a if cond else b`` over tensor
-    predicates is DATA FLOW: it lowers to ``where`` (both sides
-    evaluated); host conditions branch on the host."""
-    cond = ctx.lower(node.test)
-    if hasattr(cond, "op") and isinstance(cond.type, TensorType):
-        a, b = ctx.lower(node.body), ctx.lower(node.orelse)
-        lift = _scalar_lift(ctx, node)
-        return ctx.emit("tl.pointwise", cond, lift(a), lift(b), node=node, f="where")
-    return ctx.lower(node.body) if cond else ctx.lower(node.orelse)
-
-
-def _v_boolop(ctx, node):
-    """``or``/``and`` over predicate masks are max/min — data flow, the
-    committed spelling; host booleans stay host."""
-    vals = [ctx.lower(v) for v in node.values]
-    if any(hasattr(v, "op") and isinstance(v.type, TensorType) for v in vals):
-        f = "maximum" if isinstance(node.op, ast.Or) else "minimum"
-        lift = _scalar_lift(ctx, node)
-        out = lift(vals[0])
-        for v in vals[1:]:
-            out = ctx.emit("tl.pointwise", out, lift(v), node=node, f=f)
-        return out
-    return any(vals) if isinstance(node.op, ast.Or) else all(vals)
-
-
 def _scalar_lift(ctx, node):
     from pdum.dsl.types import f64
 
@@ -196,13 +170,11 @@ def _v_subscript(ctx, node):
     return _k_subscript(ctx, node)
 
 
-VERTEX_RULES = {
+VERTEX_RULES = {  # IfExp/BoolOp ride KERNEL_RULES now — the vertex spelling, promoted (211 §1.2)
     **KERNEL_RULES,
     ast.Call: _v_call,
     ast.Assign: _v_assign,
     ast.Subscript: _v_subscript,
-    ast.IfExp: _v_ifexp,
-    ast.BoolOp: _v_boolop,
 }
 
 
@@ -415,7 +387,7 @@ def _lower_vertex(vs: VertexShader, buffers: tuple):
     fn = vs.fn
     handle = capture_shim(fn)
     check_coherence(handle)
-    ctx = Lowerer(handle, VERTEX_RULES, {**CORE_OPS, **TL_OPS, **ABI_OPS}, {}, context=_fresh_context("compute"))
+    ctx = Lowerer(handle, VERTEX_RULES, {**CORE_OPS, **TL_OPS, **ABI_OPS}, {}, context=_fresh_context("vertex"))
     names = fn.__code__.co_varnames[: fn.__code__.co_argcount]
     if len(names) != len(buffers):
         raise TypeError(f"{fn.__qualname__} takes {len(names)} vertex buffers, got {len(buffers)}")
@@ -467,7 +439,7 @@ def _lower_vertex(vs: VertexShader, buffers: tuple):
 
     outs = (as_field(result.x), as_field(result.y)) + tuple(as_field(c["g.claims"][n]) for n in varying_names)
     yielded = ctx.builder.emit("core.tuple", *outs)
-    region = Region(params=all_params, body=(ctx.builder.emit("core.yield", yielded),))
+    region = check_tier(Region(params=all_params, body=(ctx.builder.emit("core.yield", yielded),)), "vertex")
     return region, varying_names, frozenset(c["g.flat"]), count, lattice, c
 
 
@@ -497,7 +469,7 @@ def _lower_fragment(fs: FragmentShader, fn_args: tuple, varying_types: dict, tap
     fn = fs.fn
     handle = capture_shim(fn)
     check_coherence(handle)
-    ctx = Lowerer(handle, FRAGMENT_RULES, {**CORE_OPS, **TL_OPS, **ABI_OPS}, {}, context=_fresh_context("compute"))
+    ctx = Lowerer(handle, FRAGMENT_RULES, {**CORE_OPS, **TL_OPS, **ABI_OPS}, {}, context=_fresh_context("fragment"))
     names = fn.__code__.co_varnames[: fn.__code__.co_argcount]
     if not names:
         raise TypeError(f"{fn.__qualname__}: a fragment shader's last parameter is the varying record")
@@ -530,6 +502,7 @@ def _lower_fragment(fs: FragmentShader, fn_args: tuple, varying_types: dict, tap
         tap_nodes.append(lift(c["k.claims"][tname]))
     yielded = lift(result) if not tap_nodes else ctx.builder.emit("core.tuple", lift(result), *tap_nodes)
     region = Region(params=tuple(params.values()), body=(ctx.builder.emit("core.yield", yielded),))
+    check_tier(region, "fragment")
     return region, ctx.context, frozenset(touched), tuple(fparams)
 
 

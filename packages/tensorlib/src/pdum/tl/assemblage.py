@@ -41,6 +41,7 @@ from .dialect import (
     _tl_call,
     _tl_name,
     capture_shim,
+    check_tier,
     region_names,
     tensor_type_of_layout,
 )
@@ -269,6 +270,7 @@ def _build(u: Unit, taps: tuple, input_layouts: dict) -> Assemblage:
     requested = [v for site, v in sorted(tap_vars.items()) if any(fnmatch.fnmatch(site, p) for p in taps)]
     keep = (out, *requested)
     region = dce(region, keep, names=mapping)  # re-yield + reachability pruning
+    check_tier(region, "unit")  # the stratification gate (290) — dce preserves tier
     live = {mapping[id(p)] for p in region.params}
     return Assemblage(
         region=region,

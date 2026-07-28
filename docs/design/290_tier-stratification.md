@@ -1,6 +1,19 @@
 # 290 — Tier stratification: which syntax lives where
 
-**Status: RATIFIED (owner, 2026-07-28) — awaiting implementation.**
+**Status: RATIFIED AND IMPLEMENTED (owner, 2026-07-28; landed the same
+day).** The gate is live at every capture seam; the tier battery
+(`test_stratification.py`), the ledger (`pdum/tl/ledger.toml` +
+`conformance/test_ledger.py`), and the bundled repin are in the tree.
+Implementation notes that amend the design as proposed: (a) the
+adjudication mechanism is `check_tier` AT THE SEAMS rather than
+per-tier registries — the node's own `loc` gives the offending source
+line (better than rule-level errors), one door serves captured and
+hand-authored regions alike, and the unknown-op door stays at the
+registry untouched; (b) `tl.const` moved from COMPUTE to STRUCTURAL —
+constants are every tier's vocabulary (the census showed kernels and
+vertex stages emitting it); (c) §6.5's obligation is discharged — the
+unit tier is empirically clean of `abi.slot` under live gates; the
+stray census hit was transform/extent attribution noise as suspected.
 Commissioned by the owner 2026-07-28; claimed by the dsl side (PR #7
 thread). The graphics campaign's handoff (211, merged with PR #7)
 delivered the owner rulings of `282_owner-questions.md` (campaign

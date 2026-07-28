@@ -38,11 +38,13 @@ sanctioned oracle-grade execution. A body may also host-STAGE a declared
 the recipe replays on the CURRENT binding every launch.
 
 **Invocation is the bracket** — ``kernel[config(blocks, threads,
-taps={...})](args)``; geometry is VALIDATED LAUNCHER DATA: one entry
-binds one geometry, launches are checked against it, and it never
-enters identity (specialization-on-geometry is a declared policy door
-for the backend era); the tap NAME SET specializes, tap tensors are
-invocation data.
+taps={...})](args)``; geometry SPLITS (owner-ruled at PR #7, 210,
+superseding the never-identity rule): THREAD sizing is a
+SPECIALIZATION parameter — it keys the artifact and a change
+recompiles, wherever a target puts it; BLOCK sizing is launcher data
+everywhere. Today one entry binds one geometry and launches validate
+against it; the backend era keys the threads half. The tap NAME SET
+specializes, tap tensors are invocation data.
 
 Day-one contract (210): a writable argument overlapping any READABLE
 argument refuses at dispatch with the ping-pong message; in-place returns
@@ -58,10 +60,10 @@ from dataclasses import dataclass
 from dataclasses import replace as _dc_replace
 
 import numpy as np
-from pdum.dsl import events
 from pdum.dsl.cache import ArtifactCache, Memo
 from pdum.dsl.ir import Node, Region
 from pdum.dsl.lower import Lowerer, check_coherence, lower_handle
+from pdum.dsl.lower import fmt as _fmt
 from pdum.dsl.ops import CORE_OPS
 from pdum.dsl.pack import _FMTS, ABI_OPS, NORMALIZE_ENV, build_extractor, pack_into, plan_from_types
 from pdum.dsl.registry import DEFAULT
@@ -71,6 +73,8 @@ from pdum.dsl.value import _assign as _value_assign
 from pdum.dsl.value import _name as _value_name
 from pdum.dsl.value import _subscript as _value_subscript
 from pdum.dsl.valuekind import typeof
+
+from pdum.dsl import events
 
 from .coords import Frame, admit_frame
 from .dialect import (
@@ -82,8 +86,10 @@ from .dialect import (
     _globals_of,
     _inline_plain,
     _lookup,
+    _scalar_lift,
     _tl_call,
     capture_shim,
+    check_tier,
     run_region,
     tensor_type,
     walk_region,
@@ -139,10 +145,11 @@ def shared(**layouts) -> Shared:
 class Config:
     """The bracket config (040 §3c's contract, 200-era): each component
     declares its SPECIALIZATION REGIME, defaulting to invocation-only —
-    blocks/threads are VALIDATED LAUNCHER DATA (owner-ruled, P8): one
-    entry binds one geometry, every launch is checked against it, and
-    geometry never enters identity — specialization-on-geometry is a
-    declared policy door for the backend era; the tap NAME SET
+    geometry SPLITS (owner-ruled at PR #7, superseding P8's
+    never-identity rule): THREAD sizing specializes (it keys the
+    artifact; a change recompiles), BLOCK sizing is launcher data;
+    today one entry binds one geometry and launches validate both
+    halves — the backend era keys the threads half; the tap NAME SET
     specializes (a different tap set is a different artifact, the P5
     identity law) while the tap TENSORS are invocation data; shared_mem
     is structural (specializes) and arrives with the tile tier."""
@@ -185,13 +192,16 @@ class ComputeKernel:
         key = (_code_fp(self.fn), _env_fp(self.fn), tuple(_arg_fp(a) for a in args), tap_names)
         art = KERNELS.get_or_compile(key, lambda: _compile(self.fn, args, tap_names, geom))
         if _norm_geom(geom) != _norm_geom(art.geometry):
-            # geometry is VALIDATED LAUNCHER DATA (owner-ruled): it never keys
-            # and never re-renders — one entry binds one geometry, checked here;
-            # a specialization POLICY is a declared door for the backend era
+            # the geometry SPLIT (owner-ruled at PR #7, superseding "never
+            # identity"): THREAD sizing specializes — it keys the artifact and
+            # a change recompiles; BLOCK sizing is launcher data. One entry
+            # still binds one geometry, so both halves validate here; the
+            # backend era keys the threads half.
             raise ValueError(
                 f"this kernel entry was built under geometry {art.geometry!r} and the launch "
-                f"presents {geom!r} — geometry is validated launcher data, never identity; "
-                f"launch with the geometry the entry was built under"
+                f"presents {geom!r} — thread sizing specializes (a change recompiles); block "
+                f"sizing is launcher data, validated here; launch with the geometry the entry "
+                f"was built under"
             )
         if geom is not None and _norm_geom(geom) is None:  # an explicit one-block launch
             _check_coverage(geom, art, args)
@@ -644,6 +654,14 @@ def _fn_arg(ctx, handle, args, out_spec, node):
         region, named = _scalar_region(handle, len(args))
         if _liftable(region):
             return _splice_fn(ctx, handle, region, named, args, out_spec, node, pname, wrap)
+        # the LOUD drop (211 §1.4 / 290 §5): an unliftable body (bounded control
+        # flow above all) reaches the per-element oracle — reference-grade, no
+        # device translates it. A ledger row, never a silent downgrade.
+        events.emit(
+            "kernel.oracle_fallback",
+            key=getattr(handle.pyfunc, "__qualname__", "?"),
+            detail=lambda: "unliftable fn-arg body -> per-element oracle dispatch (ledger: compute/oracle-fn-arg)",
+        )
     return _fn_arg_oracle(ctx, handle, args, out_spec, node, pname, wrap)
 
 
@@ -1049,6 +1067,91 @@ def _k_name(ctx, node):
     return _value_name(ctx, node)  # the proper refusal voice
 
 
+def _stores_in(stmts) -> bool:
+    """Syntactically: does this suite store anywhere (assignment to a
+    subscript), however deeply nested? The store-free law's trivial check."""
+    for s in stmts:
+        for n in ast.walk(s):
+            if isinstance(n, ast.Assign) and any(isinstance(t, ast.Subscript) for t in n.targets):
+                return True
+            if isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Subscript):
+                return True
+    return False
+
+
+def _k_if(ctx, node):
+    """Statement `if` in kernel bodies (290 §4.2, owner-amended 211 §1.2):
+    VALUES MAY BRANCH, EFFECTS MAY NOT. Store-free arms admit and join by
+    where/select (predication — both sides evaluated, safe under the IEEE
+    non-trapping policy); an `if` containing a store refuses; host
+    conditions branch on the host, as everywhere. The join bookkeeping is
+    the value tier's own: suites lower against copies of the locals, names
+    both paths supply join, names born in one suite die with it."""
+    from pdum.dsl.value import _branch_locals
+
+    if _stores_in(node.body) or _stores_in(node.orelse):
+        raise ValueError(
+            f"a store under `if` — values may branch, effects may not (290 §4.2): branch the "
+            f"VALUE (a store-free `if`, or x = a if c else b) and store it unconditionally "
+            f"[{_fmt(ctx.loc(node))}]"
+        )
+    cond = ctx.lower(node.test)
+    if not hasattr(cond, "type"):  # a host config: branch on the host
+        for stmt in node.body if cond else node.orelse:
+            ctx.lower(stmt)
+        return None
+    if isinstance(cond.type, CoordType):
+        raise TypeError("no branching on a Coordinate — coerce it first (f32(c)/i32(c), 250 §3)")
+    before = dict(ctx.locals)
+    then_l = _branch_locals(ctx, node.body, before)
+    else_l = _branch_locals(ctx, node.orelse, before)
+    ctx.locals = before
+    changed = [
+        n
+        for n in dict.fromkeys((*then_l, *else_l))
+        if n in then_l and n in else_l and (then_l.get(n) is not before.get(n) or else_l.get(n) is not before.get(n))
+    ]
+    if not changed:
+        raise ValueError(f"this `if` binds nothing that survives it — dead code is refused [{_fmt(ctx.loc(node))}]")
+    for name in changed:
+        a, b = _scalar_lift(ctx, node, then_l[name]), _scalar_lift(ctx, node, else_l[name])
+        if isinstance(cond.type, TensorType):
+            ctx.locals[name] = ctx.emit("tl.pointwise", cond, a, b, node=node, f="where")
+        else:
+            ctx.locals[name] = ctx.emit("core.select", cond, a, b, node=node)
+    return None
+
+
+def _k_ifexp(ctx, node):
+    """``a if cond else b`` over tensor predicates is DATA FLOW: it lowers
+    to ``where`` (both sides evaluated); scalar node predicates select;
+    host conditions branch on the host. The committed vertex spelling,
+    promoted to all kernel bodies (211 §1.2)."""
+    cond = ctx.lower(node.test)
+    if hasattr(cond, "type") and isinstance(cond.type, TensorType):
+        a, b = ctx.lower(node.body), ctx.lower(node.orelse)
+        return ctx.emit(
+            "tl.pointwise", cond, _scalar_lift(ctx, node, a), _scalar_lift(ctx, node, b), node=node, f="where"
+        )
+    if hasattr(cond, "type"):
+        a, b = ctx.lower(node.body), ctx.lower(node.orelse)
+        return ctx.emit("core.select", cond, _scalar_lift(ctx, node, a), _scalar_lift(ctx, node, b), node=node)
+    return ctx.lower(node.body) if cond else ctx.lower(node.orelse)
+
+
+def _k_boolop(ctx, node):
+    """``or``/``and`` over predicate masks are max/min — data flow; host
+    booleans stay host. The committed vertex spelling, promoted (211 §1.2)."""
+    vals = [ctx.lower(v) for v in node.values]
+    if any(hasattr(v, "type") and isinstance(v.type, TensorType) for v in vals):
+        f = "maximum" if isinstance(node.op, ast.Or) else "minimum"
+        out = _scalar_lift(ctx, node, vals[0])
+        for v in vals[1:]:
+            out = ctx.emit("tl.pointwise", out, _scalar_lift(ctx, node, v), node=node, f=f)
+        return out
+    return any(vals) if isinstance(node.op, ast.Or) else all(vals)
+
+
 KERNEL_RULES = {
     **TL_RULES,
     ast.Assign: _k_assign,
@@ -1056,6 +1159,9 @@ KERNEL_RULES = {
     ast.Subscript: _k_subscript,
     ast.Name: _k_name,
     ast.For: _k_for,  # statically-known loops unroll (S.3); steps keep the straight-line refusal
+    ast.If: _k_if,  # store-free arms join by where/select (290 §4.2)
+    ast.IfExp: _k_ifexp,
+    ast.BoolOp: _k_boolop,
 }
 
 
@@ -1181,9 +1287,12 @@ def _compile(fn, args, tap_names=(), geom=None) -> _Artifact:
         tap_params.append(p)
         tok = ctx.builder.emit("tl.store", tok, p, claimed)
         c["k.stored"].append(f"tap:{tname}")
-    region = Region(
-        params=tuple(p_nodes) + tuple(tap_params),
-        body=(ctx.builder.emit("core.yield", tok),),
+    region = check_tier(
+        Region(
+            params=tuple(p_nodes) + tuple(tap_params),
+            body=(ctx.builder.emit("core.yield", tok),),
+        ),
+        "compute",
     )
     tap_sites = {n: tuple(d.name for d in v.type.dims) for n, v in c["k.claims"].items()}
     return _Artifact(

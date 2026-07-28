@@ -1,0 +1,100 @@
+# The coverage ledger (290 §2, owner-ratified 2026-07-28).
+#
+# Two gap kinds get two treatments: never-legal constructs REFUSE at the tier
+# (check_tier, dialect.py); legal-but-not-yet-translatable constructs live
+# HERE — visible, versioned, machine-checked. conformance/test_ledger.py
+# drifts this file against reality in BOTH directions: a vocabulary op with
+# neither a device row nor a ledger row fails, and a ledgered op that has
+# GAINED a device row fails too (coverage progress is recorded, not just
+# regressions). Facet rows are finer than an op; each names the test that
+# guards it, and a row whose guard does not exist is itself a failure.
+#
+# Bump `version` on any row change; conformance skips quote their row.
+
+version = 1
+
+# --- op rows: compute-tier vocabulary with no device row (WGSL/MSL row sets
+# are identical — 211 §2c) -----------------------------------------------------
+
+[[ops]]
+tier = "compute"
+op = "core.env"
+reason = "captured non-scalar environment — no device row"
+
+[[ops]]
+tier = "compute"
+op = "core.mod"
+reason = "truncating int modulo (210 numeric policy) — no device row yet"
+
+[[ops]]
+tier = "compute"
+op = "core.pow"
+reason = "no device row yet"
+
+[[ops]]
+tier = "compute"
+op = "core.cast"
+reason = "devices compute f32/bool only; casts await the declared type map (210)"
+
+[[ops]]
+tier = "compute"
+op = "core.tuple"
+reason = "multi-value plumbing — no device row"
+
+[[ops]]
+tier = "compute"
+op = "core.extract"
+reason = "multi-value plumbing — no device row"
+
+[[ops]]
+tier = "compute"
+op = "tl.coord"
+reason = "Coordinate values coerce before device math; no direct row"
+
+[[ops]]
+tier = "compute"
+op = "tl.split"
+reason = "MACHINERY emission (grid bracket) — every multi-block launch is untranslatable until the tiling-era row lands (211 §2b: the coverage cliff)"
+
+[[ops]]
+tier = "compute"
+op = "tl.merge"
+reason = "MACHINERY emission (global-index stores) — rides the tl.split row"
+
+# --- facet rows: finer than an op; each names its guard test ------------------
+
+[[facets]]
+tier = "compute"
+key = "lattice-rank-3"
+reason = "the 2D/1D lattice subset translates today"
+guard = "test_rank3_lattice_is_ledgered"
+
+[[facets]]
+tier = "compute"
+key = "multi-block-geometry"
+reason = "tl.split/tl.merge machinery emissions refuse at the translator"
+guard = "test_multi_block_geometry_is_ledgered"
+
+[[facets]]
+tier = "compute"
+key = "oracle-fn-arg"
+reason = "unliftable fn-arg bodies drop to per-element oracle dispatch — LOUDLY (kernel.oracle_fallback event)"
+guard = "test_oracle_fallback_is_loud"
+
+[[facets]]
+tier = "compute"
+key = "scalar-markers-beyond-rows"
+reason = "device rows exist for the ten math builtins + maximum/minimum; other markers raise Untranslatable naming the marker"
+guard = "test_marker_beyond_rows_is_ledgered"
+
+[[facets]]
+tier = "compute"
+key = "i64-narrowing"
+reason = "three silent i64->f32 narrowing sites (buffers, uniform slots, int consts as float literals — 211 §2b); a declared-narrowing-or-refusal fix is scheduled; until then this row keeps them visible"
+guard = "test_i64_narrowing_is_pinned"
+
+[[facets]]
+tier = "fragment"
+key = "sample-lod"
+reason = "tl.sample translates at lod=0 only; mip chains are recorded future work"
+guard = "test_sample_lod_refusal_is_pinned"

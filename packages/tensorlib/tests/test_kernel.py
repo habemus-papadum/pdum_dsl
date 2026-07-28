@@ -8,13 +8,14 @@ struct-element round-trip through a structured encoding."""
 
 import numpy as np
 import pytest
-from pdum.dsl import events, jit, op
 from pdum.dsl.reference import reference
 from pdum.tl import Tensor
 from pdum.tl.compute import iota, pointwise
 from pdum.tl.kernel import KERNELS, compute, config, f32, i32, thread_idx
 from pdum.tl.zoo.zoo_common import GELU_C, np_gelu
 from pdum.tl.zoo.zoo_common import gelu as gelu_marker
+
+from pdum.dsl import events, jit, op
 
 
 def T(arr, names):
@@ -129,10 +130,11 @@ def test_key_discipline_shape_miss_value_hit_launch_never_keys_fn_swap_miss():
         shader(twill(9.0, -2.0) | zoom(3.0), img)
         # TAP TENSORS NEVER KEY: config carries invocation data, same entry
         shader[config()](twill(1.0, 0.0) | zoom(1.0), img)
-    # GEOMETRY IS VALIDATED LAUNCHER DATA (owner-ruled): it never keys and
-    # never re-renders — this entry was built under the default geometry, so
-    # presenting an explicit one REFUSES rather than silently meaning nothing
-    with pytest.raises(ValueError, match="validated launcher data"):
+    # THE GEOMETRY SPLIT (owner-ruled at PR #7): thread sizing specializes,
+    # block sizing is launcher data — this entry was built under the default
+    # geometry, so presenting an explicit one REFUSES rather than silently
+    # meaning nothing (the battery repin rides the supersession, 290 §6.4)
+    with pytest.raises(ValueError, match="block sizing is launcher data, validated here"):
         shader[config(blocks=(9, 9), threads=(2, 2))](twill(1.0, 0.0) | zoom(1.0), img)
     with pytest.raises(events.EventForbidden):
         with events.forbid("kernel.miss"):  # SHAPE MISS: a new lattice is a new artifact
@@ -394,15 +396,15 @@ def test_config_bracket_taps_write_into_caller_tensors():
 def test_tap_name_set_specializes_tensors_do_not():
     """The config contract: the tap NAME SET is identity-bearing (a
     different set is a different artifact); the tap TENSORS are pure
-    invocation data; GEOMETRY is validated launcher data — it never keys,
-    and an incoherent geometry refuses instead of silently meaning
-    nothing."""
+    invocation data; GEOMETRY splits (owner-ruled at PR #7) — thread
+    sizing specializes, block sizing is launcher data — and an incoherent
+    geometry refuses instead of silently meaning nothing."""
     img = T(np.zeros((2, 2)), ("y", "x"))
     t1, t2 = T(np.zeros((2, 2)), ("y", "x")), T(np.zeros((2, 2)), ("y", "x"))
     tapped_kernel[config(taps={"dist": t1})](img)
     with events.forbid("kernel.miss"):
         tapped_kernel[config(taps={"dist": t2})](img)  # new TENSOR: warm hit
-    with pytest.raises(ValueError, match="validated launcher data"):
+    with pytest.raises(ValueError, match="block sizing is launcher data, validated here"):
         tapped_kernel[config(taps={"dist": t1}, blocks=(9, 9), threads=(2, 2))](img)
     with pytest.raises(events.EventForbidden):
         with events.forbid("kernel.miss"):
@@ -590,7 +592,7 @@ def test_block_idx_default_geometry_and_split_geometry_warmth():
     with events.forbid("kernel.miss"):  # same geometry, same lattice: warm
         k_split[config(blocks=(2,), threads=(4,))](base.split("y", by=2, ty=4))
     np.testing.assert_allclose(base.to_numpy(), np.arange(8.0))
-    with pytest.raises(ValueError, match="validated launcher data"):
+    with pytest.raises(ValueError, match="block sizing is launcher data, validated here"):
         k_split[config(blocks=(4,), threads=(2,))](base.split("y", by=2, ty=4))
 
 
