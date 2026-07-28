@@ -79,13 +79,22 @@ without a representation change.
   sizing (group count) is launcher data everywhere** and never
   specializes. Consequence: a backend cannot return only source text —
   it returns (source, launch-contract), the contract carrying the
-  thread size as data.
+  thread size as data. **Supersession, ruled on the PR thread
+  (owner, 2026-07-28): this OVERRULES the kernel tier's earlier
+  "geometry is validated launcher data, never identity" policy for
+  the THREADS half** — thread sizing enters identity; block sizing
+  stays validated launcher data. Scheduled deliberately, never by
+  builder discovery: kernel.py's geometry-policy comments rewrite to
+  the split, and the frozen geometry refusal ("…never identity") is
+  repinned in the same change — a refusal-contract API break made on
+  purpose.
 
 ## Metal runtime learnings (measured on M3 Ultra, the graphics-campaign spikes, 2026-07)
 
 Evidence: rerunnable spikes on the `worktree-graphics-design` branch
-(`explorations/graphics/spike_metal/` and siblings, a FINDINGS.md in
-each). Differentials there are three-way: f64 reference, WGSL/wgpu,
+(pushed to origin; `explorations/graphics/spike_metal/` and siblings,
+a FINDINGS.md in each — the durable record for builders on non-Mac
+hardware). Differentials there are three-way: f64 reference, WGSL/wgpu,
 MSL/Metal — the two device columns bitwise-equal on every translatable
 subject (caveat recorded there: wgpu reaches Metal via Naga on that
 machine, so cross-vendor exactness is untested until CUDA/Vulkan).
@@ -148,7 +157,12 @@ machine, so cross-vendor exactness is untested until CUDA/Vulkan).
   identical region key: keyed today they would collide, and un-keyed
   they recompile on every executor swap (8–9 ms per distinct pipeline
   once the driver's shader cache stops flattering byte-identical
-  source).
+  source). The fix is not new machinery: the content tier already
+  keys `(region.key, executor fp)` and `WGPU_FP` is declared as that
+  fp's second value — but `wgpu_artifact` bypasses the
+  `get_or_compile` door entirely (`dataclasses.replace` on an
+  already-compiled artifact). Route device compilation THROUGH the
+  existing door instead of around it.
 - **The target numeric contract is a category with no owner yet.**
   Metal's f32 `tanh` returns NaN for |x| ≥ 44.3614 (exactly
   `log(FLT_MAX)/2` — an `exp(2x)` implementation); `MTLMathModeSafe`
