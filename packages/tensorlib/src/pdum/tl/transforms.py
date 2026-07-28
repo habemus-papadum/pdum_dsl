@@ -37,26 +37,59 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 
-from .ir import _LAYOUT_OPS, Instr, Program, infer
+from .dialect import LAYOUT_OP_NAMES
 
-_VIEW = frozenset(_LAYOUT_OPS) | {"with_value_units"}
+_VIEW = LAYOUT_OP_NAMES | {"with_value_units"}
 _CLOSED = frozenset({"iota", "const"})
 _DEFAULT_BAN = frozenset({"reduce", "scan", "fold"})
 _ITEM = 8
 
 
-def dce(prog: Program, keep) -> Program:
-    """Drop instructions that don't (transitively) feed a kept var."""
-    keep = tuple(keep)
-    defined = set(prog.vars)
-    missing = [k for k in keep if k not in defined]
+def dce(region, keep, *, names=None):
+    """Drop values that don't (transitively) feed a kept name: a region IS
+    its yield-reachable graph, so DCE re-yields exactly ``keep`` (a name
+    sequence over the naming law — pass ``names``) and reachability does
+    the pruning; params that stop feeding an output drop from the
+    signature."""
+    return _region_dce(region, tuple(keep), names)
+
+
+def _region_dce(region, keep, names):
+    """The Region face: rebuild the yield over the kept nodes (keep order =
+    output order); everything else prunes by unreachability."""
+    from pdum.dsl.ir import Builder, Region
+    from pdum.dsl.ops import CORE_OPS
+
+    from .dialect import TL_OPS, walk_region  # lazy: dialect's consumers import this module
+
+    if names is None:
+        raise ValueError(
+            "region dce joins on names — pass names=region_names(region, param_names) "
+            "(LiftedStep.names / Assemblage.names carry it)"
+        )
+    by_name: dict = {}
+    for n in walk_region(region):
+        nm = names.get(id(n))
+        if nm is not None:
+            by_name.setdefault(nm, n)
+    missing = [k for k in keep if k not in by_name]
     if missing:
         raise KeyError(f"kept vars not defined by the program: {missing}")
-    live = set(keep)
-    for ins in reversed(prog.instrs):
-        if ins.var in live:
-            live.update(ins.operands)
-    return Program(tuple(i for i in prog.instrs if i.var in live))
+    kept = [by_name[k] for k in keep]
+    live: set[int] = set()
+    stack = list(kept)
+    while stack:
+        n = stack.pop()
+        if id(n) in live:
+            continue
+        live.add(id(n))
+        stack.extend(n.args)
+    b = Builder({**CORE_OPS, **TL_OPS})
+    yielded = kept[0] if len(kept) == 1 else b.emit("core.tuple", *kept)
+    return Region(
+        params=tuple(p for p in region.params if id(p) in live),
+        body=(b.emit("core.yield", yielded),),
+    )
 
 
 class _MinCut:
@@ -106,127 +139,184 @@ class _MinCut:
 
 
 @dataclass(frozen=True)
-class CheckpointReport:
-    program: Program
-    saved: tuple  # ((var, bytes), ...) — allocations chosen by the cut
-    recomputed: tuple  # forward vars duplicated into the backward
-    bytes_before: int  # naive boundary: root allocations of every backward read
-    bytes_after: int  # sum of saved bytes
+class RegionCheckpoint:
+    """The Region face's report: ``region`` is the transformed joint;
+    ``names`` extends the input assignment over the recompute clones
+    (``<name>.rc`` — two node objects, one semantic value: the
+    name-vs-value price made explicit as object identity)."""
+
+    region: object
+    saved: tuple
+    recomputed: tuple
+    bytes_before: int
+    bytes_after: int
+    names: dict
 
 
-def checkpoint(prog: Program, target: str, input_layouts: dict, ban=None, keep=()) -> CheckpointReport:
+def checkpoint(region, target: str, input_layouts: dict | None = None, ban=None, keep=(), *, names=None):
+    """Min-cut saved-set selection (module docstring) over the JOINT region
+    (a RegionGrad's); pass ``names``. Recomputation is node CLONING — the
+    DAG needs no lazy placement, because the default schedule (walk order)
+    visits a clone immediately before its first consumer."""
+    return _region_checkpoint(region, target, ban, keep, names)
+
+
+def _region_checkpoint(region, target, ban, keep, names):
+    from pdum.dsl.ir import Builder, Region
+    from pdum.dsl.naming import Namer
+    from pdum.dsl.ops import CORE_OPS
+
+    from .dialect import TL_OPS, walk_region  # lazy: dialect's consumers import this module
+
+    if names is None:
+        raise ValueError(
+            "region checkpoint joins on names — pass names=region_names(region, param_names) "
+            "(RegionGrad.names carries it)"
+        )
     ban = _DEFAULT_BAN if ban is None else frozenset(ban)
-    idx = prog.vars.index(target)
-    fwd, bwd = prog.instrs[: idx + 1], prog.instrs[idx + 1 :]
-    fvars = {i.var for i in fwd}
-    defs = {i.var: i for i in prog.instrs}
-    shadows = infer(prog, input_layouts)
+    by_name: dict = {}
+    node_of: dict = {}
+    for nd in walk_region(region):
+        node_of[id(nd)] = nd
+        nm = names.get(id(nd))
+        if nm is not None:
+            by_name.setdefault(nm, nd)
+    if target not in by_name:
+        raise KeyError(f"target {target!r} is not defined by the program")
+    tnode = by_name[target]
 
-    def nbytes(v: str) -> int:
-        if defs[v].op in _VIEW or defs[v].op in _CLOSED or defs[v].op == "input":
+    fwd: list = []  # target's ancestors, topological
+    fids: set = set()
+
+    def anc(nd):
+        if id(nd) in fids:
+            return
+        fids.add(id(nd))
+        for a in nd.args:
+            anc(a)
+        fwd.append(nd)
+
+    anc(tnode)
+    order = {id(nd): i for i, nd in enumerate(fwd)}
+    bwd = [nd for nd in walk_region(region) if id(nd) not in fids]
+
+    def base_of(nd) -> str:
+        return nd.op[3:] if nd.op.startswith("tl.") else nd.op
+
+    def is_view(nd) -> bool:
+        return base_of(nd) in _VIEW
+
+    def nbytes(nd) -> int:
+        if nd.op == "core.param" or nd.op == "core.const" or is_view(nd) or base_of(nd) in _CLOSED:
             return 0
         n = 1
-        for d in shadows[v].dims:
+        for d in nd.type.layout.dims:
             n *= d.size
         return n * _ITEM
 
-    def root(v: str) -> str:
-        while defs[v].op in _VIEW:
-            v = defs[v].operands[0]
-        return v
+    def root(nd):
+        while is_view(nd):
+            nd = nd.args[0]
+        return nd
 
-    R = sorted({o for ins in bwd for o in ins.operands if o in fvars})
-    forced = ({target} | set(keep)) & fvars
+    # outputs are not consumption: yield/tuple plumbing never puts a forward
+    # value in the backward's read set (the same law the analyses apply)
+    R = sorted(
+        {id(a) for nd in bwd if nd.op not in ("core.yield", "core.tuple") for a in nd.args if id(a) in fids},
+        key=order.__getitem__,
+    )
+    forced = {id(by_name[target])} | {id(by_name[k]) for k in keep if k in by_name}
+    forced &= fids
     if not R:
-        return CheckpointReport(prog, (), (), 0, 0)
+        return RegionCheckpoint(region, (), (), 0, 0, dict(names))
 
-    # relevant subgraph: forward ancestors of R
-    rel: set[str] = set()
+    rel: set = set()
     stack = list(R)
     while stack:
         v = stack.pop()
         if v in rel:
             continue
         rel.add(v)
-        stack.extend(o for o in defs[v].operands if o in fvars and o not in rel)
+        stack.extend(id(a) for a in node_of[v].args if id(a) in fids and id(a) not in rel)
 
-    inf = sum(nbytes(v) for v in rel) + 1
+    inf = sum(nbytes(node_of[v]) for v in rel) + 1
     net = _MinCut()
-    for v in rel:
-        op = defs[v].op
-        if v in forced or op == "input" or op in _CLOSED:
-            cap = 0  # free to keep: outputs-anyway, resident, closed forms
-        elif op in _VIEW:
-            cap = inf  # never save an alias; save its root or recompute
+    for v in sorted(rel, key=order.__getitem__):
+        nd = node_of[v]
+        if v in forced or nd.op == "core.param" or nd.op == "core.const" or base_of(nd) in _CLOSED:
+            cap = 0
+        elif is_view(nd):
+            cap = inf
         else:
-            cap = nbytes(v)
+            cap = nbytes(nd)
         net.add(("i", v), ("o", v), cap)
-        for o in defs[v].operands:
-            if o in rel:
-                net.add(("o", o), ("i", v), inf)
-        if op == "input" or op in ban:
-            net.add("src", ("i", v), inf)  # fresh demand: not re-derivable
+        for a in nd.args:
+            if id(a) in rel:
+                net.add(("o", id(a)), ("i", v), inf)
+        if nd.op == "core.param" or base_of(nd) in ban:
+            net.add("src", ("i", v), inf)
     for v in R:
         net.add(("o", v), "snk", inf)
     reach = net.solve("src", "snk")
     cut = {v for v in rel if ("i", v) in reach and ("o", v) not in reach}
-    available = cut | forced | {v for v in rel if defs[v].op == "input"}
+    available = cut | forced | {v for v in rel if node_of[v].op == "core.param"}
 
-    # recompute set: unavailable ancestors of R, stopping at available vars
-    need: set[str] = set()
+    need: set = set()
     stack = [v for v in R if v not in available]
     while stack:
         v = stack.pop()
         if v in need:
             continue
         need.add(v)
-        stack.extend(o for o in defs[v].operands if o in fvars and o not in available and o not in need)
-    blocked = [v for v in need if defs[v].op in ban]
+        stack.extend(id(a) for a in node_of[v].args if id(a) in fids and id(a) not in available and id(a) not in need)
+    blocked = [names.get(v, "?") for v in need if base_of(node_of[v]) in ban]
     if blocked:
         raise AssertionError(f"min-cut violated the recompute ban: {blocked}")  # structural bug guard
 
-    taken = set(prog.vars)
+    b = Builder({**CORE_OPS, **TL_OPS})
+    namer = Namer(taken=set(names.values()))
+    names2 = dict(names)
+    clones: dict = {}
 
-    def fresh(v: str) -> str:
-        nm = f"{v}.rc"
-        while nm in taken:
-            nm += "_"
-        taken.add(nm)
-        return nm
+    def clone(nd):
+        if id(nd) in clones:
+            return clones[id(nd)]
+        args2 = tuple(clone(a) if id(a) in need else a for a in nd.args)
+        c = b.emit(nd.op, *args2, regions=nd.regions, type=nd.type, **dict(nd.attrs))
+        base_name = names.get(id(nd))
+        names2[id(c)] = namer.derive(f"{base_name}.rc" if base_name else "%rc")
+        clones[id(nd)] = c
+        return c
 
-    ren = {v: fresh(v) for v in need}
-    order = {v: i for i, v in enumerate(prog.vars)}
-    emitted: set[str] = set()
-    out: list[Instr] = list(fwd)
+    rebuilt: dict = {}
 
-    def emit_rc(operands) -> None:
-        # lazily materialize the unemitted recompute ancestors, fwd order —
-        # just-in-time recompute is what actually moves the peak
-        todo, seen = [], set()
-        stack = [o for o in operands if o in need and o not in emitted]
-        while stack:
-            v = stack.pop()
-            if v in seen:
-                continue
-            seen.add(v)
-            todo.append(v)
-            stack.extend(o for o in defs[v].operands if o in need and o not in emitted and o not in seen)
-        for v in sorted(todo, key=order.__getitem__):
-            ins = defs[v]
-            out.append(Instr(ren[v], ins.op, tuple(ren.get(o, o) for o in ins.operands), dict(ins.params)))
-            emitted.add(v)
+    def rb(nd):
+        if id(nd) in rebuilt:
+            return rebuilt[id(nd)]
+        args2 = tuple(clone(a) if id(a) in need else (rb(a) if id(a) not in fids else a) for a in nd.args)
+        if args2 == nd.args:
+            rebuilt[id(nd)] = nd
+            return nd
+        c = b.emit(nd.op, *args2, regions=nd.regions, type=nd.type, **dict(nd.attrs))
+        nm = names.get(id(nd))
+        if nm is not None:
+            names2[id(c)] = nm  # same name: same semantic value, rebuilt args
+        rebuilt[id(nd)] = c
+        return c
 
-    for ins in bwd:
-        emit_rc(ins.operands)
-        out.append(Instr(ins.var, ins.op, tuple(ren.get(o, o) for o in ins.operands), dict(ins.params)))
+    body2 = tuple(rb(nd) for nd in region.body)
+    out_region = Region(params=region.params, body=body2)
 
-    saved = tuple((v, nbytes(v)) for v in sorted(cut, key=order.__getitem__) if nbytes(v) > 0)
-    naive_roots = {root(v) for v in R} - forced
-    bytes_before = sum(nbytes(r) for r in naive_roots)
-    return CheckpointReport(
-        program=Program(tuple(out)),
+    saved = tuple(
+        (names.get(v, "?"), nbytes(node_of[v])) for v in sorted(cut, key=order.__getitem__) if nbytes(node_of[v]) > 0
+    )
+    naive_roots = {id(root(node_of[v])) for v in R} - forced
+    bytes_before = sum(nbytes(node_of[r]) for r in naive_roots)
+    return RegionCheckpoint(
+        region=out_region,
         saved=saved,
-        recomputed=tuple(sorted(need, key=order.__getitem__)),
+        recomputed=tuple(names.get(v, "?") for v in sorted(need, key=order.__getitem__)),
         bytes_before=bytes_before,
         bytes_after=sum(nb for _, nb in saved),
+        names=names2,
     )

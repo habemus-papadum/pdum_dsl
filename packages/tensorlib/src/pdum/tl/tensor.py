@@ -614,3 +614,35 @@ def _frame_issue(rd: Dim, d: Dim) -> tuple[str, str] | None:
     if r != 0:
         return (f"frames offset by {int(r)} steps", f"shift({rd.name}={int(r)})")
     return None
+
+
+class Token:
+    """An ordering value (200 §S.3): a store consumes and produces one, so
+    ordering is ordinary dataflow — the frontend threads ONE implicit token
+    through all stores in statement order; tokens never appear in user
+    syntax. Tile barriers and L2 bufferization consume the same mechanism."""
+
+    __slots__ = ()
+
+
+def _store(tok: Token, target: Tensor, value: Tensor) -> Token:
+    """The store: write ``value`` into the writable ``target``'s buffer —
+    the ONE effect in the reference tier, ordered by its token."""
+    if not isinstance(tok, Token):
+        raise TypeError("store's first operand must be a token")
+    order = target.names
+    if set(order) != set(value.names):
+        raise ValueError(f"store: value dims {value.names} do not match target dims {order}")
+    dims = target.layout.dims
+    if any(d.stride == 0 for d in dims):
+        raise ValueError("store: the writable target must be injective (no broadcast dims)")
+    origin = target.layout.offset + sum(d.stride * d.start for d in dims)
+    arr = np.ndarray(
+        buffer=target.buffer.data,
+        dtype=target.dtype,
+        shape=tuple(d.size for d in dims),
+        strides=tuple(d.stride for d in dims),
+        offset=origin,
+    )
+    arr[...] = value.to_numpy(order=order) if order else value.to_numpy()
+    return Token()

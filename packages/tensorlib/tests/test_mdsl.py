@@ -2,17 +2,14 @@
 
 import numpy as np
 import pytest
-from pdum.tl import Tensor, defmarker, defreducer, pointwise, reduce, scan
+from pdum.tl import Tensor, defmarker, defreducer, pointwise, red, reduce, scan
 from pdum.tl.autodiff import grad, numeric_grad
-from pdum.tl.ir import Instr, Program, run
+from pdum.tl.dialect import run_named
+from pdum.tl.lifting import lift_step
 from pdum.tl.mdsl import diff, exp, gt, log, tanh, where
 from pdum.tl.nodes import Arg, Const, Prim
 from pdum.tl.producer import lower, scalars
 from pdum.tl.registry import MARKERS
-
-
-def I(var, op, operands=(), **params):  # noqa: E743
-    return Instr(var, op, tuple(operands), params)
 
 
 def T(arr, names):
@@ -26,6 +23,8 @@ softplus = defmarker("softplus_t", 1, lambda x: log(1 + exp(x)))
 GELU_C = 0.7978845608028654  # sqrt(2/pi)
 gelu = defmarker("gelu_t", 1, lambda x: 0.5 * x * (1 + tanh(GELU_C * (x + 0.044715 * x * x * x))))
 relu = defmarker("relu_t", 1, lambda x: where(gt(x, 0), x, 0 * x))
+
+_COMPOSITES = {"sigmoid_t": sigmoid, "softplus_t": softplus, "gelu_t": gelu, "relu_t": relu}
 
 
 # ----------------------------------------------------------------------
@@ -66,15 +65,14 @@ def test_composite_eval_matches_numpy():
 
 
 def test_composites_work_in_ir_by_name():
-    prog = Program(
-        (
-            I("x", "input"),
-            I("s", "pointwise", ["x"], f="sigmoid_t"),
-            I("y", "reduce", ["s"], f="sum", dims=("i",)),
-        )
-    )
+    def step(x):
+        s = pointwise(sigmoid, x)
+        y = reduce(red.sum, s, "i")
+        return s, y
+
     x = T([0.0, 1.0, -1.0], ("i",))
-    env = run(prog, {"x": x})
+    ls = lift_step(step, x=x.layout)
+    env = run_named(ls.region, {"x": x}, ls.names)
     np.testing.assert_allclose(env["s"].to_numpy(), 1 / (1 + np.exp(-x.to_numpy())))
 
 
@@ -94,41 +92,40 @@ def test_partial_is_derived_and_registered():
 
 @pytest.mark.parametrize("mname", ["sigmoid_t", "softplus_t", "gelu_t", "relu_t"])
 def test_composites_differentiate_automatically(mname):
-    prog = Program(
-        (
-            I("x", "input"),
-            I("w", "input"),
-            I("p", "pointwise", ["x", "w"], f="mul"),
-            I("a", "pointwise", ["p"], f=mname),
-            I("y", "reduce", ["a"], f="sum", dims=("i",)),
-        )
-    )
+    m = _COMPOSITES[mname]
+
+    def step(x, w):
+        p = x * w
+        a = pointwise(m, p)
+        y = reduce(red.sum, a, "i")
+        return y
+
     inputs = {
         "x": T(RNG.uniform(0.2, 1.5, 5), ("i",)),
         "w": T(RNG.uniform(0.2, 1.5, 5), ("i",)),
     }
-    joint, grads = grad(prog, "y", dict(inputs))
-    env = run(joint, inputs)
+    ls = lift_step(step, x=inputs["x"].layout, w=inputs["w"].layout)
+    rg = grad(ls.region, "y", dict(inputs), names=ls.names)
+    env = run_named(rg.region, inputs, rg.names)
     for wrt in ("x", "w"):
-        got = env[grads[wrt]].to_numpy(order=inputs[wrt].names)
-        want = numeric_grad(prog, "y", wrt, inputs)
+        got = env[rg.grads[wrt]].to_numpy(order=inputs[wrt].names)
+        want = numeric_grad(ls.region, "y", wrt, inputs, ls.names)
         np.testing.assert_allclose(got, want, rtol=1e-4, atol=1e-7)
 
 
 def test_tanh_primitive_gradient():
-    prog = Program(
-        (
-            I("x", "input"),
-            I("t", "pointwise", ["x"], f="tanh"),
-            I("y", "reduce", ["t"], f="sum", dims=("i",)),
-        )
-    )
+    def step(x):
+        t = pointwise(tanh, x)
+        y = reduce(red.sum, t, "i")
+        return y
+
     inputs = {"x": T(RNG.standard_normal(5), ("i",))}
-    joint, grads = grad(prog, "y", dict(inputs))
-    env = run(joint, inputs)
+    ls = lift_step(step, x=inputs["x"].layout)
+    rg = grad(ls.region, "y", dict(inputs), names=ls.names)
+    env = run_named(rg.region, inputs, rg.names)
     np.testing.assert_allclose(
-        env[grads["x"]].to_numpy(),
-        numeric_grad(prog, "y", "x", inputs),
+        env[rg.grads["x"]].to_numpy(),
+        numeric_grad(ls.region, "y", "x", inputs, ls.names),
         rtol=1e-4,
         atol=1e-7,
     )
@@ -214,14 +211,13 @@ def test_cumsum_as_composite_reducer():
 def test_multi_operand_scan_in_ir_and_misalignment_refused():
     a = T(np.full(4, 0.5), ("t",))
     bb = T(np.arange(4.0), ("t",))
-    prog = Program(
-        (
-            I("a", "input"),
-            I("b", "input"),
-            I("h", "scan", ["a", "b"], f="linrec_t", dim="t"),
-        )
-    )
-    env = run(prog, {"a": a, "b": bb})
+
+    def step(a, b):
+        h = scan(linrec, (a, b), "t")
+        return h
+
+    ls = lift_step(step, a=a.layout, b=bb.layout)
+    env = run_named(ls.region, {"a": a, "b": bb}, ls.names)
     assert env["h"].to_numpy().shape == (4,)
     with pytest.raises(ValueError, match="aligned"):
         scan(linrec, (a, bb.shift(t=1)), "t")
@@ -232,23 +228,23 @@ def test_multi_operand_scan_in_ir_and_misalignment_refused():
 # ----------------------------------------------------------------------
 
 
-def _ssm_prog(loss="sum"):
-    tail = (
-        (I("y", "reduce", ["h"], f="sum", dims=("t",)),)
-        if loss == "sum"
-        else (
-            I("hh", "pointwise", ["h", "h"], f="mul"),
-            I("y", "reduce", ["hh"], f="sum", dims=("t",)),
-        )
-    )
-    return Program(
-        (
-            I("a", "input"),
-            I("b", "input"),
-            I("h", "scan", ["a", "b"], f="linrec_t", dim="t"),
-        )
-        + tail
-    )
+def _ssm_step(loss="sum"):
+    if loss == "sum":
+
+        def step(a, b):
+            h = scan(linrec, (a, b), "t")
+            y = reduce(red.sum, h, "t")
+            return y
+
+    else:
+
+        def step(a, b):
+            h = scan(linrec, (a, b), "t")
+            hh = h * h
+            y = reduce(red.sum, hh, "t")
+            return y
+
+    return step
 
 
 def test_ssm_gradient_analytic_structure():
@@ -256,8 +252,9 @@ def test_ssm_gradient_analytic_structure():
     a = np.array([0.9, 1.1, 0.7, 1.3, 0.8])
     bv = np.arange(1.0, 6.0)
     inputs = {"a": T(a, ("t",)), "b": T(bv, ("t",))}
-    jp, grads = grad(_ssm_prog("sum"), "y", inputs)
-    env = run(jp, inputs)
+    ls = lift_step(_ssm_step("sum"), a=inputs["a"].layout, b=inputs["b"].layout)
+    rg = grad(ls.region, "y", dict(inputs), names=ls.names)
+    env = run_named(rg.region, inputs, rg.names)
     h = np.empty(5)
     acc = 0.0
     for t in range(5):
@@ -267,38 +264,36 @@ def test_ssm_gradient_analytic_structure():
     hbar[-1] = 1.0
     for t in range(3, -1, -1):
         hbar[t] = 1.0 + a[t + 1] * hbar[t + 1]
-    np.testing.assert_allclose(env[grads["b"]].to_numpy(), hbar, rtol=1e-10)
-    np.testing.assert_allclose(env[grads["a"]].to_numpy(), hbar * np.concatenate([[0.0], h[:-1]]), rtol=1e-10)
+    np.testing.assert_allclose(env[rg.grads["b"]].to_numpy(), hbar, rtol=1e-10)
+    np.testing.assert_allclose(env[rg.grads["a"]].to_numpy(), hbar * np.concatenate([[0.0], h[:-1]]), rtol=1e-10)
 
 
 def test_ssm_scan_gradients_match_fd():
     # quadratic loss: the scan cotangent is NON-uniform, exercising the ȳ path
     n = 6
     inputs = {"a": T(RNG.uniform(0.4, 1.2, n), ("t",)), "b": T(RNG.standard_normal(n), ("t",))}
-    prog = _ssm_prog("quadratic")
-    jp, grads = grad(prog, "y", inputs)
-    env = run(jp, inputs)
+    ls = lift_step(_ssm_step("quadratic"), a=inputs["a"].layout, b=inputs["b"].layout)
+    rg = grad(ls.region, "y", dict(inputs), names=ls.names)
+    env = run_named(rg.region, inputs, rg.names)
     for v in ("a", "b"):
-        fd = numeric_grad(prog, "y", v, inputs)
-        np.testing.assert_allclose(env[grads[v]].to_numpy(), fd, rtol=1e-5, atol=1e-8)
+        fd = numeric_grad(ls.region, "y", v, inputs, ls.names)
+        np.testing.assert_allclose(env[rg.grads[v]].to_numpy(), fd, rtol=1e-5, atol=1e-8)
 
 
 def test_ssm_reduce_gradient_matches_fd():
     # reduce = select-last of the scan; its adjoint embeds at the last slot
-    prog = Program(
-        (
-            I("a", "input"),
-            I("b", "input"),
-            I("hf", "reduce", ["a", "b"], f="linrec_t", dims=("t",)),
-        )
-    )
+    def step(a, b):
+        hf = reduce(linrec, (a, b), "t")
+        return hf
+
     n = 5
     inputs = {"a": T(RNG.uniform(0.4, 1.2, n), ("t",)), "b": T(RNG.standard_normal(n), ("t",))}
-    jp, grads = grad(prog, "hf", inputs)
-    env = run(jp, inputs)
+    ls = lift_step(step, a=inputs["a"].layout, b=inputs["b"].layout)
+    rg = grad(ls.region, "hf", dict(inputs), names=ls.names)
+    env = run_named(rg.region, inputs, rg.names)
     for v in ("a", "b"):
-        fd = numeric_grad(prog, "hf", v, inputs)
-        np.testing.assert_allclose(env[grads[v]].to_numpy(), fd, rtol=1e-5, atol=1e-8)
+        fd = numeric_grad(ls.region, "hf", v, inputs, ls.names)
+        np.testing.assert_allclose(env[rg.grads[v]].to_numpy(), fd, rtol=1e-5, atol=1e-8)
 
 
 def test_batched_ssm_gradient_matches_fd():
@@ -306,19 +301,18 @@ def test_batched_ssm_gradient_matches_fd():
         "a": T(RNG.uniform(0.4, 1.2, (2, 4)), ("k", "t")),
         "b": T(RNG.standard_normal((2, 4)), ("k", "t")),
     }
-    prog = Program(
-        (
-            I("a", "input"),
-            I("b", "input"),
-            I("h", "scan", ["a", "b"], f="linrec_t", dim="t"),
-            I("y", "reduce", ["h"], f="sum", dims=("k", "t")),
-        )
-    )
-    jp, grads = grad(prog, "y", inputs)
-    env = run(jp, inputs)
+
+    def step(a, b):
+        h = scan(linrec, (a, b), "t")
+        y = reduce(red.sum, h, ("k", "t"))
+        return y
+
+    ls = lift_step(step, a=inputs["a"].layout, b=inputs["b"].layout)
+    rg = grad(ls.region, "y", dict(inputs), names=ls.names)
+    env = run_named(rg.region, inputs, rg.names)
     for v in ("a", "b"):
-        fd = numeric_grad(prog, "y", v, inputs)
-        np.testing.assert_allclose(env[grads[v]].to_numpy(), fd, rtol=1e-5, atol=1e-8)
+        fd = numeric_grad(ls.region, "y", v, inputs, ls.names)
+        np.testing.assert_allclose(env[rg.grads[v]].to_numpy(), fd, rtol=1e-5, atol=1e-8)
 
 
 def test_cumsum_composite_adjoint_matches_plain_scan_sum():
@@ -333,26 +327,26 @@ def test_cumsum_composite_adjoint_matches_plain_scan_sum():
     x = T(RNG.standard_normal(5), ("i",))
 
     def build(fname):
-        prog = Program(
-            (
-                I("x", "input"),
-                I("s", "scan", ["x"], f=fname, dim="i"),
-                I("ss", "pointwise", ["s", "s"], f="mul"),
-                I("y", "reduce", ["ss"], f="sum", dims=("i",)),
-            )
-        )
-        jp, grads = grad(prog, "y", {"x": x})
-        return run(jp, {"x": x})[grads["x"]].to_numpy()
+        def step(x):
+            s = scan(fname, x, "i")
+            ss = s * s
+            y = reduce(red.sum, ss, "i")
+            return y
+
+        ls = lift_step(step, x=x.layout)
+        rg = grad(ls.region, "y", {"x": x}, names=ls.names)
+        return run_named(rg.region, {"x": x}, rg.names)[rg.grads["x"]].to_numpy()
 
     np.testing.assert_allclose(build("csum_g"), build("sum"), rtol=1e-10)
 
 
 def test_empty_composite_scan_gradient_is_zeros():
     e = T(np.zeros(0), ("t",))
-    jp, grads = grad(_ssm_prog("sum"), "y", {"a": e, "b": e})
-    env = run(jp, {"a": e, "b": e})
-    assert env[grads["a"]].to_numpy().shape == (0,)
-    assert env[grads["b"]].to_numpy().shape == (0,)
+    ls = lift_step(_ssm_step("sum"), a=e.layout, b=e.layout)
+    rg = grad(ls.region, "y", {"a": e, "b": e}, names=ls.names)
+    env = run_named(rg.region, {"a": e, "b": e}, rg.names)
+    assert env[rg.grads["a"]].to_numpy().shape == (0,)
+    assert env[rg.grads["b"]].to_numpy().shape == (0,)
 
 
 def test_defmarker_refuses_primitive_names():

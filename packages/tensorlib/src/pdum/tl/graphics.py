@@ -50,11 +50,10 @@ from pdum.dsl.types import Type
 from .coords import admit_frame
 from .dialect import TL_OPS, CoordType, TensorType, capture_shim, run_region, tensor_type
 from .encoding import FormatEncoding
-from .ir import Token, _store
 from .kernel import _ARG_BINDINGS, KERNEL_RULES, _code_fp, _env_fp, _lookup
 from .lifting import _Intrinsic
 from .producer import _captured, _fn_ast
-from .tensor import Tensor
+from .tensor import Tensor, Token, _store
 
 # The vertex ambient is thread_idx over the DRAW DOMAIN (250, the one
 # ambient function; kind-dependent lattice): canonical dims "vertex_id"

@@ -1,5 +1,5 @@
 """Tensor-typed lifting (S.2): plain functions over tensor-typed parameters
-lower to step Programs; Literal-annotated parameters are structural; the
+lower to step regions; Literal-annotated parameters are structural; the
 structural-slot refusal names the annotation fix."""
 
 from fractions import Fraction
@@ -9,7 +9,7 @@ import pytest
 from pdum.dsl.types import Literal
 from pdum.tl import Tensor
 from pdum.tl.chart import chart
-from pdum.tl.ir import Instr, Program, run
+from pdum.tl.dialect import fold_region, run_named, run_region, tensor_type_of_layout
 from pdum.tl.lifting import lift_step
 
 e_chart = chart(0, 1, axis="x")
@@ -39,26 +39,16 @@ def test_heat_step_lifts_and_folds():
     u0 = T(np.random.default_rng(2).standard_normal(n), ("x",))
     ls = lift_step(heat_step, u=u0.layout, n=n, alpha=alpha)
     assert ls.inputs == ("u",)
-    prog = Program(
-        (
-            Instr("u0", "input"),
-            Instr(
-                "uf",
-                "fold",
-                ("u0",),
-                {
-                    "step": ls.program,
-                    "dim": "t",
-                    "state": ("u",),
-                    "element": (),
-                    "carry": {"u": ls.outputs[0]},
-                    "out": ("final", ls.outputs[0]),
-                    "extent": (0, steps),
-                },
-            ),
-        )
+    region, _ = fold_region(
+        ls.region,
+        dim="t",
+        state=("u",),
+        element=(),
+        out=("final", 0),
+        init_types=(tensor_type_of_layout(u0.layout),),
+        extent=(0, steps),
     )
-    got = run(prog, {"u0": u0})["uf"].to_numpy()
+    got = run_region(region, [u0]).to_numpy()
     ref = u0.to_numpy().copy()
     for _ in range(steps):
         up = np.zeros(n + 2)
@@ -88,7 +78,7 @@ def test_fdtd_step_the_spec_example_lifts_with_charts():
     H0 = T(rng.standard_normal(n - 1), ("x",)).with_charts(x=h_chart)
     ls = lift_step(fdtd_step, E=E0.layout, H=H0.layout, n=n)
     assert ls.inputs == ("E", "H") and len(ls.outputs) == 2
-    env = run(ls.program, {"E": E0, "H": H0})
+    env = run_named(ls.region, {"E": E0, "H": H0}, ls.names)
     E1, H1 = env[ls.outputs[0]], env[ls.outputs[1]]
     # denotation vs plain numpy leapfrog
     e, h = E0.to_numpy(), H0.to_numpy()

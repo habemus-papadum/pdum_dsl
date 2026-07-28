@@ -6,16 +6,11 @@ import numpy as np
 import pytest
 from pdum.tl import Tensor, fold_in, normal, uniform
 from pdum.tl.autodiff import grad
-from pdum.tl.ir import Instr, Program, run
 from pdum.tl.random import RandomBuffer, _philox2x32
 
 
 def T(arr, names):
     return Tensor.from_numpy(np.asarray(arr, dtype=np.float64), names)
-
-
-def I(var, op, operands=(), **params):  # noqa: E743
-    return Instr(var, op, tuple(operands), params)
 
 
 def test_the_field_regenerates_bit_identically():
@@ -70,40 +65,50 @@ def test_philox_reference_vector_is_frozen():
     assert pinned == [4280135257, 3705464917, 2473546483, 244130200]
 
 
-def test_dropout_idiom_in_ir_with_gradient():
+def test_dropout_idiom_in_the_region_with_gradient():
     """where(u < p, 0, x/(1-p)) — the mask acts as a constant field; the
-    gradient is exactly the kept-mask scaling, via existing rules only."""
+    gradient is exactly the kept-mask scaling, via existing rules only.
+    The scope idiom is the region-tier spelling: dropout(x, p, site)."""
+    from pdum.tl import red, reduce
+    from pdum.tl.assemblage import assemblage, unit
+    from pdum.tl.dialect import run_named
+    from pdum.tl.scope import dropout, scope, tap
+
     p, key = 0.25, fold_in(9, "drop_site")
-    prog = Program(
-        (
-            I("x", "input"),
-            I("u", "random", ("x",), dist="uniform", key=key),
-            I("pc", "const", (), value=p, dims=(("i", (0, 64)),)),
-            I("kc", "const", (), value=1.0 - p, dims=(("i", (0, 64)),)),
-            I("m", "pointwise", ("u", "pc"), f="lt"),
-            I("z", "const", (), value=0.0, dims=(("i", (0, 64)),)),
-            I("xs", "pointwise", ("x", "kc"), f="div"),
-            I("y", "pointwise", ("m", "z", "xs"), f="where"),
-            I("s", "reduce", ("y",), f="sum", dims=("i",)),
-        )
-    )
+    root = scope(root_key=9)  # (root / "drop_site").stream() == key
+
+    @unit
+    def drop_unit(x):
+        y = dropout(x, 0.25, root / "drop_site")
+        tap(y, root / "y")
+        s = reduce(red.sum, y, "i")
+        return s
+
     x = T(np.random.default_rng(0).standard_normal(64), ("i",))
-    env = run(prog, {"x": x})
-    mask = env["m"].to_numpy()
-    np.testing.assert_allclose(env["y"].to_numpy(), np.where(mask, 0.0, x.to_numpy() / (1 - p)))
-    joint, grads = grad(prog, "s", {"x": x})
-    genv = run(joint, {"x": x})
-    np.testing.assert_allclose(genv[grads["x"]].to_numpy(), np.where(mask, 0.0, 1.0 / (1 - p)))
-    assert grads["u"] is None  # the field is gradient-free: a constant mask
+    asm = assemblage(drop_unit, scope=root, taps=("y",), x=x.layout)
+    env = run_named(asm.region, {"x": x}, asm.names)
+    mask = uniform(key, x.layout).to_numpy() < p  # the SAME stream the site derives
+    np.testing.assert_allclose(env[asm.taps["y"]].to_numpy(), np.where(mask, 0.0, x.to_numpy() / (1 - p)))
+    rg = grad(asm.region, asm.output, {"x": x}, wrt=("x", "u"), names=asm.names)
+    genv = run_named(rg.region, {"x": x}, rg.names)
+    np.testing.assert_allclose(genv[rg.grads["x"]].to_numpy(), np.where(mask, 0.0, 1.0 / (1 - p)))
+    assert rg.grads["u"] is None  # the field is gradient-free: a constant mask
 
 
 def test_random_regenerates_inside_reruns_identically():
+    from pdum.dsl.ir import Builder, Region
+    from pdum.dsl.ops import CORE_OPS
+    from pdum.tl.dialect import TL_OPS, run_region, tensor_type_of_layout
+
     key = fold_in(1, "site")
-    prog = Program((I("x", "input"), I("u", "random", ("x",), dist="uniform", key=key)))
     x = T(np.zeros(16), ("i",))
-    a = run(prog, {"x": x})["u"].to_numpy()
-    b = run(prog, {"x": x})["u"].to_numpy()
-    np.testing.assert_array_equal(a, b)
+    b = Builder({**CORE_OPS, **TL_OPS})
+    xp = b.param(0, tensor_type_of_layout(x.layout))
+    un = b.emit("tl.random", xp, dist="uniform", key=key)
+    region = Region(params=(xp,), body=(b.emit("core.yield", un),))
+    a = run_region(region, [x]).to_numpy()
+    c = run_region(region, [x]).to_numpy()
+    np.testing.assert_array_equal(a, c)
 
 
 def test_the_recompute_theorem_revolve_equals_store_all_with_dropout_on():
@@ -112,12 +117,13 @@ def test_the_recompute_theorem_revolve_equals_store_all_with_dropout_on():
     The mask is a zero-memory closed-form field over (tm, x) consumed as a
     fold element — recompute re-reads the same coordinates and regenerates
     the same bits BY CONSTRUCTION; no mask is ever stored anywhere."""
+    from pdum.dsl.ir import Builder, Region
+    from pdum.dsl.ops import CORE_OPS
     from pdum.dsl.types import Literal
-    from pdum.tl.autodiff import grad
     from pdum.tl.compute import const_like, pointwise
+    from pdum.tl.dialect import TL_OPS, region_names, run_named, tensor_type_of_layout
     from pdum.tl.lifting import lift_step
     from pdum.tl.markers import lt, tanh, where
-    from pdum.tl.random import RandomBuffer
 
     N, TM, p_drop = 4, 6, 0.4
     key = fold_in(5, "train.drop")
@@ -132,28 +138,17 @@ def test_the_recompute_theorem_revolve_equals_store_all_with_dropout_on():
         return s * 0.8 + pointwise(tanh, kept) * 0.3
 
     ls = lift_step(step, s=s0.layout, m=T(np.zeros(N), ("x",)).layout, p=p_drop)
-    fold_params = {
-        "step": ls.program,
-        "dim": "tm",
-        "state": ("s",),
-        "element": ("m",),
-        "carry": {"s": ls.outputs[0]},
-        "out": ("final", ls.outputs[0]),
-    }
-    prog = Program(
-        (
-            I("s0", "input"),
-            I("mask", "input"),
-            I("sf", "fold", ("s0", "mask"), **fold_params),
-            I("zloss", "reduce", ("sf",), f="sum", dims=("x",)),
-        )
-    )
+    b = Builder({**CORE_OPS, **TL_OPS})
+    s0p = b.param(0, tensor_type_of_layout(s0.layout))
+    mp = b.param(1, tensor_type_of_layout(mask_lattice.layout))
+    sf = b.emit("tl.fold", s0p, mp, regions=(ls.region,), dim="tm", state=("s",), element=("m",), out=("final", 0))
+    zloss = b.emit("tl.reduce", sf, f="sum", dims=("x",))
+    region = Region(params=(s0p, mp), body=(b.emit("core.yield", zloss),))
+    names = region_names(region, ("s0", "mask"), {id(sf): "sf", id(zloss): "zloss"})
     inputs = {"s0": s0, "mask": mask}
-    j_all, g_all = grad(prog, "zloss", dict(inputs), fold_segments=1)
-    j_rev, g_rev = grad(prog, "zloss", dict(inputs), fold_slots=2)
-    e_all = run(j_all, inputs)
-    e_rev = run(j_rev, inputs)
-    got_all = e_all[g_all["s0"]].to_numpy(order=("x",))
-    got_rev = e_rev[g_rev["s0"]].to_numpy(order=("x",))
+    rg_all = grad(region, "zloss", dict(inputs), fold_segments=1, names=names)
+    rg_rev = grad(region, "zloss", dict(inputs), fold_slots=2, names=names)
+    got_all = run_named(rg_all.region, inputs, rg_all.names)[rg_all.grads["s0"]].to_numpy(order=("x",))
+    got_rev = run_named(rg_rev.region, inputs, rg_rev.names)[rg_rev.grads["s0"]].to_numpy(order=("x",))
     np.testing.assert_array_equal(got_rev, got_all)  # BIT-identical, dropout on
     assert not np.array_equal(got_all, np.zeros(N))

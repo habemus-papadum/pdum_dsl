@@ -30,8 +30,6 @@ from collections import Counter
 from dataclasses import dataclass
 from fractions import Fraction
 
-from .ir import Program, _fold_parts, _fold_step_layouts, infer
-
 # The DECLARED interior itemsize (200 §4): collectives in the reference
 # move f64 interior values — a declared oracle property. L2's encoding
 # assignment makes per-value bytes real; boundary facts enter via the
@@ -115,98 +113,126 @@ def _check_bound(layout, machine: Machine) -> None:
             raise ValueError(f"dim {d.name}: mesh extent {d.size} exceeds level {d.level!r} count {lv.count}")
 
 
-def traffic(prog: Program, input_layouts: dict, machine: Machine) -> TrafficReport:
-    """Read the program's communication off its algebra on bound dims."""
-    shadows = infer(prog, input_layouts)
+def traffic(region, input_layouts: dict | None, machine: Machine, *, names=None) -> TrafficReport:
+    """Read the region's communication off its algebra on bound dims.
+    Layouts ride the nodes' shadows (``input_layouts`` is not consulted);
+    events name their nodes through the naming law — pass ``names``."""
+    return _region_traffic(region, machine, names)
+
+
+def _region_traffic(region, machine: Machine, names) -> TrafficReport:
+    """The Region face — the same algebra read off dialect nodes. Consts are
+    deferred scalars (no layout to check; their materialized twins inherit
+    the reference operand's bindings, which are checked at that operand)."""
+    from .dialect import _thaw_params, region_names, walk_region  # lazy: dialect's consumers import this module
+
+    if names is None:
+        raise ValueError(
+            "region traffic joins on names — pass names=region_names(region, param_names) "
+            "(LiftedStep.names / Assemblage.names carry it)"
+        )
     events: list[Collective] = []
-    for ins in prog.instrs:
-        for o in (ins.var, *ins.operands):
-            _check_bound(shadows[o], machine)
-        if ins.op == "reduce":
-            names = ins.params["dims"]
-            names = (names,) if isinstance(names, str) else tuple(names)
-            src = shadows[ins.operands[0]]
-            for n in names:
-                d = src.dim(n)
+    yielded = region.body[-1].args[0] if region.body else None
+    seen: set[int] = set()
+    for p in region.params:
+        _check_bound(p.type.layout, machine)
+        seen.add(id(p))
+    for n in walk_region(region):
+        if id(n) in seen or n.op in ("core.yield", "core.const") or (n.op == "core.tuple" and n is yielded):
+            continue
+        seen.add(id(n))
+        if not n.op.startswith("tl."):
+            raise KeyError(f"no traffic rule for op {n.op!r}")
+        base, p = n.op[3:], _thaw_params(dict(n.attrs))
+        lays = [t.type.layout for t in (n, *n.args) if getattr(t.type, "layout", None) is not None]
+        for lay in lays:
+            _check_bound(lay, machine)
+        var = names[id(n)]
+        if base == "reduce":
+            dims = p["dims"]
+            dims = (dims,) if isinstance(dims, str) else tuple(dims)
+            src = n.args[0].type.layout
+            for dn in dims:
+                d = src.dim(dn)
                 if d.level is not None:
-                    p = d.size
-                    nbytes = int(Fraction(2 * (p - 1), p) * local_bytes(shadows[ins.var]))
-                    events.append(Collective(ins.var, "all_reduce", d.level, nbytes))
-        elif ins.op == "merge":
-            src = shadows[ins.operands[0]]
-            for n in ins.params["parts"]:
-                d = src.dim(n)
+                    events.append(
+                        Collective(
+                            var,
+                            "all_reduce",
+                            d.level,
+                            int(Fraction(2 * (d.size - 1), d.size) * local_bytes(n.type.layout)),
+                        )
+                    )
+        elif base == "merge":
+            src = n.args[0].type.layout
+            for dn in p["parts"]:
+                d = src.dim(dn)
                 if d.level is not None:
-                    p = d.size
-                    nbytes = int(Fraction(p - 1, p) * local_bytes(shadows[ins.var]))
-                    events.append(Collective(ins.var, "all_gather", d.level, nbytes))
-        elif ins.op == "take":
-            # v1 (200 §1.9): a take whose taken lattice is distributed is an
-            # all-to-all — refuse toward the fix; modeled all-to-all is later
-            # work. Bound RIDING dims (a sharded batch) ride for free: each
-            # device gathers its own rows from the table it holds.
-            if shadows[ins.operands[0]].dim(ins.params["dim"]).level is not None:
+                    events.append(
+                        Collective(
+                            var,
+                            "all_gather",
+                            d.level,
+                            int(Fraction(d.size - 1, d.size) * local_bytes(n.type.layout)),
+                        )
+                    )
+        elif base == "take":
+            if n.args[0].type.layout.dim(p["dim"]).level is not None:
                 raise NotImplementedError(
-                    f"take along machine-bound dim {ins.params['dim']!r} is an "
+                    f"take along machine-bound dim {p['dim']!r} is an "
                     f"all-to-all, not modeled in v1 — colocate (unbind the table) "
                     f"or all-gather the table (merge the bound dim) first"
                 )
-        elif ins.op == "scatter_add":
-            # consumed dims sharded => per-device PARTIAL sums that need an
-            # all-reduce — not modeled; and both operands must agree on the
-            # consumed lattice's placement (colocation), or the indices
-            # address rows a device does not hold.
-            vsh, ish = shadows[ins.operands[0]], shadows[ins.operands[1]]
-            consumed = ins.params.get("over") or tuple(ish.names)
-            for n in ish.names:
-                lv, li = vsh.dim(n).level, ish.dim(n).level
+        elif base == "scatter_add":
+            vsh, ish = n.args[0].type.layout, n.args[1].type.layout
+            consumed = p.get("over") or tuple(ish.names)
+            for dn in ish.names:
+                lv, li = vsh.dim(dn).level, ish.dim(dn).level
                 if lv != li:
                     raise NotImplementedError(
-                        f"scatter_add: values and idx place shared dim {n!r} on "
+                        f"scatter_add: values and idx place shared dim {dn!r} on "
                         f"different machine levels ({lv!r} vs {li!r}) — colocate them"
                     )
-                if li is not None and n in consumed:
+                if li is not None and dn in consumed:
                     raise NotImplementedError(
-                        f"scatter_add over machine-bound dim {n!r} leaves per-device "
+                        f"scatter_add over machine-bound dim {dn!r} leaves per-device "
                         f"partial sums that need an all-reduce, not modeled in v1 — "
                         f"unbind (gather) the consumed dim first"
                     )
-        elif ins.op in ("argtopk", "argsort"):
-            if shadows[ins.operands[0]].dim(ins.params["dim"]).level is not None:
+        elif base in ("argtopk", "argsort"):
+            if n.args[0].type.layout.dim(p["dim"]).level is not None:
                 raise NotImplementedError(
-                    f"{ins.op} along a machine-bound dim (a distributed sort) is "
+                    f"{base} along a machine-bound dim (a distributed sort) is "
                     f"not modeled — gather (merge the bound dim) first"
                 )
-        elif ins.op == "scan":
-            if shadows[ins.operands[0]].dim(ins.params["dim"]).level is not None:
+        elif base == "scan":
+            if n.args[0].type.layout.dim(p["dim"]).level is not None:
                 raise NotImplementedError("scan along a machine-bound dim (distributed scan) is not modeled")
-        elif ins.op == "fold":
-            _, dim, _, elem_names, _, _ = _fold_parts(ins.params)
-            k = len(ins.params["state"])
-            probe = shadows[ins.operands[k]] if elem_names else None
-            if probe is not None and probe.dim(dim).level is not None:
-                raise NotImplementedError("fold along a machine-bound dim is not modeled")
-            start, stop = (probe.dim(dim).start, probe.dim(dim).stop) if probe is not None else ins.params["extent"]
-            sub = traffic(ins.params["step"], _fold_step_layouts(ins, shadows), machine)
-            for c in sub.collectives:
-                events.append(Collective(ins.var, c.kind, c.level, c.bytes * max(stop - start, 0)))
-        elif ins.op in _SURGERY:
-            src = shadows[ins.operands[0]]
-            keys = {
-                "slice": "ranges",
-                "select": "coords",
-                "shift": "deltas",
-                "pad": "extents",
-            }
-            if ins.op in keys:
-                touched = tuple(ins.params[keys[ins.op]])
-            elif ins.op == "diagonal":
-                touched = tuple(ins.params["parts"])
+        elif base == "fold":
+            state, element = tuple(p["state"]), tuple(p["element"])
+            if element:
+                d0 = n.args[len(state)].type.layout.dim(p["dim"])
+                if d0.level is not None:
+                    raise NotImplementedError("fold along a machine-bound dim is not modeled")
+                start, stop = d0.start, d0.stop
             else:
-                touched = (ins.params["name"],)
-            for n in touched:
-                if n in src.names and src.dim(n).level is not None:
-                    raise NotImplementedError(f"{ins.op} on machine-bound dim {n!r} is not modeled (unbind first)")
+                start, stop = tuple(p["extent"])
+            step = n.regions[0]
+            sub = _region_traffic(step, machine, region_names(step, state + element))
+            for c in sub.collectives:
+                events.append(Collective(var, c.kind, c.level, c.bytes * max(stop - start, 0)))
+        elif base in _SURGERY:
+            src = n.args[0].type.layout
+            keys = {"slice": "ranges", "select": "coords", "shift": "deltas", "pad": "extents"}
+            if base in keys:
+                touched = tuple(p[keys[base]])
+            elif base == "diagonal":
+                touched = tuple(p["parts"])
+            else:
+                touched = (p["name"],)
+            for dn in touched:
+                if dn in src.names and src.dim(dn).level is not None:
+                    raise NotImplementedError(f"{base} on machine-bound dim {dn!r} is not modeled (unbind first)")
     per_level: Counter = Counter()
     for c in events:
         per_level[c.level] += c.bytes

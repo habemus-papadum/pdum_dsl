@@ -12,15 +12,16 @@ from pdum.tl import (
     marker_signature,
     pointwise,
     pw,
+    red,
+    reduce,
+    scan,
     u,
 )
 from pdum.tl.autodiff import grad
-from pdum.tl.ir import Instr, Program, run
+from pdum.tl.dialect import run_named, run_region
+from pdum.tl.lifting import lift_step
+from pdum.tl.markers import exp
 from pdum.tl.units import ONE
-
-
-def I(var, op, operands=(), **params):  # noqa: E743
-    return Instr(var, op, tuple(operands), params)
 
 
 def T(arr, names, unit=None):
@@ -32,58 +33,63 @@ M = u.parse_unit("m")
 S = u.parse_unit("s")
 
 
-def _mul_sum_prog():
-    return Program(
-        (
-            I("x", "input"),
-            I("w", "input"),
-            I("p", "pointwise", ["x", "w"], f="mul"),
-            I("y", "reduce", ["p"], f="sum", dims=("i",)),
-        )
-    )
+def _mul_sum_step(x, w):
+    def step(x, w):
+        p = x * w
+        y = reduce(red.sum, p, "i")
+        return y
+
+    return lift_step(step, x=x.layout, w=w.layout)
 
 
 def test_units_flow_through_mul_and_sum():
-    sigs = infer_signatures(_mul_sum_prog(), {"x": T([1.0], "i", "m"), "w": T([1.0], "i", "s")})
+    inputs = {"x": T([1.0], "i", "m"), "w": T([1.0], "i", "s")}
+    ls = _mul_sum_step(inputs["x"], inputs["w"])
+    sigs = infer_signatures(ls.region, inputs, names=ls.names)
     assert sigs["p"].unit == M * S
     assert sigs["y"].unit == M * S
 
 
 def test_unlabeled_programs_stay_unknown():
-    sigs = infer_signatures(_mul_sum_prog(), {"x": T([1.0], "i"), "w": T([1.0], "i")})
+    inputs = {"x": T([1.0], "i"), "w": T([1.0], "i")}
+    ls = _mul_sum_step(inputs["x"], inputs["w"])
+    sigs = infer_signatures(ls.region, inputs, names=ls.names)
     assert sigs["y"] == VInfo("real", None)
 
 
 def test_grad_infers_target_unit():
     # CONCERNS #16's payoff: no target_unit argument — the pass reads it
     inputs = {"x": T([2.0, 3.0], "i", "m"), "w": T([5.0, 7.0], "i", "s")}
-    jp, grads = grad(_mul_sum_prog(), "y", inputs)
-    env = run(jp, inputs)
-    assert env[grads["x"]].value_units == S  # (m·s)/m
-    assert env[grads["w"]].value_units == M
-    np.testing.assert_allclose(env[grads["x"]].to_numpy(), [5.0, 7.0])
+    ls = _mul_sum_step(inputs["x"], inputs["w"])
+    rg = grad(ls.region, "y", inputs, names=ls.names)
+    env = run_named(rg.region, inputs, rg.names)
+    assert env[rg.grads["x"]].value_units == S  # (m·s)/m
+    assert env[rg.grads["w"]].value_units == M
+    np.testing.assert_allclose(env[rg.grads["x"]].to_numpy(), [5.0, 7.0])
 
 
 def test_conflicting_units_refuse_in_pass_and_in_grad():
-    prog = Program(
-        (
-            I("x", "input"),
-            I("w", "input"),
-            I("p", "pointwise", ["x", "w"], f="add"),
-            I("y", "reduce", ["p"], f="sum", dims=("i",)),
-        )
-    )
+    def step(x, w):
+        p = x + w
+        y = reduce(red.sum, p, "i")
+        return y
+
     inputs = {"x": T([1.0], "i", "m"), "w": T([1.0], "i", "s")}
+    ls = lift_step(step, x=inputs["x"].layout, w=inputs["w"].layout)
     with pytest.raises(SignatureError, match="unit mismatch"):
-        infer_signatures(prog, inputs)
+        infer_signatures(ls.region, inputs, names=ls.names)
     with pytest.raises(SignatureError):
-        grad(prog, "y", inputs)
+        grad(ls.region, "y", inputs, names=ls.names)
 
 
 def test_exp_of_dimensioned_refuses_statically():
-    prog = Program((I("x", "input"), I("e", "pointwise", ["x"], f="exp")))
+    def step(x):
+        e = pointwise(exp, x)
+        return e
+
+    ls = lift_step(step, x=T([1.0], "i").layout)
     with pytest.raises(SignatureError, match="dimensionless"):
-        infer_signatures(prog, {"x": T([1.0], "i", "m")})
+        infer_signatures(ls.region, {"x": T([1.0], "i", "m")}, names=ls.names)
 
 
 def test_exp_of_dimensioned_refuses_at_runtime():
@@ -122,7 +128,7 @@ def test_carriers_join_up_the_tower():
 def test_composite_reducer_signature_reaches_fixed_point():
     # linrec with unitless decay and metre-valued drive infers metres
     # (same declaration as test_mdsl's — content-identical re-registration)
-    defreducer(
+    linrec_t = defreducer(
         "linrec_t",
         state=2,
         element=2,
@@ -131,22 +137,26 @@ def test_composite_reducer_signature_reaches_fixed_point():
         init=(1.0, 0.0),
         project=lambda A, B: B,
     )
-    prog = Program(
-        (
-            I("a", "input"),
-            I("b", "input"),
-            I("h", "scan", ["a", "b"], f="linrec_t", dim="t"),
-        )
-    )
-    sigs = infer_signatures(prog, {"a": T([0.5], "t"), "b": T([1.0], "t", "m")})
+
+    def step(a, b):
+        h = scan(linrec_t, (a, b), "t")
+        return h
+
+    inputs = {"a": T([0.5], "t"), "b": T([1.0], "t", "m")}
+    ls = lift_step(step, a=inputs["a"].layout, b=inputs["b"].layout)
+    sigs = infer_signatures(ls.region, inputs, names=ls.names)
     assert sigs["h"].unit == M
 
 
 def test_prod_of_dimensioned_refuses():
-    prog = Program((I("x", "input"), I("y", "reduce", ["x"], f="prod", dims=("i",))))
+    def step(x):
+        y = reduce(red.prod, x, "i")
+        return y
+
+    ls = lift_step(step, x=T([1.0], "i").layout)
     with pytest.raises(SignatureError, match="static extent"):
-        infer_signatures(prog, {"x": T([1.0], "i", "m")})
-    assert infer_signatures(prog, {"x": T([1.0], "i")})["y"].unit is None
+        infer_signatures(ls.region, {"x": T([1.0], "i", "m")}, names=ls.names)
+    assert infer_signatures(ls.region, {"x": T([1.0], "i")}, names=ls.names)["y"].unit is None
 
 
 def test_content_addressed_defmarker_dedupes():
@@ -154,3 +164,60 @@ def test_content_addressed_defmarker_dedupes():
     m2 = defmarker(None, 1, lambda x: x * x + 1)
     assert m1 is m2
     assert m1.name.startswith("m_")
+
+
+# --- the Region face (the excavation, LEVELS) -------------------------------
+
+
+def test_region_face_reports_by_name():
+    def step(x, w):
+        p = x * w
+        q = p / w
+        m = reduce(red.mean, q, "i")
+        return m
+
+    inputs = {"x": T([1.0, 2.0], "i", "m"), "w": T([3.0, 4.0], "i", "s")}
+    ls = lift_step(step, **{k: v.layout for k, v in inputs.items()})
+    sigs = infer_signatures(ls.region, inputs, names=ls.names)
+    assert sigs["p"].unit == M * S
+    assert sigs["q"].unit == M
+    assert sigs["m"] == VInfo("real", M)
+
+
+def test_region_face_consts_are_plumbing():
+    def step(x):
+        y = x * 2.0
+        z = y + x
+        return z
+
+    inputs = {"x": T([1.0, 2.0], "i", "m")}
+    ls = lift_step(step, x=inputs["x"].layout)
+    sigs = infer_signatures(ls.region, inputs, names=ls.names)
+    # const materializations are deferred scalars: no report row
+    assert set(sigs) == {"x", "y", "z"}
+    assert sigs["z"].unit == M
+
+
+def test_region_face_refuses_dimensioned_exp():
+    def step(x):
+        return pointwise(exp, x)
+
+    inputs = {"x": T([1.0], "i", "m")}
+    ls = lift_step(step, x=inputs["x"].layout)
+    with pytest.raises(SignatureError, match="exp: argument must be dimensionless"):
+        infer_signatures(ls.region, inputs, names=ls.names)
+
+
+def test_region_grad_annotates_units():
+    """unit(dL/dv) = unit(L)/unit(v), inferred on the gradient outputs."""
+
+    def step(x, w):
+        p = x * w
+        m = reduce(red.sum, p, "i")
+        return m
+
+    inputs = {"x": T([2.0, 3.0], "i", "m"), "w": T([5.0, 7.0], "i", "s")}
+    ls = lift_step(step, x=inputs["x"].layout, w=inputs["w"].layout)
+    rg = grad(ls.region, ls.outputs[0], inputs, wrt=("x",), names=ls.names)
+    _, got = run_region(rg.region, [inputs["x"], inputs["w"]])
+    assert got.value_units == M * S / M

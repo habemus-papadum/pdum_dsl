@@ -9,18 +9,27 @@ embedding gradient); indices are gradient-free.
 
 import numpy as np
 import pytest
-from pdum.tl import Tensor, mesh, ops_count, peak_memory, scatter_add, take, traffic
+from pdum.tl import (
+    Tensor,
+    argsort,
+    argtopk,
+    mesh,
+    ops_count,
+    peak_memory,
+    pointwise,
+    scatter_add,
+    take,
+    traffic,
+)
 from pdum.tl.autodiff import grad, numeric_grad
-from pdum.tl.ir import Instr, Program, infer, run
+from pdum.tl.compute import red, reduce, repeat_like
+from pdum.tl.dialect import run_named, walk_region
 from pdum.tl.lifting import lift_step
+from pdum.tl.markers import exp, stop_gradient
 
 
 def T(arr, names):
     return Tensor.from_numpy(np.asarray(arr), names)
-
-
-def I(var, op, operands=(), **params):  # noqa: E743
-    return Instr(var, op, tuple(operands), params)
 
 
 TABLE = T(np.arange(12.0).reshape(4, 3), ("v", "d"))  # 4 rows of width 3
@@ -136,8 +145,6 @@ def test_take_batched_reorder_is_the_same_spelling():
     """The spec's 'any differentiable reordering is take by sorted indices'
     in BATCHED form: argsort over (b, t) aligns b, splices t — each line
     reorders independently."""
-    from pdum.tl import argsort
-
     x = T(np.array([[3.0, 1.0, 2.0], [6.0, 4.0, 5.0]]), ("b", "t"))
     out = take(x, argsort(x, dim="t"), dim="t")
     assert out.names == ("b", "t")
@@ -221,81 +228,74 @@ def test_scatter_add_refusals():
 
 
 # ----------------------------------------------------------------------
-# the Program tier: run / infer / opcount / memory / traffic
+# the region tier: run / infer / opcount / memory / traffic
 # ----------------------------------------------------------------------
 
 
-def _prog():
-    return Program(
-        (
-            I("table", "input"),
-            I("ids", "input"),
-            I("tok", "take", ["table", "ids"], dim="v"),
-            I("y", "reduce", ["tok"], f="sum", dims=("t", "d")),
-        )
-    )
+def _embed_and_sum(table, ids):
+    tok = take(table, ids, dim="v")
+    y = reduce(red.sum, tok, ("t", "d"))
+    return tok, y
 
 
-def test_take_runs_and_infers_as_a_program_op():
-    prog = _prog()
-    env = run(prog, {"table": TABLE, "ids": IDS})
-    np.testing.assert_array_equal(env["tok"].to_numpy(), TABLE.to_numpy()[[2, 0, 2]])
-    shadows = infer(prog, {"table": TABLE, "ids": IDS})
-    assert tuple(d.name for d in shadows["tok"].dims) == ("t", "d")
-    assert shadows["tok"].dim("t").size == 3
+def _embed_ls(table=TABLE, ids=IDS):
+    return lift_step(_embed_and_sum, table=table.layout, ids=ids.layout)
+
+
+def _route4(vals, ids):
+    g = scatter_add(vals, ids, dim="v", extent=(0, 4))
+    return g
+
+
+def test_take_runs_and_infers_as_a_region_op():
+    ls = _embed_ls()
+    vals = run_named(ls.region, {"table": TABLE, "ids": IDS}, ls.names)
+    np.testing.assert_array_equal(vals["tok"].to_numpy(), TABLE.to_numpy()[[2, 0, 2]])
+    tok = next(n for n in walk_region(ls.region) if ls.names.get(id(n)) == "tok")
+    assert tuple(d.name for d in tok.type.layout.dims) == ("t", "d")
+    assert tok.type.layout.dim("t").size == 3
 
 
 def test_take_and_scatter_cost_entries():
     """take: one read+write per OUTPUT element, its own bucket (random
     access is not a sequential copy — the cost model prices the difference);
     scatter_add: movement + accumulate per INPUT element."""
-    prog = _prog()
-    c = ops_count(prog, {"table": TABLE, "ids": IDS})
+    ls = _embed_ls()
+    c = ops_count(ls.region, names=ls.names)
     assert c.per_var["tok"]["take"] == 9  # 3 tokens x width 3
-    sc = Program(
-        (
-            I("vals", "input"),
-            I("ids", "input"),
-            I("g", "scatter_add", ["vals", "ids"], dim="v", extent=(0, 4)),
-        )
-    )
     vals = T(np.ones((3, 3)), ("t", "d"))
-    cs = ops_count(sc, {"vals": vals, "ids": IDS})
+    ls2 = lift_step(_route4, vals=vals.layout, ids=IDS.layout)
+    cs = ops_count(ls2.region, names=ls2.names)
     assert cs.per_var["g"]["scatter"] == 9 and cs.per_var["g"]["add"] == 9
 
 
 def test_take_allocates_its_output():
     """A real node, never a free view (200 §1.9): the gather output owns
     numel x 8 bytes in the peak-memory model."""
-    prog = _prog()
-    r = peak_memory(prog, {"table": TABLE, "ids": IDS})
+    ls = _embed_ls()
+    r = peak_memory(ls.region, {"table": TABLE, "ids": IDS}, names=ls.names)
     assert r.alloc_bytes["tok"] == 9 * 8
 
 
 def test_take_along_a_bound_dim_refuses_toward_the_fix():
-    prog = _prog()
-    bound = TABLE.bind(v="gpu")
+    ls = _embed_ls(table=TABLE.bind(v="gpu"))
     with pytest.raises(NotImplementedError, match="all-to-all.*all-gather the table"):
-        traffic(prog, {"table": bound, "ids": IDS}, mesh(4))
+        traffic(ls.region, None, mesh(4), names=ls.names)
     # a bound RIDING dim is a sharded batch: the take itself rides for free
     # (the final reduce over bound t still all-reduces — that is reduce's law)
-    r = traffic(prog, {"table": TABLE, "ids": IDS.bind(t="gpu")}, mesh(4))
+    ls2 = _embed_ls(ids=IDS.bind(t="gpu"))
+    r = traffic(ls2.region, None, mesh(4), names=ls2.names)
     assert not any(c.var == "tok" for c in r.collectives)
 
 
 def test_scatter_add_over_a_bound_consumed_dim_refuses():
-    sc = Program(
-        (
-            I("vals", "input"),
-            I("ids", "input"),
-            I("g", "scatter_add", ["vals", "ids"], dim="v", extent=(0, 4)),
-        )
-    )
     vals = T(np.ones(3), ("t",)).bind(t="gpu")
+    ls = lift_step(_route4, vals=vals.layout, ids=IDS.bind(t="gpu").layout)
     with pytest.raises(NotImplementedError, match="partial sums.*all-reduce"):
-        traffic(sc, {"vals": vals, "ids": IDS.bind(t="gpu")}, mesh(4))
+        traffic(ls.region, None, mesh(4), names=ls.names)
+    ls2 = lift_step(_route4, vals=vals.layout, ids=IDS.layout)
     with pytest.raises(NotImplementedError, match="colocate"):
-        traffic(sc, {"vals": vals, "ids": IDS}, mesh(4))
+        traffic(ls2.region, None, mesh(4), names=ls2.names)
 
 
 # ----------------------------------------------------------------------
@@ -308,9 +308,9 @@ def test_take_lowers_in_a_step_body():
         return take(table, ids, dim="v")
 
     ls = lift_step(embed, table=TABLE.layout, ids=IDS.layout)
-    assert any(i.op == "take" for i in ls.program.instrs)
-    env = run(ls.program, {"table": TABLE, "ids": IDS})
-    np.testing.assert_array_equal(env[ls.outputs[0]].to_numpy(), TABLE.to_numpy()[[2, 0, 2]])
+    assert any(n.op == "tl.take" for n in walk_region(ls.region))
+    vals = run_named(ls.region, {"table": TABLE, "ids": IDS}, ls.names)
+    np.testing.assert_array_equal(vals[ls.outputs[0]].to_numpy(), TABLE.to_numpy()[[2, 0, 2]])
 
 
 def test_scatter_add_lowers_in_a_step_body():
@@ -319,10 +319,10 @@ def test_scatter_add_lowers_in_a_step_body():
 
     vals = T(np.ones((3, 3)), ("t", "d"))
     ls = lift_step(route, vals=vals.layout, ids=IDS.layout)
-    env = run(ls.program, {"vals": vals, "ids": IDS})
+    out = run_named(ls.region, {"vals": vals, "ids": IDS}, ls.names)
     want = np.zeros((4, 3))
     want[2], want[0] = 2.0, 1.0
-    np.testing.assert_array_equal(env[ls.outputs[0]].to_numpy(), want)
+    np.testing.assert_array_equal(out[ls.outputs[0]].to_numpy(), want)
 
 
 # ----------------------------------------------------------------------
@@ -333,88 +333,85 @@ def test_scatter_add_lowers_in_a_step_body():
 def test_take_gradient_is_the_embedding_gradient():
     """d_table counts occurrences through scatter_add: a token appearing
     twice accumulates BOTH contributions; indices are gradient-free."""
-    prog = _prog()
-    joint, grads = grad(prog, "y", {"table": TABLE, "ids": IDS})
-    assert grads["ids"] is None  # d_idx = None (200 §1.9)
-    env = run(joint, {"table": TABLE, "ids": IDS})
-    g = env[grads["table"]].to_numpy(order=("v", "d"))
+    ls = _embed_ls()
+    inputs = {"table": TABLE, "ids": IDS}
+    rg = grad(ls.region, "y", inputs, names=ls.names)
+    assert rg.grads["ids"] is None  # d_idx = None (200 §1.9)
+    vals = run_named(rg.region, inputs, rg.names)
+    g = vals[rg.grads["table"]].to_numpy(order=("v", "d"))
     want = np.zeros((4, 3))
     want[2], want[0] = 2.0, 1.0  # row 2 taken twice, row 0 once
     np.testing.assert_array_equal(g, want)
     # and the same fact by finite differences
-    fd = numeric_grad(prog, "y", "table", {"table": TABLE, "ids": IDS})
+    fd = numeric_grad(ls.region, "y", "table", inputs, ls.names)
     np.testing.assert_allclose(g, fd, rtol=1e-6, atol=1e-8)
 
 
 def test_scatter_add_gradient_is_take():
     """The self-dual pair: d_values gathers the cotangent back at the same
     indices — checked against finite differences."""
+
+    def body(vals, ids):
+        s = scatter_add(vals, ids, dim="v", extent=(0, 4))
+        sq = s * s
+        y = reduce(red.sum, sq, ("v", "d"))
+        return y
+
     vals = T(np.arange(6.0).reshape(3, 2), ("t", "d"))
-    prog = Program(
-        (
-            I("vals", "input"),
-            I("ids", "input"),
-            I("s", "scatter_add", ["vals", "ids"], dim="v", extent=(0, 4)),
-            I("sq", "pointwise", ["s", "s"], f="mul"),
-            I("y", "reduce", ["sq"], f="sum", dims=("v", "d")),
-        )
-    )
+    ls = lift_step(body, vals=vals.layout, ids=IDS.layout)
     inputs = {"vals": vals, "ids": IDS}
-    joint, grads = grad(prog, "y", inputs)
-    assert grads["ids"] is None
-    env = run(joint, inputs)
-    g = env[grads["vals"]].to_numpy(order=("t", "d"))
-    fd = numeric_grad(prog, "y", "vals", inputs)
+    rg = grad(ls.region, "y", inputs, names=ls.names)
+    assert rg.grads["ids"] is None
+    out = run_named(rg.region, inputs, rg.names)
+    g = out[rg.grads["vals"]].to_numpy(order=("t", "d"))
+    fd = numeric_grad(ls.region, "y", "vals", inputs, ls.names)
     np.testing.assert_allclose(g, fd, rtol=1e-5, atol=1e-7)
 
 
 def test_units_ride_through_take():
     from pdum.tl import infer_signatures, u
 
-    prog = _prog()
-    sigs = infer_signatures(prog, {"table": TABLE.with_value_units(u.um), "ids": IDS})
+    ls = _embed_ls()
+    sigs = infer_signatures(ls.region, {"table": TABLE.with_value_units(u.um), "ids": IDS}, names=ls.names)
     assert sigs["tok"].unit == u.um
 
 
 def test_aligned_take_gradient_matches_finite_differences():
     """The batched gather's adjoint is the per-line scatter (over= the
     spliced dims) — pinned by FD, and by the self-duality round trip."""
+
+    def body(table, idx):
+        g = take(table, idx, dim="v")
+        sq = g * g
+        y = reduce(red.sum, sq, ("b", "t"))
+        return y
+
     table = T(np.arange(8.0).reshape(2, 4), ("b", "v"))
     idx = T(np.array([[1, 1, 3], [0, 2, 2]]), ("b", "t"))
-    prog = Program(
-        (
-            I("table", "input"),
-            I("idx", "input"),
-            I("g", "take", ["table", "idx"], dim="v"),
-            I("sq", "pointwise", ["g", "g"], f="mul"),
-            I("y", "reduce", ["sq"], f="sum", dims=("b", "t")),
-        )
-    )
+    ls = lift_step(body, table=table.layout, idx=idx.layout)
     inputs = {"table": table, "idx": idx}
-    joint, grads = grad(prog, "y", inputs)
-    env = run(joint, inputs)
-    g = env[grads["table"]].to_numpy(order=("b", "v"))
-    fd = numeric_grad(prog, "y", "table", inputs)
+    rg = grad(ls.region, "y", inputs, names=ls.names)
+    out = run_named(rg.region, inputs, rg.names)
+    g = out[rg.grads["table"]].to_numpy(order=("b", "v"))
+    fd = numeric_grad(ls.region, "y", "table", inputs, ls.names)
     np.testing.assert_allclose(g, fd, rtol=1e-5, atol=1e-7)
 
 
 def test_over_scatter_gradient_matches_finite_differences():
+    def body(vals, idx):
+        s = scatter_add(vals, idx, dim="v", extent=(0, 3), over=("t",))
+        sq = s * s
+        y = reduce(red.sum, sq, ("b", "v"))
+        return y
+
     vals = T(np.arange(6.0).reshape(2, 3), ("b", "t"))
     idx = T(np.array([[0, 1, 0], [2, 2, 0]]), ("b", "t"))
-    prog = Program(
-        (
-            I("vals", "input"),
-            I("idx", "input"),
-            I("s", "scatter_add", ["vals", "idx"], dim="v", extent=(0, 3), over=("t",)),
-            I("sq", "pointwise", ["s", "s"], f="mul"),
-            I("y", "reduce", ["sq"], f="sum", dims=("b", "v")),
-        )
-    )
+    ls = lift_step(body, vals=vals.layout, idx=idx.layout)
     inputs = {"vals": vals, "idx": idx}
-    joint, grads = grad(prog, "y", inputs)
-    env = run(joint, inputs)
-    g = env[grads["vals"]].to_numpy(order=("b", "t"))
-    fd = numeric_grad(prog, "y", "vals", inputs)
+    rg = grad(ls.region, "y", inputs, names=ls.names)
+    out = run_named(rg.region, inputs, rg.names)
+    g = out[rg.grads["vals"]].to_numpy(order=("b", "t"))
+    fd = numeric_grad(ls.region, "y", "vals", inputs, ls.names)
     np.testing.assert_allclose(g, fd, rtol=1e-5, atol=1e-7)
 
 
@@ -426,8 +423,6 @@ def test_over_scatter_gradient_matches_finite_differences():
 def test_argtopk_descends_and_ties_go_first():
     """Descending; ties FIRST-WINS (the partition law's stable choice): a
     duplicated maximum yields the lower lattice position first."""
-    from pdum.tl import argtopk
-
     x = T(np.array([1.0, 5.0, 3.0, 5.0]), ("t",))
     top = argtopk(x, dim="t", k=3, k_name="r")
     assert top.names == ("r",)
@@ -436,8 +431,6 @@ def test_argtopk_descends_and_ties_go_first():
 
 
 def test_argmax_is_argtopk_k1():
-    from pdum.tl import argtopk
-
     x = T(np.array([[1.0, 9.0, 2.0], [7.0, 0.0, 3.0]]), ("b", "e"))
     am = argtopk(x, dim="e", k=1, k_name="m")
     assert am.names == ("b", "m")
@@ -446,8 +439,6 @@ def test_argmax_is_argtopk_k1():
 
 def test_argsort_is_ascending_stable_and_composes_with_take():
     """Any differentiable reordering is take by sorted indices."""
-    from pdum.tl import argsort
-
     x = T(np.array([3.0, 1.0, 2.0, 1.0]), ("t",))
     order = argsort(x, dim="t")
     np.testing.assert_array_equal(order.to_numpy(), [1, 3, 2, 0])  # stable at the tie
@@ -456,8 +447,6 @@ def test_argsort_is_ascending_stable_and_composes_with_take():
 
 
 def test_producers_read_lattice_positions_not_zero_based_offsets():
-    from pdum.tl import argsort
-
     x = T(np.array([3.0, 1.0, 2.0]), ("t",)).shift(t=5)
     order = argsort(x, dim="t")
     np.testing.assert_array_equal(order.to_numpy(), [6, 7, 5])
@@ -465,8 +454,6 @@ def test_producers_read_lattice_positions_not_zero_based_offsets():
 
 
 def test_producer_refusals():
-    from pdum.tl import argtopk
-
     x = T(np.arange(6.0).reshape(2, 3), ("b", "e"))
     with pytest.raises(ValueError, match=r"k=4 outside \[1, 3\]"):
         argtopk(x, dim="e", k=4, k_name="r")
@@ -478,54 +465,67 @@ def test_topk_gradient_is_correct_by_composition():
     """The factoring pays: grad of sum(take(x, argtopk(x))) flows through
     TAKE alone — ones at the winning positions, zero elsewhere — matching
     finite differences with no adjoint rule for the producer."""
+
+    def body(x):
+        top = argtopk(x, dim="t", k=2, k_name="r")
+        vals = take(x, top, dim="t")
+        y = reduce(red.sum, vals, ("r",))
+        return y
+
     x = T(np.array([4.0, 9.0, 1.0, 7.0]), ("t",))
-    prog = Program(
-        (
-            I("x", "input"),
-            I("top", "argtopk", ["x"], dim="t", k=2, k_name="r"),
-            I("vals", "take", ["x", "top"], dim="t"),
-            I("y", "reduce", ["vals"], f="sum", dims=("r",)),
-        )
-    )
-    joint, grads = grad(prog, "y", {"x": x})
-    env = run(joint, {"x": x})
-    g = env[grads["x"]].to_numpy(order=("t",))
+    ls = lift_step(body, x=x.layout)
+    rg = grad(ls.region, "y", {"x": x}, names=ls.names)
+    out = run_named(rg.region, {"x": x}, rg.names)
+    g = out[rg.grads["x"]].to_numpy(order=("t",))
     np.testing.assert_array_equal(g, [0.0, 1.0, 0.0, 1.0])
-    fd = numeric_grad(prog, "y", "x", {"x": x})
+    fd = numeric_grad(ls.region, "y", "x", {"x": x}, ls.names)
     np.testing.assert_allclose(g, fd, rtol=1e-6, atol=1e-8)
 
 
-def test_producers_run_as_program_ops_with_int_signature():
+def test_producers_run_as_region_ops_with_int_signature():
     from pdum.tl import infer_signatures
 
-    prog = Program(
-        (
-            I("x", "input"),
-            I("s", "argsort", ["x"], dim="t"),
-        )
-    )
+    def body(x):
+        s = argsort(x, dim="t")
+        return s
+
     x = T(np.array([2.0, 1.0]), ("t",))
-    env = run(prog, {"x": x})
-    np.testing.assert_array_equal(env["s"].to_numpy(), [1, 0])
-    assert infer_signatures(prog, {"x": x})["s"].carrier == "int"
-    shadows = infer(prog, {"x": x})
-    assert shadows["s"].dim("t").chart is None
+    ls = lift_step(body, x=x.layout)
+    out = run_named(ls.region, {"x": x}, ls.names)
+    np.testing.assert_array_equal(out["s"].to_numpy(), [1, 0])
+    assert infer_signatures(ls.region, {"x": x}, names=ls.names)["s"].carrier == "int"
+    snode = ls.region.body[-1].args[0]
+    assert snode.type.layout.dim("t").chart is None
 
 
 def test_producer_cost_and_bound_dim_refusal():
-    from pdum.tl import argtopk  # noqa: F401 — the eager face is exercised above
+    def body(x):
+        top = argtopk(x, dim="e", k=2, k_name="r")
+        return top
 
-    prog = Program(
-        (
-            I("x", "input"),
-            I("top", "argtopk", ["x"], dim="e", k=2, k_name="r"),
-        )
-    )
     x = T(np.arange(6.0).reshape(2, 3), ("b", "e"))
-    c = ops_count(prog, {"x": x})
+    ls = lift_step(body, x=x.layout)
+    c = ops_count(ls.region, names=ls.names)
     assert c.per_var["top"]["argtopk"] == 6  # one bucket entry per element examined
+    lsb = lift_step(body, x=x.bind(e="gpu").layout)
     with pytest.raises(NotImplementedError, match="distributed sort"):
-        traffic(prog, {"x": x.bind(e="gpu")}, mesh(4))
+        traffic(lsb.region, None, mesh(4), names=lsb.names)
+
+
+def _st_body(logits, gum, tau, wte):
+    sc = (logits + gum) / repeat_like(tau, logits)
+    mx = reduce(red.max, sc, ("v",))
+    ex = pointwise(exp, sc - repeat_like(mx, sc))
+    soft = ex / repeat_like(reduce(red.sum, ex, ("v",)), ex)  # softmax((logits+gum)/tau)
+    nxt = argtopk(sc, dim="v", k=1, k_name="c")  # the sample
+    ehard = take(wte, nxt, dim="v")  # (c, d)
+    esoft = reduce(red.sum, repeat_like(soft, wte) * wte, ("v",))  # (d,)
+    esb = repeat_like(esoft, ehard)
+    st = ehard + (esb - pointwise(stop_gradient, esb))  # hard + (soft - sg(soft))
+    y = reduce(red.sum, st, ("c", "d"))
+    yss = reduce(red.sum, esoft, ("d",))  # the soft path alone
+    yhh = reduce(red.sum, ehard, ("c", "d"))  # the hard path alone
+    return st, ehard, y, yss, yhh
 
 
 def test_straight_through_topk_sampling_trains_tau():
@@ -542,59 +542,34 @@ def test_straight_through_topk_sampling_trains_tau():
     gum = T(-np.log(-np.log(rng.uniform(size=4))), ("v",))
     tau = T(np.asarray(0.7), ())
     wte = T(rng.standard_normal((4, 2)), ("v", "d"))
-    ins = [
-        I("logits", "input"),
-        I("gum", "input"),
-        I("tau", "input"),
-        I("wte", "input"),
-        I("taub", "repeat_like", ["tau", "logits"]),
-        I("pert", "pointwise", ["logits", "gum"], f="add"),
-        I("sc", "pointwise", ["pert", "taub"], f="div"),
-        I("mx", "reduce", ["sc"], f="max", dims=("v",)),
-        I("mxb", "repeat_like", ["mx", "sc"]),
-        I("shift", "pointwise", ["sc", "mxb"], f="sub"),
-        I("ex", "pointwise", ["shift"], f="exp"),
-        I("z", "reduce", ["ex"], f="sum", dims=("v",)),
-        I("zb", "repeat_like", ["z", "ex"]),
-        I("soft", "pointwise", ["ex", "zb"], f="div"),  # softmax((logits+gum)/tau)
-        I("nxt", "argtopk", ["sc"], dim="v", k=1, k_name="c"),  # the sample
-        I("ehard", "take", ["wte", "nxt"], dim="v"),  # (c, d)
-        I("sw", "repeat_like", ["soft", "wte"]),
-        I("prod", "pointwise", ["sw", "wte"], f="mul"),
-        I("esoft", "reduce", ["prod"], f="sum", dims=("v",)),  # (d,)
-        I("esb", "repeat_like", ["esoft", "ehard"]),
-        I("sg", "pointwise", ["esb"], f="stop_gradient"),
-        I("diff", "pointwise", ["esb", "sg"], f="sub"),
-        I("st", "pointwise", ["ehard", "diff"], f="add"),  # hard + (soft - sg(soft))
-        I("y", "reduce", ["st"], f="sum", dims=("c", "d")),
-        I("yss", "reduce", ["esoft"], f="sum", dims=("d",)),  # the soft path alone
-        I("yhh", "reduce", ["ehard"], f="sum", dims=("c", "d")),  # the hard path alone
-    ]
-    prog = Program(tuple(ins))
     inputs = {"logits": logits, "gum": gum, "tau": tau, "wte": wte}
-    env = run(prog, inputs)
+    ls = lift_step(_st_body, logits=logits.layout, gum=gum.layout, tau=tau.layout, wte=wte.layout)
+    fw = run_named(ls.region, inputs, ls.names)
     # forward IS the hard path, exactly
-    np.testing.assert_array_equal(env["st"].to_numpy(), env["ehard"].to_numpy())
-    np.testing.assert_array_equal(env["y"].to_numpy(), env["yhh"].to_numpy())
-    joint, grads = grad(prog, "y", inputs)
-    assert grads["gum"] is not None  # noise participates in the soft path
-    envj = run(joint, inputs)
+    np.testing.assert_array_equal(fw["st"].to_numpy(), fw["ehard"].to_numpy())
+    np.testing.assert_array_equal(fw["y"].to_numpy(), fw["yhh"].to_numpy())
+    rg = grad(ls.region, "y", inputs, names=ls.names)
+    assert rg.grads["gum"] is not None  # noise participates in the soft path
+    out = run_named(rg.region, inputs, rg.names)
 
     def g(wrt):
-        return envj[grads[wrt]].to_numpy(order=inputs[wrt].names)
+        return out[rg.grads[wrt]].to_numpy(order=inputs[wrt].names)
 
     # tau and logits train through the SOFT path alone (the declaration)
-    np.testing.assert_allclose(g("tau"), numeric_grad(prog, "yss", "tau", inputs), rtol=1e-4, atol=1e-8)
-    np.testing.assert_allclose(g("logits"), numeric_grad(prog, "yss", "logits", inputs), rtol=1e-4, atol=1e-8)
+    np.testing.assert_allclose(g("tau"), numeric_grad(ls.region, "yss", "tau", inputs, ls.names), rtol=1e-4, atol=1e-8)
+    np.testing.assert_allclose(
+        g("logits"), numeric_grad(ls.region, "yss", "logits", inputs, ls.names), rtol=1e-4, atol=1e-8
+    )
     # wte trains through BOTH: the take's true adjoint plus the soft path
-    want = numeric_grad(prog, "yhh", "wte", inputs) + numeric_grad(prog, "yss", "wte", inputs)
+    want = numeric_grad(ls.region, "yhh", "wte", inputs, ls.names) + numeric_grad(
+        ls.region, "yss", "wte", inputs, ls.names
+    )
     np.testing.assert_allclose(g("wte"), want, rtol=1e-4, atol=1e-8)
     assert float(np.abs(g("tau"))) > 0  # tau genuinely trains
 
 
 def test_producers_lower_in_a_step_body():
     """The MoE router shape: argtopk in a step body, gates by take."""
-    from pdum.tl import argtopk
 
     def router(logits):
         choice = argtopk(logits, dim="e", k=1, k_name="m")
@@ -602,6 +577,6 @@ def test_producers_lower_in_a_step_body():
 
     logits = T(np.array([[0.1, 0.9], [0.8, 0.2]]), ("t", "e"))
     ls = lift_step(router, logits=logits.layout)
-    assert any(i.op == "argtopk" for i in ls.program.instrs)
-    env = run(ls.program, {"logits": logits})
-    np.testing.assert_array_equal(env[ls.outputs[0]].to_numpy(), [[1], [0]])
+    assert any(n.op == "tl.argtopk" for n in walk_region(ls.region))
+    out = run_named(ls.region, {"logits": logits}, ls.names)
+    np.testing.assert_array_equal(out[ls.outputs[0]].to_numpy(), [[1], [0]])

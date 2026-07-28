@@ -1,18 +1,36 @@
-"""fold — the tensor-state scan: programs as step functions, derived BPTT."""
+"""fold — the tensor-state scan: regions as step functions, derived BPTT."""
 
 import numpy as np
 import pytest
-from pdum.tl import Tensor, defreducer, ops_count
+from pdum.dsl.ir import Builder, Region
+from pdum.dsl.ops import CORE_OPS
+from pdum.tl import Tensor, defreducer, ops_count, peak_memory, red, reduce, scan
 from pdum.tl.autodiff import grad, numeric_grad
-from pdum.tl.ir import Instr, Program, run
-
-
-def I(var, op, operands=(), **params):  # noqa: E743
-    return Instr(var, op, tuple(operands), params)
+from pdum.tl.compute import repeat_like
+from pdum.tl.dialect import (
+    TL_OPS,
+    fold_region,
+    region_names,
+    run_named,
+    run_region,
+    tensor_type_of_layout,
+)
+from pdum.tl.lifting import lift_step
 
 
 def T(arr, names):
     return Tensor.from_numpy(np.asarray(arr, dtype=np.float64), names)
+
+
+def _loss_region(inner, fold, out_name, dims, param_names):
+    """Extend a fold-bearing region with loss = sum(out^2) over ``dims``,
+    yielding (out, loss) under the naming law."""
+    b = Builder({**CORE_OPS, **TL_OPS})
+    sq = b.emit("tl.pointwise", fold, fold, f="mul")
+    loss = b.emit("tl.reduce", sq, f="sum", dims=dims)
+    region = Region(params=inner.params, body=(b.emit("core.yield", b.emit("core.tuple", fold, loss)),))
+    names = region_names(region, param_names, {id(fold): out_name, id(loss): "loss"})
+    return region, names
 
 
 RNG = np.random.default_rng(23)
@@ -23,55 +41,48 @@ RNG = np.random.default_rng(23)
 
 DK, DV, TN = 3, 2, 4
 
-GLA_STEP = Program(
-    (
-        I("S", "input"),
-        I("a", "input"),
-        I("kk", "input"),
-        I("vv", "input"),
-        I("qq", "input"),
-        I("a1", "repeat", ["a"], name="p", extent=(0, DK)),
-        I("ar", "repeat", ["a1"], name="r", extent=(0, DV)),
-        I("kr", "repeat", ["kk"], name="r", extent=(0, DV)),
-        I("vr", "repeat", ["vv"], name="p", extent=(0, DK)),
-        I("Sa", "pointwise", ["ar", "S"], f="mul"),
-        I("kv", "pointwise", ["kr", "vr"], f="mul"),
-        I("S1", "pointwise", ["Sa", "kv"], f="add"),
-        I("qr", "repeat", ["qq"], name="r", extent=(0, DV)),
-        I("Sq", "pointwise", ["S1", "qr"], f="mul"),
-        I("y", "reduce", ["Sq"], f="sum", dims=("p",)),
-    )
-)
+
+def _gla_step(S, a, kk, vv, qq):
+    S1 = repeat_like(a, S) * S + repeat_like(kk, S) * repeat_like(vv, S)
+    y = reduce(red.sum, S1 * repeat_like(qq, S), ("p",))
+    return S1, y
 
 
-def _gla_prog():
-    return Program(
-        (
-            I("S0", "input"),
-            I("a", "input"),
-            I("k", "input"),
-            I("v", "input"),
-            I("q", "input"),
-            I(
-                "ys",
-                "fold",
-                ["S0", "a", "k", "v", "q"],
-                step=GLA_STEP,
-                dim="t",
-                state=("S",),
-                element=("a", "kk", "vv", "qq"),
-                carry={"S": "S1"},
-                out=("emit", "y"),
-            ),
-            I("y2", "pointwise", ["ys", "ys"], f="mul"),
-            I("loss", "reduce", ["y2"], f="sum", dims=("t", "r")),
-        )
+def _gla_model():
+    """The GLA fold + loss = sum(ys^2) over (t, r), on the region face.
+
+    The state is authored (r, p)-ordered: the adjoint of the emit path
+    (reduce over "p") derives an (r, p)-ordered state cotangent, and the
+    region fold's positional carry check compares types ORDER-SENSITIVELY —
+    a (p, r) state refuses at build ("changes the state type")."""
+    ls = lift_step(
+        _gla_step,
+        S=T(np.zeros((DV, DK)), ("r", "p")).layout,
+        a=T(0.0, ()).layout,
+        kk=T(np.zeros(DK), ("p",)).layout,
+        vv=T(np.zeros(DV), ("r",)).layout,
+        qq=T(np.zeros(DK), ("p",)).layout,
     )
+    inner, fold = fold_region(
+        ls.region,
+        dim="t",
+        state=("S",),
+        element=("a", "kk", "vv", "qq"),
+        out=("emit",),
+        init_types=(tensor_type_of_layout(T(np.zeros((DV, DK)), ("r", "p")).layout),),
+        src_types=(
+            tensor_type_of_layout(T(np.zeros(TN), ("t",)).layout),
+            tensor_type_of_layout(T(np.zeros((TN, DK)), ("t", "p")).layout),
+            tensor_type_of_layout(T(np.zeros((TN, DV)), ("t", "r")).layout),
+            tensor_type_of_layout(T(np.zeros((TN, DK)), ("t", "p")).layout),
+        ),
+    )
+    return _loss_region(inner, fold, "ys", ("t", "r"), ("S0", "a", "k", "v", "q"))
 
 
 def _gla_inputs():
     return {
-        "S0": T(RNG.standard_normal((DK, DV)), ("p", "r")),
+        "S0": T(RNG.standard_normal((DV, DK)), ("r", "p")),
         "a": T(RNG.uniform(0.5, 1.0, TN), ("t",)),
         "k": T(RNG.standard_normal((TN, DK)), ("t", "p")),
         "v": T(RNG.standard_normal((TN, DV)), ("t", "r")),
@@ -80,7 +91,7 @@ def _gla_inputs():
 
 
 def _gla_ref(inputs):
-    S = inputs["S0"].to_numpy().copy()
+    S = inputs["S0"].to_numpy(order=("p", "r")).copy()
     a, k, v, q = (inputs[n].to_numpy() for n in ("a", "k", "v", "q"))
     ys = []
     for t in range(TN):
@@ -91,18 +102,20 @@ def _gla_ref(inputs):
 
 def test_gla_fold_matches_the_recurrence():
     inputs = _gla_inputs()
-    env = run(_gla_prog(), inputs)
-    np.testing.assert_allclose(env["ys"].to_numpy(order=("t", "r")), _gla_ref(inputs), rtol=1e-12)
+    region, names = _gla_model()
+    vals = run_named(region, inputs, names)
+    np.testing.assert_allclose(vals["ys"].to_numpy(order=("t", "r")), _gla_ref(inputs), rtol=1e-12)
 
 
 def test_gla_fold_gradients_match_fd():
     inputs = _gla_inputs()
-    prog = _gla_prog()
-    jp, grads = grad(prog, "loss", inputs)
-    env = run(jp, inputs)
+    region, names = _gla_model()
+    rg = grad(region, "loss", inputs, names=names)
+    vals = run_named(rg.region, inputs, rg.names)
     for wrt in ("S0", "a", "k", "v", "q"):
-        fd = numeric_grad(prog, "loss", wrt, inputs)
-        np.testing.assert_allclose(env[grads[wrt]].to_numpy(), fd, rtol=2e-5, atol=1e-7)
+        fd = numeric_grad(region, "loss", wrt, inputs, names)
+        got = vals[rg.grads[wrt]].to_numpy(order=inputs[wrt].names)
+        np.testing.assert_allclose(got, fd, rtol=2e-5, atol=1e-7)
 
 
 # ----------------------------------------------------------------------
@@ -111,50 +124,34 @@ def test_gla_fold_gradients_match_fd():
 
 N, NT, C = 6, 4, 0.3
 
-FDTD_STEP = Program(
-    (
-        I("E", "input"),
-        I("H", "input"),
-        I("Es", "shift", ["E"], deltas={"x": -1}),
-        I("Ea", "slice", ["Es"], ranges={"x": (0, N - 1)}),
-        I("Eb", "slice", ["E"], ranges={"x": (0, N - 1)}),
-        I("dE", "pointwise", ["Ea", "Eb"], f="sub"),
-        I("cH", "const", [], value=C, dims=(("x", (0, N - 1)),)),
-        I("dHs", "pointwise", ["cH", "dE"], f="mul"),
-        I("H1", "pointwise", ["H", "dHs"], f="add"),
-        I("Hs", "shift", ["H1"], deltas={"x": 1}),
-        I("Ha", "slice", ["H1"], ranges={"x": (1, N - 1)}),
-        I("Hb", "slice", ["Hs"], ranges={"x": (1, N - 1)}),
-        I("dH", "pointwise", ["Ha", "Hb"], f="sub"),
-        I("pdH", "pad", ["dH"], fill=0.0, extents={"x": (0, N)}),
-        I("cE", "const", [], value=C, dims=(("x", (0, N)),)),
-        I("dEs", "pointwise", ["cE", "pdH"], f="mul"),
-        I("E1", "pointwise", ["E", "dEs"], f="add"),
-    )
-)
+
+def _fdtd_step(E, H):
+    H1 = H + C * (E.shift(x=-1).slice(x=(0, N - 1)) - E.slice(x=(0, N - 1)))
+    dH = (H1.slice(x=(1, N - 1)) - H1.shift(x=1).slice(x=(1, N - 1))).pad(0.0, x=(0, N))
+    E1 = E + C * dH
+    return E1, H1
 
 
-def _fdtd_prog(out=("final", "E1"), steps=NT):
-    return Program(
-        (
-            I("E0", "input"),
-            I("H0", "input"),
-            I(
-                "Ef",
-                "fold",
-                ["E0", "H0"],
-                step=FDTD_STEP,
-                dim="t",
-                state=("E", "H"),
-                element=(),
-                carry={"E": "E1", "H": "H1"},
-                out=out,
-                extent=(0, steps),
-            ),
-            I("E2", "pointwise", ["Ef", "Ef"], f="mul"),
-            I("loss", "reduce", ["E2"], f="sum", dims=("x",) if out[0] == "final" else ("t", "x")),
-        )
+def _fdtd_step_emit(E, H):
+    E1, H1 = _fdtd_step(E, H)
+    return E1, H1, E1
+
+
+def _fdtd_model(out=("final", 0), steps=NT):
+    E0, H0 = _fdtd_ref()
+    step = _fdtd_step_emit if out[0] == "emit" else _fdtd_step
+    ls = lift_step(step, E=E0.layout, H=H0.layout)
+    inner, fold = fold_region(
+        ls.region,
+        dim="t",
+        state=("E", "H"),
+        element=(),
+        out=out,
+        init_types=(tensor_type_of_layout(E0.layout), tensor_type_of_layout(H0.layout)),
+        extent=(0, steps),
     )
+    dims = ("x",) if out[0] == "final" else ("t", "x")
+    return _loss_region(inner, fold, "Ef", dims, ("E0", "H0"))
 
 
 def _fdtd_ref():
@@ -180,27 +177,38 @@ def test_fdtd_fold_matches_the_time_loop():
     E0, H0 = _fdtd_ref()
     inputs = {"E0": E0, "H0": H0}
     Ef, traj = _fdtd_loop(E0.to_numpy(), H0.to_numpy())
-    env = run(_fdtd_prog(), inputs)
-    np.testing.assert_allclose(env["Ef"].to_numpy(), Ef, rtol=1e-12)
-    env2 = run(_fdtd_prog(out=("emit", "E1")), inputs)
-    np.testing.assert_allclose(env2["Ef"].to_numpy(order=("t", "x")), traj, rtol=1e-12)
+    region, names = _fdtd_model()
+    np.testing.assert_allclose(run_named(region, inputs, names)["Ef"].to_numpy(), Ef, rtol=1e-12)
+    region2, names2 = _fdtd_model(out=("emit",))
+    np.testing.assert_allclose(run_named(region2, inputs, names2)["Ef"].to_numpy(order=("t", "x")), traj, rtol=1e-12)
 
 
 def test_fdtd_adjoint_matches_fd():
     E0, H0 = _fdtd_ref()
     inputs = {"E0": E0, "H0": H0}
-    for out in (("final", "E1"), ("emit", "E1")):
-        prog = _fdtd_prog(out=out)
-        jp, grads = grad(prog, "loss", inputs)
-        env = run(jp, inputs)
+    for out in (("final", 0), ("emit",)):
+        region, names = _fdtd_model(out=out)
+        rg = grad(region, "loss", inputs, names=names)
+        vals = run_named(rg.region, inputs, rg.names)
         for wrt in ("E0", "H0"):
-            fd = numeric_grad(prog, "loss", wrt, inputs)
-            np.testing.assert_allclose(env[grads[wrt]].to_numpy(), fd, rtol=2e-5, atol=1e-8)
+            fd = numeric_grad(region, "loss", wrt, inputs, names)
+            np.testing.assert_allclose(vals[rg.grads[wrt]].to_numpy(), fd, rtol=2e-5, atol=1e-8)
 
 
 # ----------------------------------------------------------------------
 # consistency, edges, refusals
 # ----------------------------------------------------------------------
+
+
+def _lin_step(h, av, bv):
+    h1 = av * h + bv
+    return h1, h1
+
+
+def _lin_scan(a, b):
+    h = scan("linrec_f", (a, b), "t")
+    loss = reduce(red.sum, h * h, ("t",))
+    return h, loss
 
 
 def test_scalar_fold_matches_composite_linrec():
@@ -213,15 +221,6 @@ def test_scalar_fold_matches_composite_linrec():
         init=(1.0, 0.0),
         project=lambda A, B: B,
     )
-    step = Program(
-        (
-            I("h", "input"),
-            I("av", "input"),
-            I("bv", "input"),
-            I("ah", "pointwise", ["av", "h"], f="mul"),
-            I("h1", "pointwise", ["ah", "bv"], f="add"),
-        )
-    )
     n = 5
     inputs = {
         "h0": T(0.0, ()),
@@ -231,30 +230,26 @@ def test_scalar_fold_matches_composite_linrec():
 
     def build(kind):
         if kind == "fold":
-            head = I(
-                "h",
-                "fold",
-                ["h0", "a", "b"],
-                step=step,
+            ls = lift_step(_lin_step, h=T(0.0, ()).layout, av=T(0.0, ()).layout, bv=T(0.0, ()).layout)
+            inner, fold = fold_region(
+                ls.region,
                 dim="t",
                 state=("h",),
                 element=("av", "bv"),
-                carry={"h": "h1"},
-                out=("emit", "h1"),
+                out=("emit",),
+                init_types=(tensor_type_of_layout(inputs["h0"].layout),),
+                src_types=(tensor_type_of_layout(inputs["a"].layout), tensor_type_of_layout(inputs["b"].layout)),
             )
-            ins = (I("h0", "input"), I("a", "input"), I("b", "input"), head)
+            region, names = _loss_region(inner, fold, "h", ("t",), ("h0", "a", "b"))
+            ins = inputs
         else:
-            ins = (I("a", "input"), I("b", "input"), I("h", "scan", ["a", "b"], f="linrec_f", dim="t"))
-        prog = Program(
-            ins
-            + (
-                I("hh", "pointwise", ["h", "h"], f="mul"),
-                I("loss", "reduce", ["hh"], f="sum", dims=("t",)),
-            )
-        )
-        jp, grads = grad(prog, "loss", inputs)
-        env = run(jp, inputs)
-        return env["h"].to_numpy(), env[grads["a"]].to_numpy(), env[grads["b"]].to_numpy()
+            ls = lift_step(_lin_scan, a=inputs["a"].layout, b=inputs["b"].layout)
+            region, names = ls.region, ls.names
+            ins = {k: inputs[k] for k in ("a", "b")}
+        rg = grad(region, "loss", ins, names=names)
+        vals = run_named(rg.region, ins, rg.names)
+        h = run_named(region, ins, names)["h"]
+        return h.to_numpy(), vals[rg.grads["a"]].to_numpy(), vals[rg.grads["b"]].to_numpy()
 
     hf, gaf, gbf = build("fold")
     hs, gas, gbs = build("scan")
@@ -266,73 +261,43 @@ def test_scalar_fold_matches_composite_linrec():
 def test_empty_fold_is_the_identity_and_grads_pass_through():
     E0, H0 = _fdtd_ref()
     inputs = {"E0": E0, "H0": H0}
-    prog = _fdtd_prog(steps=0)
-    env = run(prog, inputs)
-    np.testing.assert_allclose(env["Ef"].to_numpy(), E0.to_numpy())
-    jp, grads = grad(prog, "loss", inputs)
-    envj = run(jp, inputs)
-    np.testing.assert_allclose(envj[grads["E0"]].to_numpy(), 2 * E0.to_numpy())  # d(sum E0^2)/dE0
-    np.testing.assert_allclose(envj[grads["H0"]].to_numpy(), np.zeros(N - 1))
+    region, names = _fdtd_model(steps=0)
+    vals = run_named(region, inputs, names)
+    np.testing.assert_allclose(vals["Ef"].to_numpy(), E0.to_numpy())
+    rg = grad(region, "loss", inputs, names=names)
+    valsj = run_named(rg.region, inputs, rg.names)
+    np.testing.assert_allclose(valsj[rg.grads["E0"]].to_numpy(), 2 * E0.to_numpy())  # d(sum E0^2)/dE0
+    np.testing.assert_allclose(valsj[rg.grads["H0"]].to_numpy(), np.zeros(N - 1))
 
 
 def test_fold_carry_drift_refused():
-    step = Program(
-        (
-            I("E", "input"),
-            I("E1", "slice", ["E"], ranges={"x": (0, N - 1)}),
+    # the region face refuses at BUILD (the type rule): a carry that changes
+    # the state type never constructs (the incumbent refused at run time
+    # with "state layout")
+    def drift(E):
+        return E.slice(x=(0, N - 1))
+
+    ls = lift_step(drift, E=_fdtd_ref()[0].layout)
+    with pytest.raises(TypeError, match="changes the state type"):
+        fold_region(
+            ls.region,
+            dim="t",
+            state=("E",),
+            element=(),
+            out=("final", 0),
+            init_types=(tensor_type_of_layout(_fdtd_ref()[0].layout),),
+            extent=(0, 2),
         )
-    )
-    prog = Program(
-        (
-            I("E0", "input"),
-            I(
-                "Ef",
-                "fold",
-                ["E0"],
-                step=step,
-                dim="t",
-                state=("E",),
-                element=(),
-                carry={"E": "E1"},
-                out=("final", "E1"),
-                extent=(0, 2),
-            ),
-        )
-    )
-    with pytest.raises(ValueError, match="state layout"):
-        run(prog, {"E0": _fdtd_ref()[0]})
 
 
-def test_fold_final_must_be_a_carry():
-    with pytest.raises(ValueError, match="carry output"):
-        run(
-            Program(
-                (
-                    I("S0", "input"),
-                    I("a", "input"),
-                    I("k", "input"),
-                    I("v", "input"),
-                    I("q", "input"),
-                    I(
-                        "ys",
-                        "fold",
-                        ["S0", "a", "k", "v", "q"],
-                        step=GLA_STEP,
-                        dim="t",
-                        state=("S",),
-                        element=("a", "kk", "vv", "qq"),
-                        carry={"S": "S1"},
-                        out=("final", "y"),
-                    ),
-                )
-            ),
-            _gla_inputs(),
-        )
+# test_fold_final_must_be_a_carry: DELETED — the positional contract's
+# out=("final", i) can only index a state; a non-carry final output is
+# unrepresentable on the region face (the refusal's subject is gone).
 
 
 def test_fold_ops_count_scales_with_steps():
-    inputs = _gla_inputs()
-    ops = ops_count(_gla_prog(), inputs)
+    region, names = _gla_model()
+    ops = ops_count(region, names=names)
     # per step: muls Sa+kv+Sq = 3*(DK*DV); adds S1 (DK*DV) + reduce (DK-1)*DV
     per_mul = 3 * DK * DV
     per_add = DK * DV + (DK - 1) * DV
@@ -346,38 +311,35 @@ def test_fold_ops_count_scales_with_steps():
 
 
 def test_segmented_fold_adjoint_matches_and_trades_memory_for_ops():
-    from pdum.tl.memory import peak_memory
-    from pdum.tl.opcount import ops_count
-
     E0, H0 = _fdtd_ref()
     inputs = {"E0": E0, "H0": H0}
-    prog = _fdtd_prog(out=("emit", "E1"), steps=12)
+    region, names = _fdtd_model(out=("emit",), steps=12)
     results, peaks, costs = {}, {}, {}
     for K in (None, 2, 3, 6):
-        jp, grads = grad(prog, "loss", inputs, fold_segments=K)
-        env = run(jp, inputs)
-        results[K] = {v: env[grads[v]].to_numpy() for v in ("E0", "H0")}
-        peaks[K] = peak_memory(jp, inputs).peak_bytes
-        costs[K] = ops_count(jp, inputs).weighted()
+        rg = grad(region, "loss", inputs, fold_segments=K, names=names)
+        vals = run_named(rg.region, inputs, rg.names)
+        results[K] = {v: vals[rg.grads[v]].to_numpy() for v in ("E0", "H0")}
+        peaks[K] = peak_memory(rg.region, inputs, names=rg.names).peak_bytes
+        costs[K] = ops_count(rg.region, names=rg.names).weighted()
     for K in (2, 3, 6):
         for v in ("E0", "H0"):
             np.testing.assert_allclose(results[K][v], results[None][v], rtol=1e-9)
         assert costs[K] > costs[None]  # segments pay recompute...
     assert peaks[3] < peaks[None]  # ...to buy peak memory
     with pytest.raises(ValueError, match="divide"):
-        grad(prog, "loss", inputs, fold_segments=5)  # 12 % 5 != 0
+        grad(region, "loss", inputs, fold_segments=5, names=names)  # 12 % 5 != 0
 
 
 def test_segmented_gla_gradients_match_store_all():
     inputs = _gla_inputs()
-    prog = _gla_prog()
-    jp0, g0 = grad(prog, "loss", inputs)
-    jp2, g2 = grad(prog, "loss", inputs, fold_segments=2)
-    e0, e2 = run(jp0, inputs), run(jp2, inputs)
+    region, names = _gla_model()
+    rg0 = grad(region, "loss", inputs, names=names)
+    rg2 = grad(region, "loss", inputs, fold_segments=2, names=names)
+    e0, e2 = run_named(rg0.region, inputs, rg0.names), run_named(rg2.region, inputs, rg2.names)
     for v in ("S0", "a", "k", "v", "q"):
         np.testing.assert_allclose(
-            e2[g2[v]].to_numpy(order=inputs[v].names),
-            e0[g0[v]].to_numpy(order=inputs[v].names),
+            e2[rg2.grads[v]].to_numpy(order=inputs[v].names),
+            e0[rg0.grads[v]].to_numpy(order=inputs[v].names),
             rtol=1e-9,
         )
 
@@ -424,49 +386,48 @@ def test_revolve_fold_adjoint_matches_store_all_no_divisibility():
     E0, H0 = _fdtd_ref()
     inputs = {"E0": E0, "H0": H0}
     for steps in (16, 13):
-        prog = _fdtd_prog(out=("final", "E1"), steps=steps)
-        jp0, g0 = grad(prog, "loss", inputs)
-        e0 = run(jp0, inputs)
+        region, names = _fdtd_model(out=("final", 0), steps=steps)
+        rg0 = grad(region, "loss", inputs, names=names)
+        e0 = run_named(rg0.region, inputs, rg0.names)
         for S in (2, 3, 4):
-            jp, g = grad(prog, "loss", inputs, fold_slots=S)
-            e = run(jp, inputs)
+            rg = grad(region, "loss", inputs, fold_slots=S, names=names)
+            e = run_named(rg.region, inputs, rg.names)
             for v in ("E0", "H0"):
-                np.testing.assert_allclose(e[g[v]].to_numpy(), e0[g0[v]].to_numpy(), rtol=1e-9)
+                np.testing.assert_allclose(e[rg.grads[v]].to_numpy(), e0[rg0.grads[v]].to_numpy(), rtol=1e-9)
     # 13 is prime: fold_segments has no interior divisor, revolve reversed it
+    region13, names13 = _fdtd_model(out=("final", 0), steps=13)
     with pytest.raises(ValueError, match="divide"):
-        grad(_fdtd_prog(out=("final", "E1"), steps=13), "loss", inputs, fold_segments=4)
+        grad(region13, "loss", inputs, fold_segments=4, names=names13)
 
 
 def test_revolve_gla_gradients_match_store_all():
     inputs = _gla_inputs()
-    prog = _gla_prog()  # TN=4 elements present, emit-trajectory output
-    jp0, g0 = grad(prog, "loss", inputs)
-    e0 = run(jp0, inputs)
+    region, names = _gla_model()  # TN=4 elements present, emit-trajectory output
+    rg0 = grad(region, "loss", inputs, names=names)
+    e0 = run_named(rg0.region, inputs, rg0.names)
     for S in (1, 2, 3):
-        jp, g = grad(prog, "loss", inputs, fold_slots=S)
-        e = run(jp, inputs)
+        rg = grad(region, "loss", inputs, fold_slots=S, names=names)
+        e = run_named(rg.region, inputs, rg.names)
         for v in ("S0", "a", "k", "v", "q"):
             np.testing.assert_allclose(
-                e[g[v]].to_numpy(order=inputs[v].names),
-                e0[g0[v]].to_numpy(order=inputs[v].names),
+                e[rg.grads[v]].to_numpy(order=inputs[v].names),
+                e0[rg0.grads[v]].to_numpy(order=inputs[v].names),
                 rtol=1e-9,
             )
 
 
 def test_revolve_three_way_memory_table():
-    from pdum.tl.memory import peak_memory
-    from pdum.tl.opcount import ops_count
-
     E0, H0 = _fdtd_ref()
     inputs = {"E0": E0, "H0": H0}
     # out=final: the trajectory is NOT the output, so holding it is a pure
     # backward cost — exactly what checkpointing removes (the emit variant
     # materializes the whole space-time output regardless, masking the win)
-    prog = _fdtd_prog(out=("final", "E1"), steps=24)
+    region, names = _fdtd_model(out=("final", 0), steps=24)
 
     def peak_ops(**kw):
-        jp, _ = grad(prog, "loss", inputs, **kw)
-        return peak_memory(jp, inputs).peak_bytes, ops_count(jp, inputs).weighted()
+        rg = grad(region, "loss", inputs, names=names, **kw)
+        peak = peak_memory(rg.region, inputs, names=rg.names).peak_bytes
+        return peak, ops_count(rg.region, names=rg.names).weighted()
 
     store_peak, store_ops = peak_ops()
     unif_peak = min(peak_ops(fold_segments=K)[0] for K in (4, 6, 8))  # K≈√24
@@ -485,25 +446,134 @@ def test_revolve_three_way_memory_table():
 def test_revolve_knob_exclusivity_and_degenerate_slots():
     E0, H0 = _fdtd_ref()
     inputs = {"E0": E0, "H0": H0}
-    prog = _fdtd_prog(out=("final", "E1"), steps=8)
-    jp0, g0 = grad(prog, "loss", inputs)
-    e0 = run(jp0, inputs)
+    region, names = _fdtd_model(out=("final", 0), steps=8)
+    rg0 = grad(region, "loss", inputs, names=names)
+    e0 = run_named(rg0.region, inputs, rg0.names)
     # both knobs at once is refused
     with pytest.raises(ValueError, match="not both"):
-        grad(prog, "loss", inputs, fold_segments=2, fold_slots=2)
+        grad(region, "loss", inputs, fold_segments=2, fold_slots=2, names=names)
     with pytest.raises(ValueError, match="must be >= 1"):
-        grad(prog, "loss", inputs, fold_slots=0)
+        grad(region, "loss", inputs, fold_slots=0, names=names)
     # S=1 works (degenerate, recompute-heavy triangular schedule)
-    jp1, g1 = grad(prog, "loss", inputs, fold_slots=1)
-    e1 = run(jp1, inputs)
+    rg1 = grad(region, "loss", inputs, fold_slots=1, names=names)
+    e1 = run_named(rg1.region, inputs, rg1.names)
     for v in ("E0", "H0"):
-        np.testing.assert_allclose(e1[g1[v]].to_numpy(), e0[g0[v]].to_numpy(), rtol=1e-9)
+        np.testing.assert_allclose(e1[rg1.grads[v]].to_numpy(), e0[rg0.grads[v]].to_numpy(), rtol=1e-9)
     # S >= T: enough slots to hold everything -> collapses to store-all, and
     # its peak equals the store-all peak exactly (a single full leaf)
-    from pdum.tl.memory import peak_memory
-
-    jpb, gb = grad(prog, "loss", inputs, fold_slots=99)
-    eb = run(jpb, inputs)
+    rgb = grad(region, "loss", inputs, fold_slots=99, names=names)
+    eb = run_named(rgb.region, inputs, rgb.names)
     for v in ("E0", "H0"):
-        np.testing.assert_allclose(eb[gb[v]].to_numpy(), e0[g0[v]].to_numpy(), rtol=1e-9)
-    assert peak_memory(jpb, inputs).peak_bytes == peak_memory(jp0, inputs).peak_bytes
+        np.testing.assert_allclose(eb[rgb.grads[v]].to_numpy(), e0[rg0.grads[v]].to_numpy(), rtol=1e-9)
+    assert (
+        peak_memory(rgb.region, inputs, names=rgb.names).peak_bytes
+        == peak_memory(rg0.region, inputs, names=rg0.names).peak_bytes
+    )
+
+
+# --- the Region face (the excavation, LEVELS) -------------------------------
+
+
+def test_region_fold_runs_the_physics_entries():
+    """Region-first: the fold-bearing zoo regions under run_region (the
+    positional door) match their numpy denotations — multi-state (FDTD)
+    and elementless (both) covered."""
+    from pdum.tl.zoo import fdtd1d_staggered, heat2d
+
+    for m, ins in ((heat2d(), ("u0",)), (fdtd1d_staggered(), ("E0", "H0"))):
+        got = run_region(m.region, [m.inputs[k] for k in ins])
+        np.testing.assert_allclose(got.to_numpy(order=m.order), m.ref(m.numpy_inputs()), rtol=1e-9, atol=1e-12)
+
+
+def test_region_fold_emit_with_element_matches_the_recurrence():
+    """An emit fold with an element source: region authoring (positional
+    yield contract) against the recurrence computed by hand.
+    (The incumbent-Program comparison and the export_program round-trip
+    died with the Program IR — export_program is deleted.)"""
+
+    def step(s, m):
+        s1 = s + m
+        e = s1 * s1
+        return s1, e
+
+    s0 = Tensor.from_numpy(np.arange(3.0), ("x",))
+    src = Tensor.from_numpy(np.arange(12.0).reshape(4, 3), ("tm", "x"))
+    elem = Tensor.from_numpy(np.zeros(3), ("x",))
+    ls = lift_step(step, s=s0.layout, m=elem.layout)
+    region, fold = fold_region(
+        ls.region,
+        dim="tm",
+        state=("s",),
+        element=("m",),
+        out=("emit",),
+        init_types=(tensor_type_of_layout(s0.layout),),
+        src_types=(tensor_type_of_layout(src.layout),),
+    )
+    got = run_region(region, [s0, src])
+    s = s0.to_numpy().copy()
+    rows = []
+    for t in range(4):
+        s = s + src.to_numpy()[t]
+        rows.append(s * s)
+    np.testing.assert_array_equal(got.to_numpy(order=("tm", "x")), np.stack(rows))
+
+
+def test_region_analyses_cover_folds():
+    """The four analyses serve fold-bearing regions (elementless,
+    multi-state, charted states) — direct coverage pins now that the
+    Program-face differential is gone."""
+    from pdum.tl import infer_signatures, mesh, traffic
+    from pdum.tl.zoo import fdtd1d_staggered, heat2d
+
+    for m in (heat2d(), fdtd1d_staggered()):
+        ro = ops_count(m.region, names=m.names)
+        assert m.out in ro.per_var and sum(ro.total.values()) > 0
+        rm = peak_memory(m.region, m.inputs, names=m.names)
+        assert rm.peak_bytes > 0
+        assert rm.input_bytes == sum(v.to_numpy().size * 8 for v in m.inputs.values())
+        rs = infer_signatures(m.region, m.inputs, names=m.names)
+        assert m.out in rs
+        tr = traffic(m.region, None, mesh(2), names=m.names)
+        assert tr.collectives == ()  # nothing bound: the fold moves no traffic
+
+
+def test_fold_adjoint_tolerates_permuted_carry_dims():
+    """Regression (the excavation): the derived state cotangent may carry
+    its dims in a different ORDER than the state — presentation order is
+    never semantics (220 §11), so the carry check compares frames
+    order-insensitively and the gradient still derives."""
+    from pdum.dsl.ir import Builder, Region
+    from pdum.dsl.ops import CORE_OPS
+    from pdum.tl.autodiff import grad, numeric_grad
+    from pdum.tl.dialect import TL_OPS, fold_region, region_names, tensor_type_of_layout
+    from pdum.tl.lifting import lift_step
+
+    def step(S, m):
+        S1 = S * 0.9 + m.repeat("p", (0, 3)) * 0.1
+        return S1
+
+    S0 = T(np.arange(6.0).reshape(3, 2), ("p", "r"))  # state ordered (p, r)
+    src = T(np.arange(8.0).reshape(4, 2), ("tm", "r"))
+    elem = T(np.zeros(2), ("r",))
+    ls = lift_step(step, S=S0.layout, m=elem.layout)
+    region, fold = fold_region(
+        ls.region,
+        dim="tm",
+        state=("S",),
+        element=("m",),
+        out=("final", 0),
+        init_types=(tensor_type_of_layout(S0.layout),),
+        src_types=(tensor_type_of_layout(src.layout),),
+    )
+    b = Builder({**CORE_OPS, **TL_OPS})
+    loss = b.emit("tl.reduce", fold, f="sum", dims=("p", "r"))
+    r2 = Region(params=region.params, body=(b.emit("core.yield", loss),))
+    names = region_names(r2, ("S0", "src"), {id(fold): "Sf", id(loss): "loss"})
+    rg = grad(r2, "loss", {"S0": S0, "src": src}, wrt=("S0", "src"), names=names)
+    from pdum.tl.dialect import run_named
+
+    vals = run_named(rg.region, {"S0": S0, "src": src}, rg.names)
+    for v in ("S0", "src"):
+        got = vals[rg.grads[v]].to_numpy(order={"S0": ("p", "r"), "src": ("tm", "r")}[v])
+        want = numeric_grad(r2, "loss", v, {"S0": S0, "src": src}, names)
+        np.testing.assert_allclose(got, want, rtol=1e-4, atol=1e-7)

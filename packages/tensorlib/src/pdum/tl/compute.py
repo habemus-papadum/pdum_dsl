@@ -348,3 +348,36 @@ def scan(f: Reducer, a: Tensor, dim: str, zero=None) -> Tensor:
         shape[axis] = n
         out = out / np.arange(1, n + 1).reshape(shape)
     return _tensor_like(np.asarray(out), a.layout.dims)
+
+
+# --- reference helpers folded in from the retired linear IR (the
+# excavation, LEVELS): const materialization, the one copying op, and the
+# one sanctioned precision op -------------------------------------------------
+
+
+def _const_tensor(p) -> Tensor:
+    value = np.asarray(p["value"], dtype=p.get("dtype", np.float64))
+    if value.ndim != 0:
+        raise ValueError("const takes a scalar value (broadcast over dims)")
+    t = Tensor.from_numpy(value, ())
+    for name, extent in p.get("dims", ()):
+        t = t.repeat(name, extent)
+    return t
+
+
+def _round_to(t: Tensor, encoding) -> Tensor:
+    """The ONE sanctioned precision op (200 §4): encode∘decode over the
+    interior value — exact, explicit, boundary-shaped. The value stays
+    carrier-valued; the encoding is the op's parameter, never the type."""
+    order = t.names
+    arr = encoding.round_trip(t.to_numpy(order=order) if order else t.to_numpy())
+    dims = tuple(t.layout.dim(n) for n in order)
+    return _tensor_like(np.asarray(arr, dtype=np.float64), dims, value_units=t.value_units)
+
+
+def _materialize(t: Tensor, p) -> Tensor:
+    order = tuple(p["order"])
+    arr = t.to_numpy(order=order)
+    dims = tuple(t.layout.dim(n) for n in order)
+    plain = tuple(replace(d, chart=None, labels=None) for d in dims)
+    return _tensor_like(arr, plain)

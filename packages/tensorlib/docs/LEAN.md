@@ -256,7 +256,7 @@ exists — long before any interesting theorem is proved.
 
 (1) *Denotation*: `ir.Program` is the deep embedding this diary deferred —
 linear SSA, no branching. Its denotation is a fold of per-instruction
-denotations over an environment; `ir.run` is that fold over the reference
+denotations over an environment; `run_region` is that fold over the reference
 layer, `ir.infer` is the same fold over layouts only (a second, abstract
 interpretation — Lean will recognize this as two algebras over one syntax,
 begging for a generic fold). `materialize` denotes the identity (its whole

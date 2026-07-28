@@ -55,4 +55,4 @@ def tiled_matmul(cfg: GemmConfig = GemmConfig(), seed: int = 13) -> ZooModel:
         "b": Tensor.from_numpy(rng.standard_normal((cfg.k, cfg.n)), ("k", "n")),
     }
     ls = lift_step(make_tiled_matmul(cfg), **{k: v.layout for k, v in inputs.items()})
-    return ZooModel(ls.program, inputs, ls.outputs[0], lambda inp: inp["a"] @ inp["b"], ("m", "n"))
+    return ZooModel(ls.region, inputs, ls.outputs[0], lambda inp: inp["a"] @ inp["b"], ("m", "n"), ls.names)

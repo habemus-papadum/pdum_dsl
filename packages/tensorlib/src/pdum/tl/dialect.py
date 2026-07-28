@@ -64,10 +64,10 @@ from .indexing import argsort as _eager_argsort
 from .indexing import argtopk as _eager_argtopk
 from .indexing import scatter_add as _eager_scatter_add
 from .indexing import take as _eager_take
-from .ir import _LAYOUT_OPS, Instr, Token, _dense_like, _store, eval_instr, infer_instr, pw_marker
+from .layout import Dim, Layout, _dense_like
 from .lifting import _HOST_BIN, _HOST_CMP, _METHODS, _STRUCTURAL_SLOT, _Intrinsic
-from .markers import Marker
-from .tensor import Tensor, alignment
+from .markers import Marker, pw_marker, reducer
+from .tensor import Tensor, Token, _store, alignment
 
 # --- types -------------------------------------------------------------------
 
@@ -126,6 +126,16 @@ def _minus_dim(tt: TensorType, name: str) -> TensorType:
 # --- the ops, typed by rules (tl's alignment law AS type rules) --------------
 
 
+def _iota_layout(base, name):
+    """The iota shadow: a closed-form field addressed only along its dim
+    (stride on the named dim, 0 elsewhere — a FunctionalBuffer citizen)."""
+    from dataclasses import replace as _replace
+
+    d = base.dim(name)
+    new = tuple(_replace(x, stride=(8 if x.name == d.name else 0)) for x in base.dims)
+    return Layout(new, offset=-8 * d.start)
+
+
 def _r_pointwise(args, attrs, regions):
     ts = [a for a in args if isinstance(a, TensorType)]
     if not ts:
@@ -136,7 +146,7 @@ def _r_pointwise(args, attrs, regions):
     if issues:
         details = "\n".join(f"  {m!r}" for m in issues)
         raise TypeError(f"tl.pointwise wants ALIGNED operands:\n{details}")
-    return TensorType(infer_instr(Instr("out", "pointwise", ("a0",), {}), {"a0": ts[0].layout}))
+    return TensorType(_dense_like(ts[0].layout.dims))
 
 
 def _r_coord(args, attrs, regions):
@@ -152,7 +162,7 @@ def _r_iota(args, attrs, regions):
         raise TypeError("tl.iota wants the lattice source tensor")
     if attrs["name"] not in [d.name for d in t.dims]:
         raise TypeError(f"tl.iota: the lattice has no dim {attrs['name']!r}")
-    return TensorType(infer_instr(Instr("out", "iota", ("a0",), {"name": attrs["name"]}), {"a0": t.layout}))
+    return TensorType(_iota_layout(t.layout, attrs["name"]))
 
 
 def _r_read(args, attrs, regions):
@@ -175,7 +185,7 @@ def _r_read(args, attrs, regions):
     if issues:
         details = "\n".join(f"  {m!r}" for m in issues)
         raise TypeError(f"tl.read wants ALIGNED index fields:\n{details}")
-    return TensorType(infer_instr(Instr("out", "pointwise", ("a0",), {}), {"a0": ts[0].layout}))
+    return TensorType(_dense_like(ts[0].layout.dims))
 
 
 def _r_sample(args, attrs, regions):
@@ -191,7 +201,7 @@ def _r_sample(args, attrs, regions):
     if issues:
         details = "\n".join(f"  {m!r}" for m in issues)
         raise TypeError(f"tl.sample wants ALIGNED coordinate fields:\n{details}")
-    return TensorType(infer_instr(Instr("out", "pointwise", ("a0",), {}), {"a0": cy.layout}))
+    return TensorType(_dense_like(cy.layout.dims))
 
 
 def _r_store(args, attrs, regions):
@@ -206,19 +216,68 @@ def _r_store(args, attrs, regions):
 
 
 def _r_fold(args, attrs, regions):
-    init, src = args
+    """The widened fold contract (the excavation, LEVELS — the carry-dict
+    debt burned): args = k state inits ++ m element sources; the step's
+    binders match positionally; the step YIELDS the k next states in state
+    order (+ the emitted value iff out=("emit",)); out=("final", i) returns
+    state i's final value. The name tuples are contract (reporting keys);
+    the carry is POSITIONAL — no name-based carry map exists."""
+    at = dict(attrs)
+    state, element = tuple(at["state"]), tuple(at["element"])
+    k, m = len(state), len(element)
+    if k < 1:
+        raise TypeError("tl.fold needs at least one state tensor")
+    if len(args) != k + m:
+        raise TypeError(f"tl.fold takes {k} state init(s) + {m} element source(s), got {len(args)} operands")
+    if not all(isinstance(a, TensorType) for a in args):
+        raise TypeError("tl.fold wants tensor-typed state inits and element sources")
     (step,) = regions
-    if not (isinstance(init, TensorType) and isinstance(src, TensorType)):
-        raise TypeError("tl.fold wants (init state, element source) tensors")
-    elem = _minus_dim(src, attrs["dim"])
-    s_t, m_t = (p.type for p in step.params)
-    if s_t != init:
-        raise TypeError(f"tl.fold: the state binder is {s_t!r} but the init state is {init!r}")
-    if m_t != elem:
-        raise TypeError(f"tl.fold: the element binder is {m_t!r} but slicing {attrs['dim']!r} gives {elem!r}")
-    if step.body[-1].args[0].type != init:
-        raise TypeError("tl.fold: the step must yield the state type")
-    return init
+    dim = at["dim"]
+    if m == 0 and at.get("extent") is None:
+        raise TypeError("tl.fold without element sources needs extent=(start, stop)")
+    inits, srcs = args[:k], args[k:]
+    for s in srcs:
+        d = next((dd for dd in s.dims if dd.name == dim), None)
+        if d is None:
+            raise TypeError(f"tl.fold: element source has no scan dim {dim!r}")
+        if d.chart is not None or d.labels is not None:
+            raise TypeError(f"fold scan dim {dim!r} must be chartless/unlabeled (strip_charts first)")
+    elems = tuple(_minus_dim(s, dim) for s in srcs)
+    binders = tuple(p.type for p in step.params)
+    want = tuple(inits) + elems
+
+    def _frames(tt):
+        # order-insensitive frame agreement: presentation order is never
+        # semantics (220 §11); binders bind by position, frames by name
+        return sorted(tt.dims, key=lambda d: d.name)
+
+    if len(binders) != len(want) or any(_frames(bb) != _frames(w) for bb, w in zip(binders, want)):
+        raise TypeError(f"tl.fold: step binders {binders!r} do not match (state inits + element slices) {want!r}")
+    yielded = step.body[-1].args[0]
+    ytypes = tuple(a.type for a in yielded.args) if yielded.op == "core.tuple" else (yielded.type,)
+    out = tuple(at["out"])
+    # the step declares k next-states (state order) + at most ONE emit slot;
+    # out=("final", i) may run a step that also declares the slot (the
+    # adjoint machinery re-outs one step region under several fold nodes)
+    if len(ytypes) not in (k, k + 1):
+        raise TypeError(
+            f"tl.fold: the step must yield the {k} next state(s) in state order "
+            f"(+ at most one emitted value) — got {len(ytypes)}"
+        )
+    if out[0] == "emit" and len(ytypes) != k + 1:
+        raise TypeError("tl.fold: out=('emit',) needs the step to yield the emitted value after the states")
+    for i in range(k):
+        if _frames(ytypes[i]) != _frames(inits[i]):
+            raise TypeError(f"tl.fold: carry {state[i]!r} changes the state type: {inits[i]!r} -> {ytypes[i]!r}")
+    if out[0] == "final":
+        return inits[out[1]]
+    start, stop = _src_domain(srcs[0], dim) if m else tuple(at["extent"])
+    return _of_layout(_dense_like((Dim(dim, 0, start, stop),) + tuple(ytypes[k].layout.dims)))
+
+
+def _src_domain(tt: TensorType, dim: str) -> tuple[int, int]:
+    d = next(dd for dd in tt.dims if dd.name == dim)
+    return d.start, d.stop
 
 
 # dict-valued instr params (the layout-method family's kwargs). Node attrs
@@ -252,9 +311,132 @@ def _r_bridge(base):
             if not isinstance(t, TensorType):
                 raise TypeError(f"tl.{base} wants tensor operands, got {t!r}")
             shadows[n] = t.layout
-        return _of_layout(infer_instr(Instr("out", base, names, _thaw_params(dict(attrs))), shadows))
+        return _of_layout(_infer_base(base, [shadows[n] for n in names], _thaw_params(dict(attrs))))
 
     return rule
+
+
+# --- the semantic rows, at the ops' definition site (the excavation's last
+# fold: the retired linear IR's eval/infer dispatch absorbed here) ------------
+
+# Layout/GuardedLayout share these ops' names and signatures with Tensor,
+# so evaluation and inference dispatch through ONE table — a new layout op
+# is added in exactly one place. (pad/stencil/simplify are the three
+# genuine special cases: their shadows ride the guard machinery.)
+LAYOUT_ADAPTERS = {
+    "slice": lambda t, p: t.slice(**p["ranges"]),
+    "select": lambda t, p: t.select(**p["coords"]),
+    "shift": lambda t, p: t.shift(**p["deltas"]),
+    "rename": lambda t, p: t.rename(**p["mapping"]),
+    "repeat": lambda t, p: t.repeat(p["name"], p["extent"], p.get("chart"), p.get("labels")),
+    "flip": lambda t, p: t.flip(p["name"]),
+    "split": lambda t, p: t.split(p["name"], **p["parts"]),
+    "merge": lambda t, p: t.merge(tuple(p["parts"]), p["name"], p.get("start", 0)),
+    "diagonal": lambda t, p: t.diagonal(tuple(p["parts"]), p["name"], p.get("chart")),
+    "window": lambda t, p: t.window(p["name"], p["k_name"], p["k"], p.get("dilation", 1)),
+    "decimate": lambda t, p: t.decimate(p["name"], p["factor"], p.get("phase", 0)),
+    "pad": lambda t, p: t.pad(p["fill"], **p["extents"]),
+    "stencil": lambda t, p: t.stencil(p["name"], p["k"], p.get("k_name"), p.get("fill", 0), p.get("dilation", 1)),
+    "strip_charts": lambda t, p: t.strip_charts(),
+    "with_charts": lambda t, p: t.with_charts(**p["charts"]),
+    "with_labels": lambda t, p: t.with_labels(**p["labels"]),
+    "bind": lambda t, p: t.bind(**p["levels"]),
+    "simplify": lambda t, p: t.simplify(),
+}
+
+
+def _infer_base(base: str, lays, p):
+    """One op's shadow from its operands' layouts (the retired infer_instr's
+    rows). Layouts only — no data, no names."""
+    from .guarded import GuardedLayout, pad_layout, stencil_layout
+
+    if base == "const":
+        dims = tuple(
+            Dim(name, 0, *(extent if isinstance(extent, tuple) else (0, extent))) for name, extent in p.get("dims", ())
+        )
+        return Layout(dims)  # stride-0 broadcast, exactly like the eval row
+    if base == "random":
+        return _dense_like(lays[0].dims)
+    if base == "reduce":
+        dims = p["dims"]
+        dim_names = (dims,) if isinstance(dims, str) else tuple(dims)
+        return _dense_like(tuple(d for d in lays[0].dims if d.name not in dim_names))
+    if base == "scan":
+        return _dense_like(lays[0].dims)
+    if base == "materialize":
+        from dataclasses import replace as _replace
+
+        dims = tuple(_replace(lays[0].dim(n), chart=None, labels=None) for n in tuple(p["order"]))
+        return _dense_like(dims)
+    if base == "round_to":
+        return _dense_like(lays[0].dims)
+    if base == "repeat_like":
+        # the batching-unawareness mechanism (220): added dims are LAYOUT-
+        # DERIVED from the like operand — referenced for its layout only
+        x, like = lays[0], lays[1]
+        have = {d.name for d in x.dims}
+        for d in like.dims:
+            if d.name not in have:
+                x = x.repeat(d.name, (d.start, d.stop), d.chart, d.labels)
+                if d.level is not None:
+                    x = x.bind(**{d.name: d.level})
+        return x
+    if base == "take":
+        from .indexing import infer_take
+
+        return infer_take(lays, p)
+    if base == "scatter_add":
+        from .indexing import infer_scatter
+
+        return infer_scatter(lays, p)
+    if base in ("argtopk", "argsort"):
+        from .indexing import infer_producer
+
+        return infer_producer(base, lays, p)
+    if base == "pad":
+        return pad_layout(lays[0], p["extents"])
+    if base == "stencil":
+        return stencil_layout(lays[0], p["name"], p["k"], p.get("k_name"), p.get("dilation", 1))
+    if base == "simplify":
+        s = lays[0]
+        return s.simplify() if isinstance(s, GuardedLayout) else s
+    if base == "with_value_units":
+        return lays[0]
+    return LAYOUT_ADAPTERS[base](lays[0], p)
+
+
+def _eval_base(base: str, vals, p):
+    """One op's reference evaluation over Tensors (the retired eval_instr's
+    rows) — the eager compute layer applied by name."""
+    from .compute import _const_tensor, _materialize, _round_to
+
+    if base == "const":
+        return _const_tensor(p)
+    if base == "random":
+        from .random import _field
+
+        return _field(p["dist"], p["key"], vals[0])
+    if base == "reduce":
+        return _eager_reduce(reducer(p["f"]), vals[0] if len(vals) == 1 else tuple(vals), p["dims"], p.get("zero"))
+    if base == "scan":
+        return _eager_scan(reducer(p["f"]), vals[0] if len(vals) == 1 else tuple(vals), p["dim"], p.get("zero"))
+    if base == "materialize":
+        return _materialize(vals[0], p)
+    if base == "round_to":
+        return _round_to(vals[0], p["encoding"])
+    if base == "repeat_like":
+        return _eager_repeat_like(vals[0], vals[1])
+    if base == "take":
+        return _eager_take(vals[0], vals[1], dim=p["dim"])
+    if base == "scatter_add":
+        return _eager_scatter_add(vals[0], vals[1], dim=p["dim"], extent=p["extent"], over=p.get("over"))
+    if base == "argtopk":
+        return _eager_argtopk(vals[0], dim=p["dim"], k=p["k"], k_name=p["k_name"])
+    if base == "argsort":
+        return _eager_argsort(vals[0], dim=p["dim"])
+    if base == "with_value_units":
+        return vals[0].with_value_units(p["value_units"])
+    return LAYOUT_ADAPTERS[base](vals[0], p)
 
 
 _BRIDGED = (
@@ -270,7 +452,7 @@ _BRIDGED = (
     "scatter_add",
     "argtopk",
     "argsort",
-) + tuple(_LAYOUT_OPS)
+) + tuple(LAYOUT_ADAPTERS)
 
 TL_OPS = {
     # per-launch scalar slots are abi.slot — the dsl's marshaling dialect,
@@ -596,7 +778,7 @@ def _tl_call(ctx, node):
                     )
                 return result
             if hasattr(obj, "__code__"):  # a captured helper over lowered values: INLINE
-                if getattr(obj, "__module__", "") in ("pdum.tl.compute", "pdum.tl.ir"):
+                if getattr(obj, "__module__", "") == "pdum.tl.compute":
                     raise ValueError(
                         f"{node.func.id!r} is tensor-library machinery — it lowers by "
                         f"recognition, not inlining; the recognized set is the primitive set"
@@ -1142,17 +1324,30 @@ def run_region(region: Region, values: list, uniforms: bytes | None = None, text
         if n.op in _HOST_OPS or n.op.startswith("pw."):
             return pw_marker(_HOST_OPS.get(n.op, n.op[3:]))(*(ev(a) for a in n.args))
         if n.op.startswith("tl.") and n.op[3:] in _BRIDGED:
-            ops_v = [ev(a) for a in n.args]
-            names = tuple(f"a{i}" for i in range(len(ops_v)))
-            return eval_instr(Instr("out", n.op[3:], names, _thaw_params(attrs)), dict(zip(names, ops_v)))
+            return _eval_base(n.op[3:], [ev(a) for a in n.args], _thaw_params(attrs))
         if n.op == "tl.fold":
-            init, src = ev(n.args[0]), ev(n.args[1])
-            dim = attrs["dim"]
-            lo, hi = next((d.start, d.stop) for d in n.args[1].type.dims if d.name == dim)
-            s = init
+            state, element = tuple(attrs["state"]), tuple(attrs["element"])
+            k, m = len(state), len(element)
+            dim, out = attrs["dim"], tuple(attrs["out"])
+            vals = [ev(a) for a in n.args]
+            carried, srcs = list(vals[:k]), vals[k:]
+            if m:
+                lo, hi = next((d.start, d.stop) for d in n.args[k].type.dims if d.name == dim)
+            else:
+                lo, hi = attrs["extent"]
+            emitted = []
             for q in range(lo, hi):
-                s = run_region(n.regions[0], [s, src.select(**{dim: q})])
-            return s
+                res = run_region(n.regions[0], carried + [s.select(**{dim: q}) for s in srcs])
+                res = res if isinstance(res, tuple) else (res,)
+                carried = list(res[:k])
+                if out[0] == "emit":
+                    emitted.append(res[k])
+            if out[0] == "final":
+                return carried[out[1]]
+            shadow = _dense_like((Dim(dim, 0, lo, hi),) + tuple(emitted[0].layout.dims))
+            onames = emitted[0].names
+            arr = np.stack([e.to_numpy(order=onames) if onames else e.to_numpy() for e in emitted], axis=0)
+            return _tensor_like(arr, shadow.dims)
         raise AssertionError(f"run_region: unexpected op {n.op!r}")
 
     return ev(region.body[-1])
@@ -1188,73 +1383,74 @@ def fold_grad(step: Region, vjp: Region, init, src, dim: str, *, slots: int | No
     return ds
 
 
-# --- the migration view: regions rendered as incumbent Programs --------------
+def fold_region(
+    step: Region,
+    *,
+    dim: str,
+    state: tuple,
+    element: tuple,
+    out: tuple,
+    init_types: tuple,
+    src_types: tuple = (),
+    extent: tuple | None = None,
+):
+    """Author the minimal fold-bearing region: one param per state init and
+    element source (in that order), one ``tl.fold`` over ``step``, yield.
+    Returns ``(region, fold_node)`` — the node so callers can name it
+    (``names_of={id(fold_node): ...}``)."""
+    b = Builder({**CORE_OPS, **TL_OPS})
+    params = tuple(b.param(i, t) for i, t in enumerate(tuple(init_types) + tuple(src_types)))
+    kwargs = dict(dim=dim, state=tuple(state), element=tuple(element), out=tuple(out))
+    if extent is not None:
+        kwargs["extent"] = tuple(extent)
+    fold = b.emit("tl.fold", *params, regions=(step,), **kwargs)
+    return Region(params=params, body=(b.emit("core.yield", fold),)), fold
 
 
-def export_program(region: Region, param_names: tuple, names_of: dict | None = None):
-    """The MIGRATION VIEW (240 C4.3c): render a dialect region as an
-    incumbent ``Program``, so every Program consumer — autodiff (max/scan/
-    layout adjoints included), signatures, opcount, memory — serves regions
-    UNCHANGED while lowering moves onto the one engine. Adjoint knowledge
-    stays single-copy (the incumbent's, battle-tested); this view dies when
-    the last consumer retargets. Returns ``(program, output_vars)``."""
+# --- the naming law over regions ---------------------------------------------
+
+
+# layout-op membership as NAMES — what the analyses consult ("layout ops move
+# coordinates, never values")
+LAYOUT_OP_NAMES = frozenset(LAYOUT_ADAPTERS)
+
+
+def region_names(region: Region, param_names: tuple, names_of: dict | None = None) -> dict[int, str]:
+    """The naming law over a region: params CLAIM their declared names; every
+    other node DERIVES from its binding name (``names_of``, first-binding-wins)
+    or its op's base name. This is the ONE assignment — ``export_program``
+    renders it, and the region-native analyses key their reports by it, so
+    name-keyed reports agree across the migration view by construction.
+    Returns ``id(node) -> name`` (consts, yields, and the yielded tuple are
+    plumbing: unnamed)."""
     from pdum.dsl.naming import Namer
-
-    from .ir import Program
 
     names = Namer()
     names_of = names_of or {}
-    instrs: list = []
-    var_of: dict[int, str] = {}
+    out: dict[int, str] = {}
     for pname, p in zip(param_names, region.params):
-        names.claim(pname)
-        instrs.append(Instr(pname, "input", (), {}))
-        var_of[id(p)] = pname
-
-    def emit(op, operands, hint, **params):
-        var = names.derive(hint)
-        instrs.append(Instr(var, op, tuple(operands), params))
-        return var
-
-    def const_for(value, ref):
-        """A scalar const materialized over the REFERENCE operand's layout,
-        charts/labels/placement restamped so eager alignment holds (the
-        incumbent const_like discipline, ported)."""
-        lay = ref.type.layout
-        dims = tuple((d.name, (d.start, d.stop)) for d in lay.dims)
-        v = emit("const", (), "c", value=float(value), dims=dims)
-        charts = {d.name: d.chart for d in lay.dims if d.labels is None}
-        labels = {d.name: d.labels for d in lay.dims if d.labels is not None}
-        if any(c is not None for c in charts.values()):
-            v = emit("with_charts", (v,), "c", charts=charts)
-        if labels:
-            v = emit("with_labels", (v,), "c", labels=labels)
-        levels = {d.name: d.level for d in lay.dims}
-        if any(lv is not None for lv in levels.values()):
-            v = emit("bind", (v,), "c", levels=levels)
-        return v
-
-    yielded = region.body[-1].args[0]
+        out[id(p)] = names.claim(pname)
+    yielded = region.body[-1].args[0] if region.body else None
     for n in walk_region(region):
-        if id(n) in var_of or n.op in ("core.yield", "core.const"):
-            continue  # consts materialize at their use sites, with a reference layout
-        if n.op == "tl.fold":
-            raise TypeError("export_program: fold regions arrive with the assemblage slice")
-        if n.op == "core.tuple":
-            if n is not yielded:
-                raise TypeError("export_program: interior tuples have no Program spelling")
+        if id(n) in out or n.op in ("core.yield", "core.const") or (n.op == "core.tuple" and n is yielded):
             continue
-        if not n.op.startswith("tl."):
-            raise TypeError(f"export_program: {n.op!r} has no Program spelling")
-        base = n.op[3:]
-        ref = next((a for a in n.args if isinstance(a.type, TensorType)), None)
-        operands = []
-        for a in n.args:
-            if a.op == "core.const":
-                operands.append(const_for(dict(a.attrs)["value"], ref))
-            else:
-                operands.append(var_of[id(a)])
-        hint = names_of.get(id(n), base.rsplit(".", 1)[-1])  # binding names become SSA names
-        var_of[id(n)] = emit(base, operands, hint, **_thaw_params(dict(n.attrs)))
-    outs = tuple(var_of[id(a)] for a in yielded.args) if yielded.op == "core.tuple" else (var_of[id(yielded)],)
-    return Program(tuple(instrs)), outs
+        out[id(n)] = names.derive(names_of.get(id(n), n.op.rsplit(".", 1)[-1]))
+    return out
+
+
+def run_named(region: Region, inputs: dict, names) -> dict:
+    """Run a region with name-keyed inputs and get name-keyed outputs — the
+    reference-execution door the naming law implies: params bind by their
+    claimed names, and the yield's slots report under theirs."""
+    order = [names[id(p)] for p in region.params]
+    missing = [k for k in order if k not in inputs]
+    if missing:
+        raise KeyError(
+            f"missing input {missing[0]!r} — virtual leaves analyze for free but "
+            f"execute only once provisioned: provision(root, source=init(...)"
+            f"|safetensors(...)) (200 §1.7)"
+        )
+    res = run_region(region, [inputs[k] for k in order])
+    yielded = region.body[-1].args[0]
+    outs = tuple(yielded.args) if yielded.op == "core.tuple" else (yielded,)
+    return dict(zip(tuple(names[id(x)] for x in outs), res if isinstance(res, tuple) else (res,)))

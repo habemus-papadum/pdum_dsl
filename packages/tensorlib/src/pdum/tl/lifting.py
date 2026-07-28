@@ -22,7 +22,6 @@ from dataclasses import dataclass
 
 from pdum.dsl.types import LiteralAnnotation
 
-from .ir import Program
 from .layout import Layout
 from .producer import _fn_ast
 from .tensor import Tensor
@@ -84,20 +83,18 @@ def __getattr__(name):  # lifting.contract stays importable — ONE function
 
 @dataclass(frozen=True)
 class LiftedStep:
-    program: Program
+    region: object  # the dialect Region — THE representation
     inputs: tuple[str, ...]  # tensor parameter names, in signature order
-    outputs: tuple[str, ...]  # SSA vars of the returned tensors, in order
+    outputs: tuple[str, ...]  # names of the returned tensors, in order
+    names: dict  # the naming law's assignment (id(node) -> name)
 
 
 def lift_step(fn, **bindings) -> LiftedStep:
-    """Lift ``fn`` to a step Program. Bind every tensor parameter to a
-    Layout (or Tensor, whose layout is taken) and every ``Literal``-annotated
-    parameter to a build-time value.
-
-    Since the pivot's step switch (240 C4.3d), the body lowers through the
-    ONE dsl Lowerer with the tl dialect pack and is rendered back as a
-    Program through the migration view — every consumer unchanged."""
-    from .dialect import export_program, lower_body, tensor_type_of_layout
+    """Lift ``fn`` to a step REGION (the excavation, LEVELS: the migration
+    view is gone). Bind every tensor parameter to a Layout (or Tensor, whose
+    layout is taken) and every ``Literal``-annotated parameter to a
+    build-time value; outputs report under the naming law."""
+    from .dialect import lower_body, region_names, tensor_type_of_layout
 
     tree = _fn_ast(fn)
     anns = getattr(fn, "__annotations__", {})
@@ -128,8 +125,10 @@ def lift_step(fn, **bindings) -> LiftedStep:
         raise ValueError(f"unknown parameters bound: {sorted(bindings)}")
     bound_names: dict = {}
     region = lower_body(fn, tuple(arg_types), kind="step", host=host, out_names=bound_names)
-    program, outs = export_program(region, tuple(inputs), names_of=bound_names)
-    return LiftedStep(program, tuple(inputs), outs)
+    mapping = region_names(region, tuple(inputs), bound_names)
+    yielded = region.body[-1].args[0]
+    outs = tuple(yielded.args) if yielded.op == "core.tuple" else (yielded,)
+    return LiftedStep(region, tuple(inputs), tuple(mapping[id(x)] for x in outs), mapping)
 
 
 _HOST_BIN = {

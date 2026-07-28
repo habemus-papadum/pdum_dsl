@@ -2,7 +2,7 @@
 
 `pdum.tl` — the assemblage tensor language's library layer: the exact
 layout algebra (affine map + box + guards + charts + units + placement),
-the compute primitives (pointwise/reduce/scan/fold), the Program/Instr
+the compute primitives (pointwise/reduce/scan/fold), the Region
 IR with derived adjoints, the transforms (DCE, checkpointing, revolve),
 the cost semantics (opcount, peak memory, traffic), and the model zoo
 with numpy-pinned denotations.

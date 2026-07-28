@@ -56,13 +56,14 @@ Contracts and conventions:
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from functools import lru_cache
 
 from pdum.dsl import events
 
 from .derivative import TABLE
-from .ir import PW, RED, Instr, Program, _dense_like, _fold_extent, _fold_parts, _fold_step_layouts, infer
+from .layout import _dense_like
+from .markers import PW, RED
 from .mdsl import CompositeMarker
 from .nodes import Arg, Const
 from .registry import MARKERS, REDUCERS
@@ -98,62 +99,84 @@ def _revolve_split(s: int, length: int) -> int:
     return max(m for m in range(1, length) if m + _revolve_cost(s - 1, length - m) + _revolve_cost(s, m) == best)
 
 
-class _Builder:
-    def __init__(self, taken: set[str]):
-        self.taken = set(taken)
-        self.instrs: list[Instr] = []
-        self.n = 0
-
-    def fresh(self, hint: str) -> str:
-        while True:
-            name = f"%{hint}{self.n}"
-            self.n += 1
-            if name not in self.taken:
-                self.taken.add(name)
-                return name
-
-    def emit(self, op: str, operands: tuple[str, ...] = (), params: dict | None = None, hint: str = "g") -> str:
-        var = self.fresh(hint)
-        self.instrs.append(Instr(var, op, operands, params or {}))
-        return var
-
-    def fresh_dim(self, base: str, used: set[str]) -> str:
-        i = 0
-        while f"_{base}{i}" in used:
-            i += 1
-        used.add(f"_{base}{i}")
-        return f"_{base}{i}"
-
-
 def grad(
-    prog: Program,
+    region,
     target: str,
-    input_layouts: dict,
+    inputs: dict | None = None,
     seed: str | None = None,
     wrt: tuple[str, ...] | None = None,
     target_unit=None,
     fold_segments: int | None = None,
     fold_slots: int | None = None,
-) -> tuple[Program, dict[str, str | None]]:
+    *,
+    names=None,
+) -> "RegionGrad":
+    """Reverse-mode AD over a dialect region: returns a ``RegionGrad`` whose
+    joint region yields (target, *grads). ``names`` is the naming-law
+    assignment (LiftedStep/Assemblage/ZooModel carry it). The module
+    docstring's contracts — seeds, restamping, units, the at-kink law, the
+    fold schedules — all hold unchanged."""
     # the second compile-ish seam (200 §1.10): adjoint derivation announces
-    # itself as a span, nesting the program.build events it causes
+    # itself as a span, nesting the build events it causes
     with events.span("adjoint.derive", (target, wrt)):
-        return _grad(prog, target, input_layouts, seed, wrt, target_unit, fold_segments, fold_slots)
+        return _region_grad(region, target, inputs, seed, wrt, target_unit, fold_segments, fold_slots, names)
 
 
-def _grad(
-    prog: Program,
-    target: str,
-    input_layouts: dict,
-    seed: str | None,
-    wrt: tuple[str, ...] | None,
-    target_unit,
-    fold_segments: int | None,
-    fold_slots: int | None,
-) -> tuple[Program, dict[str, str | None]]:
-    if target not in prog.vars:
+# ----------------------------------------------------------------------
+# validation harness
+# ----------------------------------------------------------------------
+
+
+# ----------------------------------------------------------------------
+# the Region face (the excavation, LEVELS) — grad over dialect regions
+# ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RegionGrad:
+    """The joint region and its naming. ``region`` yields (target, *grads);
+    ``outputs`` names the yield slots in order; ``grads`` maps each
+    requested name to its gradient's name (None = no gradient flows);
+    ``names`` is the naming-law assignment over the joint (id -> name);
+    ``nodes`` maps yielded names to nodes. With ``seed=`` the joint gains
+    one extra param, passed LAST at run time."""
+
+    region: object
+    grads: dict
+    names: dict
+    outputs: tuple
+    nodes: dict
+
+
+def _region_grad(region, target, inputs, seed, wrt, target_unit, fold_segments, fold_slots, names):
+    from pdum.dsl.ir import Builder, Region
+    from pdum.dsl.naming import Namer
+    from pdum.dsl.ops import CORE_OPS
+
+    from .dialect import (
+        TL_OPS,
+        _freeze_params,
+        _thaw_params,
+        region_names,
+        tensor_type_of_layout,
+        walk_region,
+    )
+
+    if names is None:
+        raise ValueError(
+            "region grad joins on names — pass names=region_names(region, param_names) "
+            "(LiftedStep.names / Assemblage.names / ZooModel.names carry it)"
+        )
+    by_name: dict = {}
+    for p_ in region.params:  # declared params are addressable even when no
+        by_name.setdefault(names[id(p_)], p_)  # output reaches them (grad -> None)
+    for nd in walk_region(region):
+        nm = names.get(id(nd))
+        if nm is not None:
+            by_name.setdefault(nm, nd)
+    if target not in by_name:
         raise KeyError(f"target {target!r} is not defined by the program")
-    if seed is not None and seed in prog.vars:
+    if seed is not None and seed in by_name:
         raise ValueError(f"seed name {seed!r} collides with a program variable; pick a fresh name")
     if fold_segments is not None and fold_slots is not None:
         raise ValueError(
@@ -162,24 +185,41 @@ def _grad(
         )
     if fold_slots is not None and int(fold_slots) < 1:
         raise ValueError("fold_slots must be >= 1 (the number of checkpoint slots)")
-    idx = prog.vars.index(target)
-    fwd = prog.instrs[: idx + 1]
-    shadows = infer(Program(fwd), input_layouts)
-    # the signature pass makes target_unit INFERABLE (and checks declared
-    # units while it's at it — conflicting declarations refuse loudly here)
-    sigs = infer_signatures(Program(fwd), input_layouts)
+    tnode = by_name[target]
+
+    fwd: list = []  # the target's ancestor DAG, topological (= export order)
+    seenw: set = set()
+
+    def anc(nd):
+        if id(nd) in seenw:
+            return
+        seenw.add(id(nd))
+        for a in nd.args:
+            anc(a)
+        fwd.append(nd)
+
+    anc(tnode)
+
+    sigs = infer_signatures(region, inputs or {}, names=names)
     if target_unit is None:
         target_unit = sigs[target].unit
-    b = _Builder(set(prog.vars))
+
+    b = Builder({**CORE_OPS, **TL_OPS})
+    namer = Namer(taken=set(names.values()))
+    jnames: dict = dict(names)
+
+    def emit(op, operands=(), params=None, hint="g", regions=()):
+        node = b.emit("tl." + op, *operands, regions=regions, **_freeze_params(dict(params or {})))
+        jnames[id(node)] = namer.derive(f"%{hint}")
+        return node
+
+    def lay(nd):
+        return nd.type.layout
 
     def extents_of(layout) -> tuple:
         return tuple((d.name, (d.start, d.stop)) for d in layout.dims)
 
-    def restamp(gv: str, layout) -> str:
-        """Stamp the primal's charts/labels onto a contribution — the
-        gradients-carry-their-primal's-labeling invariant, by construction.
-        Also normalizes away select's axis-compensation and any stray
-        labeling a composite rule left behind."""
+    def restamp(gv, layout):
         charts, labels = {}, {}
         for d in layout.dims:
             if d.labels is not None:
@@ -187,67 +227,63 @@ def _grad(
             else:
                 charts[d.name] = d.chart  # a Chart, or None to clear
         if charts:
-            gv = b.emit("with_charts", (gv,), {"charts": charts}, hint="st")
+            gv = emit("with_charts", (gv,), {"charts": charts}, hint="st")
         if labels:
-            gv = b.emit("with_labels", (gv,), {"labels": labels}, hint="st")
+            gv = emit("with_labels", (gv,), {"labels": labels}, hint="st")
         levels = {d.name: d.level for d in layout.dims}
         if any(lv is not None for lv in levels.values()):
-            # gradients carry their primal's PLACEMENT too (PLACEMENT.md):
-            # dL/d(sharded) is sharded, dL/d(replicated) is replicated
-            gv = b.emit("bind", (gv,), {"levels": levels}, hint="st")
+            gv = emit("bind", (gv,), {"levels": levels}, hint="st")
         return gv
 
-    def const_like(layout, value, dtype=None) -> str:
+    def const_like(layout, value, dtype=None):
         params = {"value": value, "dims": extents_of(layout)}
         if dtype is not None:
             params["dtype"] = dtype
-        return restamp(b.emit("const", (), params, hint="z"), layout)
+        return restamp(emit("const", (), params, hint="z"), layout)
 
-    def zeros_like(layout) -> str:
+    def zeros_like(layout):
         return const_like(layout, 0.0)
 
     # ---- seed ----------------------------------------------------------
-    tshape = shadows[target]
-    cot: dict[str, list[str]] = {}
+    tlay = lay(tnode)
+    cot: dict = {}
+    seed_param = None
     if seed is None:
-        if len(tshape.dims) != 0:
+        if len(tlay.dims) != 0:
             raise ValueError(
                 f"target {target!r} is not a scalar; pass seed= (the name of a "
                 f"runtime input aligned with the target) — reverse mode "
                 f"computes vector-Jacobian products"
             )
-        cot[target] = [b.emit("const", (), {"value": 1.0, "dims": ()}, hint="seed")]
+        cot[id(tnode)] = [emit("const", (), {"value": 1.0, "dims": ()}, hint="seed")]
     else:
-        b.instrs.append(Instr(seed, "input", (), {}))
-        b.taken.add(seed)
-        cot[target] = [restamp(seed, tshape)]
+        seed_param = b.param(("grad.seed",), tensor_type_of_layout(tlay))
+        jnames[id(seed_param)] = namer.claim(seed)
+        cot[id(tnode)] = [restamp(seed_param, tlay)]
 
-    final: dict[str, str] = {}
+    final: dict = {}
 
-    def finalize(v: str) -> str | None:
-        if v in final:
-            return final[v]
-        parts = cot.get(v)
+    def finalize(nd):
+        if id(nd) in final:
+            return final[id(nd)]
+        parts = cot.get(id(nd))
         if not parts:
             return None
         acc = parts[0]
-        for p in parts[1:]:
-            acc = b.emit("pointwise", (acc, p), {"f": "add"}, hint="acc")
-        final[v] = acc
+        for p_ in parts[1:]:
+            acc = emit("pointwise", (acc, p_), {"f": "add"}, hint="acc")
+        final[id(nd)] = acc
         return acc
 
-    def contribute(v: str, gv: str) -> None:
-        cot.setdefault(v, []).append(restamp(gv, shadows[v]))
+    def contribute(nd, gv):
+        if getattr(nd.type, "layout", None) is None:
+            return  # a deferred scalar const: gradient discarded at the leaf
+        cot.setdefault(id(nd), []).append(restamp(gv, lay(nd)))
 
-    # ---- per-instruction adjoint rules --------------------------------
-    def pw_rule(ins: Instr, c: str) -> None:
-        """THE ONE DERIVATIVE TABLE (S.2): primitives and composites both
-        linearize through it — a primitive's slope is the table entry
-        applied over its operand slots (registered once as a derived slope
-        marker, derivation-under-cache); a composite's is partial(i), the
-        same rewrite over its lowered body. None = gradient-free."""
-        f = ins.params["f"]
-        A = ins.operands
+    # ---- per-node adjoint rules (ports of the incumbent's, 1:1) --------
+    def pw_rule(nd, c):
+        f = dict(nd.attrs)["f"]
+        A = nd.args
         if f in TABLE:
             for i, operand in enumerate(A):
                 rule = TABLE[f][i]
@@ -261,18 +297,16 @@ def _grad(
                     continue
                 dn = f"{f}.d{i}"
                 pm = MARKERS.derive(dn, lambda dn=dn, slope=slope: CompositeMarker(dn, len(A), slope))
-                pv = b.emit("pointwise", A, {"f": pm.name})
-                contribute(operand, b.emit("pointwise", (c, pv), {"f": "mul"}))
+                pv = emit("pointwise", A, {"f": pm.name})
+                contribute(operand, emit("pointwise", (c, pv), {"f": "mul"}))
         elif f in MARKERS:
-            # the marker DSL pays off: partials are DERIVED by tree
-            # rewriting, so composite markers differentiate automatically
             cm = MARKERS[f]
             for i, operand in enumerate(A):
-                p = cm.partial(i)
-                if isinstance(p.body, Const) and p.body.value == 0:
+                p_ = cm.partial(i)
+                if isinstance(p_.body, Const) and p_.body.value == 0:
                     continue
-                pv = b.emit("pointwise", A, {"f": p.name})
-                contribute(operand, b.emit("pointwise", (c, pv), {"f": "mul"}))
+                pv = emit("pointwise", A, {"f": p_.name})
+                contribute(operand, emit("pointwise", (c, pv), {"f": "mul"}))
         elif f in PW:
             raise NotImplementedError(
                 f"marker {f!r} has no entry in the derivative table — a "
@@ -282,105 +316,81 @@ def _grad(
         else:
             raise KeyError(f"unknown marker {f!r}")
 
-    def repeats_over(v: str, names, src_layout) -> str:
+    def repeats_over(v, dim_names, src_layout):
         cur = v
         rebind = {}
-        for name in names:
+        for name in dim_names:
             d = src_layout.dim(name)
-            cur = b.emit(
+            cur = emit(
                 "repeat",
                 (cur,),
-                {
-                    "name": name,
-                    "extent": (d.start, d.stop),
-                    "chart": d.chart,
-                    "labels": d.labels,
-                },
+                {"name": name, "extent": (d.start, d.stop), "chart": d.chart, "labels": d.labels},
             )
             if d.level is not None:
                 rebind[name] = d.level
         if rebind:
-            # re-created mesh dims must re-declare their placement, or the
-            # backward misaligns against still-bound forward operands
-            cur = b.emit("bind", (cur,), {"levels": rebind})
+            cur = emit("bind", (cur,), {"levels": rebind})
         return cur
 
-    def composite_scan_adjoint(fname: str, dim: str, elems: tuple, sc: str) -> None:
-        """BPTT for a structured-state scan, emitted as IR. With state
-        s_t = C(s_{t-1}, lift(e_t)), y_t = P(s_t), the state cotangent obeys
-        ŝ_t = Pᵀ(s_t)·ȳ_t + C_leftᵀ(s_t, l_{t+1})·ŝ_{t+1} — itself a LINEAR
-        recurrence in reversed time, run as a generated matrix-linrec
-        composite scan (adjoint_scanner). All Jacobian entries are derived
-        partials of the combine/lift/project trees, evaluated pointwise at
-        the forward trajectory (re-scanned per state component — reference
-        inefficiency, deliberate). Because `init` is the monoid identity,
-        C(init, r) = r makes ∂C/∂right the identity at t=start, so the
-        boundary needs no special case; the first reversed element's M slot
-        is garbage but provably never projected."""
+    def composite_scan_adjoint(fname, dim, elems, sc):
         f = REDUCERS[fname]
         k = f.state
         cs, ls, p_marker = f.component_markers()
-        ddim = shadows[elems[0]].dim(dim)
+        ddim = lay(elems[0]).dim(dim)
         if ddim.size == 0:
             for e in elems:
-                contribute(e, zeros_like(shadows[e]))
+                contribute(e, zeros_like(lay(e)))
             return
         s0, s1 = ddim.start, ddim.stop
 
-        def lat(v: str) -> str:
-            return b.emit("strip_charts", (v,), {}, hint="lat")
+        def lat(v):
+            return emit("strip_charts", (v,), {}, hint="lat")
 
-        def acc_sum(terms: list) -> str:
+        def acc_sum(terms):
             total = terms[0]
             for t in terms[1:]:
-                total = b.emit("pointwise", (total, t), {"f": "add"})
+                total = emit("pointwise", (total, t), {"f": "add"})
             return total
 
         sc = lat(sc)
         se = tuple(lat(e) for e in elems)
-        # forward trajectories: state components s_j and lifted elements l_j
-        sjs = tuple(b.emit("scan", se, {"f": f.state_scanner(j).name, "dim": dim}) for j in range(k))
-        ljs = tuple(b.emit("pointwise", se, {"f": ls[j].name}) for j in range(k))
+        sjs = tuple(emit("scan", se, {"f": f.state_scanner(j).name, "dim": dim}) for j in range(k))
+        ljs = tuple(emit("pointwise", se, {"f": ls[j].name}) for j in range(k))
         sprev, lnext = [], []
-        for j in range(k):  # s_{t-1} (init-filled at start) and l_{t+1}
-            sh = b.emit("shift", (sjs[j],), {"deltas": {dim: 1}})
-            sl = b.emit("slice", (sh,), {"ranges": {dim: (s0 + 1, s1)}})
-            sprev.append(b.emit("pad", (sl,), {"fill": float(f.init[j]), "extents": {dim: (s0, s1)}}))
-            sh = b.emit("shift", (ljs[j],), {"deltas": {dim: -1}})
-            sl = b.emit("slice", (sh,), {"ranges": {dim: (s0, s1 - 1)}})
-            lnext.append(b.emit("pad", (sl,), {"fill": 0.0, "extents": {dim: (s0, s1)}}))
-        # reversed-time backward elements: M[i][x] = ∂C_x/∂left_i at
-        # (s_t, l_{t+1}), then the injection g_i = ∂P/∂s_i (s_t) · ȳ_t
+        for j in range(k):
+            sh = emit("shift", (sjs[j],), {"deltas": {dim: 1}})
+            sl = emit("slice", (sh,), {"ranges": {dim: (s0 + 1, s1)}})
+            sprev.append(emit("pad", (sl,), {"fill": float(f.init[j]), "extents": {dim: (s0, s1)}}))
+            sh = emit("shift", (ljs[j],), {"deltas": {dim: -1}})
+            sl = emit("slice", (sh,), {"ranges": {dim: (s0, s1 - 1)}})
+            lnext.append(emit("pad", (sl,), {"fill": 0.0, "extents": {dim: (s0, s1)}}))
         felems = []
         for i in range(k):
             for x in range(k):
-                mv = b.emit("pointwise", sjs + tuple(lnext), {"f": cs[x].partial(i).name})
-                felems.append(b.emit("flip", (mv,), {"name": dim}))
+                mv = emit("pointwise", sjs + tuple(lnext), {"f": cs[x].partial(i).name})
+                felems.append(emit("flip", (mv,), {"name": dim}))
         gs = []
         for i in range(k):
-            pv = b.emit("pointwise", sjs, {"f": p_marker.partial(i).name})
-            gs.append(b.emit("pointwise", (pv, sc), {"f": "mul"}))
-            felems.append(b.emit("flip", (gs[i],), {"name": dim}))
-        # k backward scans (one projection each), flipped back to t-order
+            pv = emit("pointwise", sjs, {"f": p_marker.partial(i).name})
+            gs.append(emit("pointwise", (pv, sc), {"f": "mul"}))
+            felems.append(emit("flip", (gs[i],), {"name": dim}))
         shat = tuple(
-            b.emit(
+            emit(
                 "flip",
-                (b.emit("scan", tuple(felems), {"f": f.adjoint_scanner(i).name, "dim": dim}),),
+                (emit("scan", tuple(felems), {"f": f.adjoint_scanner(i).name, "dim": dim}),),
                 {"name": dim},
             )
             for i in range(k)
         )
-        # element cotangents: l̄_j = Σ_i ∂C_i/∂right_j (s_{t-1}, l_t) · ŝ_i,
-        # then ē = Jᵀ(lift) · l̄, contributed per operand slot
-        lbar: list[str | None] = []
+        lbar = []
         for j in range(k):
             terms = []
             for i in range(k):
                 pd = cs[i].partial(k + j)
                 if isinstance(pd.body, Const) and pd.body.value == 0:
                     continue
-                dv = b.emit("pointwise", tuple(sprev) + tuple(ljs), {"f": pd.name})
-                terms.append(b.emit("pointwise", (dv, shat[i]), {"f": "mul"}))
+                dv = emit("pointwise", tuple(sprev) + tuple(ljs), {"f": pd.name})
+                terms.append(emit("pointwise", (dv, shat[i]), {"f": "mul"}))
             lbar.append(acc_sum(terms) if terms else None)
         for i in range(f.element):
             terms = []
@@ -388,475 +398,419 @@ def _grad(
                 pd = ls[j].partial(i)
                 if lbar[j] is None or (isinstance(pd.body, Const) and pd.body.value == 0):
                     continue
-                dv = b.emit("pointwise", se, {"f": pd.name})
-                terms.append(b.emit("pointwise", (dv, lbar[j]), {"f": "mul"}))
+                dv = emit("pointwise", se, {"f": pd.name})
+                terms.append(emit("pointwise", (dv, lbar[j]), {"f": "mul"}))
             if terms:
                 contribute(elems[i], acc_sum(terms))
 
-    def fold_rule(ins: Instr, c: str) -> None:
-        """The adjoint of a fold is a REVERSE fold over the step's VJP
-        program — derived by self-application: wrap the step with cotangent
-        inputs and a scalarized target (sum of cot·out inner products), run
-        `grad` on the wrapper, and the resulting joint program IS the
-        backward step. It carries the state cotangent in reversed time and
-        consumes (s_{t-1}, e_t, ȳ_t) as elements — standard BPTT with
-        per-step recompute, generated rather than hand-written.
+    def _with_yield(step, ynew):
+        wb2 = Builder({**CORE_OPS, **TL_OPS})
+        y = ynew[0] if len(ynew) == 1 else wb2.emit("core.tuple", *ynew)
+        return Region(params=step.params, body=(wb2.emit("core.yield", y),))
 
-        Memory: with `fold_segments=K` the time axis is cut into K equal
-        segments; only segment-BOUNDARY states are computed up front, and
-        each segment's trajectory is recomputed just-in-time during its own
-        backward sweep (Chen-style uniform checkpointing: ~T/K + K states
-        live instead of T; K≈√T minimizes). `fold_slots=S` instead runs the
-        binomial revolve schedule over the same pieces (below): ~O(S) live
-        states, recompute up the binomial curve, and no divisibility
-        constraint on T. K=1 (the default) is the store-everything adjoint."""
-        step, dim, state_names, elem_names, carry, (out_kind, out_var) = _fold_parts(ins.params)
+    def fold_rule(nd, c):
+        """The port of the incumbent fold adjoint onto the positional
+        contract: the adjoint step is the recursive region-grad of the
+        scalarized wrapper; every re-out of a step is a variant region
+        sharing all nodes with a different yield."""
+        at = _thaw_params(dict(nd.attrs))
+        state_names, elem_names = tuple(at["state"]), tuple(at["element"])
         k = len(state_names)
-        inits, elems = ins.operands[:k], ins.operands[k:]
-        start, stop = _fold_extent(ins, shadows)
+        step = nd.regions[0]
+        inits, elems = nd.args[:k], nd.args[k:]
+        out = tuple(at["out"])
+        out_kind = out[0]
+        dim = at["dim"]
+        if elems:
+            d0 = lay(elems[0]).dim(dim)
+            start, stop = d0.start, d0.stop
+        else:
+            start, stop = tuple(at["extent"])
+        yielded = step.body[-1].args[0]
+        ynodes = tuple(yielded.args) if yielded.op == "core.tuple" else (yielded,)
         if stop - start == 0:
-            for sn, iv in zip(state_names, inits):
-                if out_kind == "final" and carry[sn] == out_var:
+            for i, iv in enumerate(inits):
+                if out_kind == "final" and out[1] == i:
                     contribute(iv, c)
                 else:
-                    contribute(iv, zeros_like(shadows[iv]))
-            for ev in elems:
-                contribute(ev, zeros_like(shadows[ev]))
+                    contribute(iv, zeros_like(lay(iv)))
+            for ev_ in elems:
+                contribute(ev_, zeros_like(lay(ev_)))
             return
 
-        def flp(v: str) -> str:
-            return b.emit("flip", (v,), {"name": dim})
+        def flp(v):
+            return emit("flip", (v,), {"name": dim})
 
-        # the step program may be chart-aware (staggered grids re-stamp
-        # charts internally), so the adjoint keeps the primal's charts
-        # throughout: cotangents already arrive restamped to the fold's
-        # output shadow, and only generated consts need stamping
-        slayouts = _fold_step_layouts(ins, shadows)
-        ss = infer(step, slayouts)
-        # normalize the cotangent to emit-form along dim (final = emit-at-last)
+        slayouts = {nm: lay(p_) for nm, p_ in zip(state_names + elem_names, step.params)}
         if out_kind == "final":
-            r = b.emit("repeat", (c,), {"name": dim, "extent": (stop - 1, stop)})
-            yb = b.emit("pad", (r,), {"fill": 0.0, "extents": {dim: (start, stop)}})
+            r = emit("repeat", (c,), {"name": dim, "extent": (stop - 1, stop)})
+            yb = emit("pad", (r,), {"fill": 0.0, "extents": {dim: (start, stop)}})
         else:
             yb = c
-        # the VJP wrapper: step + cotangent inputs + scalarized target
-        wb = _Builder(set(step.vars))
-        winstrs = list(step.instrs)
-        wlayouts = dict(slayouts)
+
+        # the VJP wrapper: the step's own params + cotangent params, target =
+        # sum of cot·carry inner products + cot·out — then grad, recursively
+        wb = Builder({**CORE_OPS, **TL_OPS})
+        cot_params = {}
         terms = []
 
-        def scalarize(v: str, layout) -> str:
-            cin = wb.fresh("ct")
-            winstrs.append(Instr(cin, "input", (), {}))
-            wlayouts[cin] = layout
-            pr = wb.fresh("pr")
-            winstrs.append(Instr(pr, "pointwise", (v, cin), {"f": "mul"}))
-            names = tuple(d.name for d in layout.dims)
-            if not names:
+        def scalarize(vnode):
+            cin = wb.param(("ct", len(cot_params)), tensor_type_of_layout(lay(vnode)))
+            pr = wb.emit("tl.pointwise", vnode, cin, f="mul")
+            dnames = tuple(d.name for d in lay(vnode).dims)
+            if not dnames:
                 return cin, pr
-            rs = wb.fresh("rs")
-            winstrs.append(Instr(rs, "reduce", (pr,), {"f": "sum", "dims": names}))
-            return cin, rs
+            return cin, wb.emit("tl.reduce", pr, f="sum", dims=dnames)
 
-        cot_state = {}
-        for sn in state_names:
-            cot_state[sn], t0 = scalarize(carry[sn], ss[carry[sn]])
+        for i, sn in enumerate(state_names):
+            cot_params[sn], t0 = scalarize(ynodes[i])
             terms.append(t0)
-        cot_out, t0 = scalarize(out_var, ss[out_var])
+        out_node = ynodes[out[1]] if out_kind == "final" else ynodes[k]
+        cot_out, t0 = scalarize(out_node)
         terms.append(t0)
-        target = terms[0]
+        tgt = terms[0]
         for tv in terms[1:]:
-            nv = wb.fresh("L")
-            winstrs.append(Instr(nv, "pointwise", (target, tv), {"f": "add"}))
-            target = nv
-        jp, g = grad(Program(tuple(winstrs)), target, wlayouts)
-        # missing gradients become explicit zeros so the reverse fold always
-        # has a var to carry/emit
-        taken = set(jp.vars)
-        extra, zn = [], 0
+            tgt = wb.emit("tl.pointwise", tgt, tv, f="add")
+        ct_names = tuple(f"%ct_{sn}" for sn in state_names)
+        wparams = tuple(step.params) + tuple(cot_params[sn] for sn in state_names) + (cot_out,)
+        wrapper = Region(params=wparams, body=(wb.emit("core.yield", tgt),))
+        wnames = region_names(wrapper, state_names + elem_names + ct_names + ("%ct_out",))
+        wg = _region_grad(
+            wrapper, wnames[id(tgt)], {}, None, state_names + elem_names, None, None, None, wnames
+        )
 
-        def ensure(gv, layout):
-            nonlocal zn
-            if gv is not None:
-                return gv
-            while f"%fz{zn}" in taken:
-                zn += 1
-            name = f"%fz{zn}"
-            taken.add(name)
-            extra.append(
-                Instr(
-                    name, "const", (), {"value": 0.0, "dims": tuple((d.name, (d.start, d.stop)) for d in layout.dims)}
-                )
-            )
+        def gnode(v):
+            return None if wg.grads[v] is None else wg.nodes[wg.grads[v]]
+
+        def ensure(gn, layout):
+            if gn is not None:
+                return gn
+            v = wb.emit("tl.const", value=0.0, dims=extents_of(layout))
             charts = {d.name: d.chart for d in layout.dims if d.chart is not None}
             labels = {d.name: d.labels for d in layout.dims if d.labels is not None}
-            for op, key, data in (("with_charts", "charts", charts), ("with_labels", "labels", labels)):
-                if data:
-                    prev, name = name, f"{name}s"
-                    taken.add(name)
-                    extra.append(Instr(name, op, (prev,), {key: data}))
-            return name
+            if charts:
+                v = wb.emit("tl.with_charts", v, charts=tuple(sorted(charts.items())))
+            if labels:
+                v = wb.emit("tl.with_labels", v, labels=tuple(sorted(labels.items())))
+            levels = {d.name: d.level for d in layout.dims if d.level is not None}
+            if levels:
+                v = wb.emit("tl.bind", v, levels=tuple(sorted(levels.items())))
+            return v
 
-        carry_back = {sn: ensure(g[sn], slayouts[sn]) for sn in state_names}
-        ejp = Program(tuple(jp.instrs) + tuple(extra))
-        adj_params = {
-            "step": ejp,
-            "dim": dim,
-            "state": tuple(cot_state[sn] for sn in state_names),
-            "element": tuple(state_names) + tuple(elem_names) + (cot_out,),
-            "carry": {cot_state[sn]: carry_back[sn] for sn in state_names},
-        }
-        base = dict(ins.params)
-        T = stop - start
+        cb_nodes = tuple(ensure(gnode(sn), slayouts[sn]) for sn in state_names)
+        adj_param_order = tuple(cot_params[sn] for sn in state_names) + tuple(step.params) + (cot_out,)
+        adj_at = {"dim": dim, "state": ct_names, "element": state_names + elem_names + ("%ct_out",)}
 
-        # ---- certified pieces, shared by every schedule -----------------
-        # Both the uniform (fold_segments) and binomial (fold_slots) paths
-        # are SCHEDULES over the same two operations: `advance` runs the
-        # forward step to move a boundary state across a range (out=final),
-        # and `leaf_backward` recomputes one range's trajectory just-in-time
-        # and reverse-folds it (contributing element cotangents and returning
-        # the range's start-state cotangent). Nothing about the certified
-        # backward step depends on how the ranges are chosen.
-        def seg_ops(state_vars, lo, hi):
-            """(operands, param overrides, element slices) for [lo, hi)."""
+        def adj_step(emit_node=None):
+            y = cb_nodes + ((emit_node,) if emit_node is not None else ())
+            wb2 = Builder({**CORE_OPS, **TL_OPS})
+            yt = y[0] if len(y) == 1 else wb2.emit("core.tuple", *y)
+            return Region(params=adj_param_order, body=(wb2.emit("core.yield", yt),))
+
+        adj_base = adj_step()
+        traj_steps = {i: _with_yield(step, ynodes[:k] + (ynodes[i],)) for i in range(k)}
+        base_at = {"dim": dim, "state": state_names, "element": elem_names}
+
+        def seg_ops(state_nodes, lo, hi):
             if elems:
-                se = tuple(b.emit("slice", (ev,), {"ranges": {dim: (lo, hi)}}) for ev in elems)
-                return tuple(state_vars) + se, {}, se
-            return tuple(state_vars), {"extent": (lo, hi)}, ()
+                se = tuple(emit("slice", (ev_,), {"ranges": {dim: (lo, hi)}}) for ev_ in elems)
+                return tuple(state_nodes) + se, {}, se
+            return tuple(state_nodes), {"extent": (lo, hi)}, ()
 
         def zero_state():
-            return {
-                sn: restamp(
-                    b.emit(
-                        "const",
-                        (),
-                        {"value": 0.0, "dims": tuple((d.name, (d.start, d.stop)) for d in slayouts[sn].dims)},
-                    ),
-                    slayouts[sn],
-                )
-                for sn in state_names
-            }
+            return {sn: zeros_like(slayouts[sn]) for sn in state_names}
 
         def advance(s0, lo, hi):
-            """State at `hi` from state `s0` at `lo` (out=final boundary fold)."""
             ops_, extra_p, _ = seg_ops(tuple(s0[sn] for sn in state_names), lo, hi)
-            return {sn: b.emit("fold", ops_, {**base, **extra_p, "out": ("final", carry[sn])}) for sn in state_names}
+            return {
+                sn: emit("fold", ops_, {**base_at, **extra_p, "out": ("final", i)}, regions=(step,))
+                for i, sn in enumerate(state_names)
+            }
 
         def leaf_backward(lo, hi, s0, cur, full):
-            """Reverse [lo, hi) from boundary state `s0` and incoming state
-            cotangent `cur` (the cotangent at `hi`); contribute this range's
-            element cotangents and return the cotangent at `lo`. `full` is
-            True only when the range is the whole fold (no slice/pad needed)."""
             ops_, extra_p, se = seg_ops(tuple(s0[sn] for sn in state_names), lo, hi)
-            # trajectory (value AFTER each step), then s_{t-1} via shift +
-            # where(t == lo, boundary, ...) — the boundary is an iota mask,
-            # because the "fill" here is a TENSOR, not a scalar
             sprev = {}
-            for sn in state_names:
-                traj = b.emit("fold", ops_, {**base, **extra_p, "out": ("emit", carry[sn])})
-                sh = b.emit("shift", (traj,), {"deltas": {dim: 1}})
-                sl = b.emit("slice", (sh,), {"ranges": {dim: (lo + 1, hi)}})
-                pd = b.emit("pad", (sl,), {"fill": 0.0, "extents": {dim: (lo, hi)}})
-                ri = b.emit("repeat", (s0[sn],), {"name": dim, "extent": (lo, hi)})
-                it = b.emit("iota", (pd,), {"name": dim})
-                sdims = tuple((d.name, (d.start, d.stop)) for d in slayouts[sn].dims) + ((dim, (lo, hi)),)
-                cs = b.emit("const", (), {"value": lo, "dims": sdims, "dtype": "int64"})
+            for i, sn in enumerate(state_names):
+                traj = emit("fold", ops_, {**base_at, **extra_p, "out": ("emit",)}, regions=(traj_steps[i],))
+                sh = emit("shift", (traj,), {"deltas": {dim: 1}})
+                sl = emit("slice", (sh,), {"ranges": {dim: (lo + 1, hi)}})
+                pd = emit("pad", (sl,), {"fill": 0.0, "extents": {dim: (lo, hi)}})
+                ri = emit("repeat", (s0[sn],), {"name": dim, "extent": (lo, hi)})
+                it = emit("iota", (pd,), {"name": dim})
+                sdims = extents_of(slayouts[sn]) + ((dim, (lo, hi)),)
+                cs = emit("const", (), {"value": lo, "dims": sdims, "dtype": "int64"})
                 cs = restamp(cs, slayouts[sn])  # partial stamp: scan dim stays bare
-                mask = b.emit("pointwise", (it, cs), {"f": "eq"})
-                sprev[sn] = b.emit("pointwise", (mask, ri, pd), {"f": "where"})
-            ybj = yb if full else b.emit("slice", (yb,), {"ranges": {dim: (lo, hi)}})
+                mask = emit("pointwise", (it, cs), {"f": "eq"})
+                sprev[sn] = emit("pointwise", (mask, ri, pd), {"f": "where"})
+            ybj = yb if full else emit("slice", (yb,), {"ranges": {dim: (lo, hi)}})
             adj_ops = (
                 tuple(cur[sn] for sn in state_names)
                 + tuple(flp(sprev[sn]) for sn in state_names)
                 + tuple(flp(x) for x in se)
                 + (flp(ybj),)
             )
-            for en, ev in zip(elem_names, elems):
-                if g[en] is None:
+            for en, ev_ in zip(elem_names, elems):
+                gn = gnode(en)
+                if gn is None:
                     continue
-                fv = flp(b.emit("fold", adj_ops, {**adj_params, "out": ("emit", g[en])}))
+                fv = flp(emit("fold", adj_ops, {**adj_at, "out": ("emit",)}, regions=(adj_step(gn),)))
                 if not full:
-                    fv = b.emit("pad", (fv,), {"fill": 0.0, "extents": {dim: (start, stop)}})
-                contribute(ev, fv)  # ranges accumulate via cotangent fan-in
-            return {sn: b.emit("fold", adj_ops, {**adj_params, "out": ("final", carry_back[sn])}) for sn in state_names}
+                    fv = emit("pad", (fv,), {"fill": 0.0, "extents": {dim: (start, stop)}})
+                contribute(ev_, fv)
+            return {
+                sn: emit("fold", adj_ops, {**adj_at, "out": ("final", i)}, regions=(adj_base,))
+                for i, sn in enumerate(state_names)
+            }
 
+        T = stop - start
         if fold_slots is not None:
-            # ---- binomial revolve (Griewank & Walther) ------------------
-            # A RECURSIVE schedule over the same pieces. With S checkpoint
-            # slots, reverse [lo, hi): store the state at a split point c,
-            # recurse on the tail [c, hi) with S-1 slots (the checkpoint holds
-            # one), then — that slot now free — recurse on the head [lo, c)
-            # with S slots. Leaves (a single step, or any range that already
-            # fits in the available slots) get the store-all `leaf_backward`.
-            # The split is chosen by _revolve_split: the optimal offline
-            # schedule (memoized DP over the recompute-cost recurrence — the
-            # same optimum revolve reaches in closed form; T is modest at
-            # trace time). No divisibility constraint: arbitrary T works.
-            # Memory ~O(S·state) live checkpoints + one leaf trajectory;
-            # compute grows by the binomial recompute factor. ŝ chains across
-            # every seam exactly as the uniform path does, because leaves are
-            # visited in strictly decreasing time order.
             S = int(fold_slots)
-            cur = zero_state()  # cotangent at time `stop`
+            cur = zero_state()
 
             def revolve(lo, hi, s, boundary):
-                # `boundary` is the state at `lo`; on return, `cur` has been
-                # carried from the cotangent at `hi` to the cotangent at `lo`
                 nonlocal cur
                 span = hi - lo
                 if span <= 1 or s >= span:
                     cur = leaf_backward(lo, hi, boundary, cur, full=(lo == start and hi == stop))
                     return
-                c = lo + _revolve_split(s, span)
-                state_c = advance(boundary, lo, c)  # the checkpoint (one slot)
-                revolve(c, hi, s - 1, state_c)  # tail first (later times)
-                revolve(lo, c, s, boundary)  # then head, checkpoint freed
+                c_ = lo + _revolve_split(s, span)
+                state_c = advance(boundary, lo, c_)
+                revolve(c_, hi, s - 1, state_c)
+                revolve(lo, c_, s, boundary)
 
             revolve(start, stop, S, dict(zip(state_names, inits)))
             for sn, iv in zip(state_names, inits):
-                if g[sn] is None:
+                if gnode(sn) is None:
                     continue
                 contribute(iv, cur[sn])
             return
 
-        # ---- uniform (Chen-style) segmentation, or store-all when K=1 ---
         K = 1 if fold_segments is None else min(int(fold_segments), T)
         if K < 1:
             raise ValueError("fold_segments must be >= 1")
         if T % K:
             raise ValueError(f"fold_segments={K} must divide the fold extent {T} (pad the dim or pick a divisor)")
         L = T // K
-
-        # forward pass over segments: keep only segment-START states
         seg_start = [dict(zip(state_names, inits))]
         for j in range(K - 1):
             lo, hi = start + j * L, start + (j + 1) * L
             seg_start.append(advance(seg_start[-1], lo, hi))
-
-        # backward, segment by segment (reversed): recompute the segment's
-        # trajectory from its boundary state, then run the reverse fold —
-        # ŝ chains across the seam (segment j's final reverse carry is the
-        # cotangent of segment j-1's end state)
         cur = zero_state()
         for j in reversed(range(K)):
             lo, hi = start + j * L, start + (j + 1) * L
             cur = leaf_backward(lo, hi, seg_start[j], cur, full=(K == 1))
         for sn, iv in zip(state_names, inits):
-            if g[sn] is None:
+            if gnode(sn) is None:
                 continue
             contribute(iv, cur[sn])
 
-    def reduce_rule(ins: Instr, c: str) -> None:
-        f = ins.params["f"]
-        dims = ins.params["dims"]
-        names = (dims,) if isinstance(dims, str) else tuple(dims)
+    def reduce_rule(nd, c):
+        p = _thaw_params(dict(nd.attrs))
+        f = p["f"]
+        dims = p["dims"]
+        dim_names = (dims,) if isinstance(dims, str) else tuple(dims)
         if f not in RED and f in REDUCERS:
-            # reduce = select the last slot of the scan, so its adjoint is
-            # embed-at-last (zeros elsewhere) then the scan adjoint
-            (dim,) = names
-            ddim = shadows[ins.operands[0]].dim(dim)
+            (dim,) = dim_names
+            ddim = lay(nd.args[0]).dim(dim)
             if ddim.size == 0:
-                for e in ins.operands:
-                    contribute(e, zeros_like(shadows[e]))
+                for e in nd.args:
+                    contribute(e, zeros_like(lay(e)))
                 return
-            lc = b.emit("strip_charts", (c,), {}, hint="lat")
-            r = b.emit("repeat", (lc,), {"name": dim, "extent": (ddim.stop - 1, ddim.stop)})
-            yb = b.emit("pad", (r,), {"fill": 0.0, "extents": {dim: (ddim.start, ddim.stop)}})
-            composite_scan_adjoint(f, dim, ins.operands, yb)
+            lc = emit("strip_charts", (c,), {}, hint="lat")
+            r = emit("repeat", (lc,), {"name": dim, "extent": (ddim.stop - 1, ddim.stop)})
+            yb = emit("pad", (r,), {"fill": 0.0, "extents": {dim: (ddim.start, ddim.stop)}})
+            composite_scan_adjoint(f, dim, nd.args, yb)
             return
-        A = ins.operands[0]
-        a_shape = shadows[A]
+        A = nd.args[0]
+        a_shape = lay(A)
         if f == "sum":
-            contribute(A, repeats_over(c, names, a_shape))
+            contribute(A, repeats_over(c, dim_names, a_shape))
         elif f == "mean":
-            r = repeats_over(c, names, a_shape)
-            n = 1
-            for name in names:
-                n *= a_shape.dim(name).size
-            nb = const_like(a_shape, float(n))
-            contribute(A, b.emit("pointwise", (r, nb), {"f": "div"}))
+            r = repeats_over(c, dim_names, a_shape)
+            count = 1
+            for name in dim_names:
+                count *= a_shape.dim(name).size
+            nb = const_like(a_shape, float(count))
+            contribute(A, emit("pointwise", (r, nb), {"f": "div"}))
         elif f in ("max", "min"):
-            # THE AT-KINK RE-PIN (S.2): at a tie exactly ONE element receives
-            # the cotangent — the FIRST along the reduced dims, in declared
-            # order — derived as a chain of single-dim reduces, inheriting
-            # the pairwise combine's partition law. (The old eq-mask
-            # distributed over ties: not a subgradient selection at all.)
             plain = tuple(replace(d, chart=None, labels=None) for d in a_shape.dims)
 
-            def rep(v: str, d0) -> str:
-                r = b.emit("repeat", (v,), {"name": d0.name, "extent": (d0.start, d0.stop)}, hint="km")
-                if d0.level is not None:  # placement rides the chain (PLACEMENT.md)
-                    r = b.emit("bind", (r,), {"levels": {d0.name: d0.level}}, hint="km")
+            def rep(v, d0):
+                r = emit("repeat", (v,), {"name": d0.name, "extent": (d0.start, d0.stop)}, hint="km")
+                if d0.level is not None:
+                    r = emit("bind", (r,), {"levels": {d0.name: d0.level}}, hint="km")
                 return r
 
             links = []
-            srcp, sdims = b.emit("strip_charts", (A,), {}, hint="kk"), plain
-            for i, name in enumerate(names):
-                last = i == len(names) - 1
-                dst = ins.var if last else b.emit("reduce", (srcp,), {"f": f, "dims": (name,)}, hint="kr")
-                dstp = b.emit("strip_charts", (dst,), {}, hint="kk") if last else dst
+            srcp, sdims = emit("strip_charts", (A,), {}, hint="kk"), plain
+            for i, name in enumerate(dim_names):
+                last = i == len(dim_names) - 1
+                dst = nd if last else emit("reduce", (srcp,), {"f": f, "dims": (name,)}, hint="kr")
+                dstp = emit("strip_charts", (dst,), {}, hint="kk") if last else dst
                 links.append((srcp, sdims, name))
                 sdims = tuple(d for d in sdims if d.name != name)
                 srcp = dstp
-            prev, cotan = srcp, b.emit("strip_charts", (c,), {}, hint="kc")
+            prev, cotan = srcp, emit("strip_charts", (c,), {}, hint="kc")
             for srcp, sdims, name in reversed(links):
                 d0 = next(d for d in sdims if d.name == name)
-                lay = _dense_like(sdims)
-                one, zero = const_like(lay, 1.0), const_like(lay, 0.0)
-                m = b.emit("pointwise", (srcp, rep(prev, d0)), {"f": "eq"}, hint="kt")
-                mnum = b.emit("pointwise", (m, one, zero), {"f": "where"}, hint="kn")
-                s = b.emit("scan", (mnum,), {"f": "sum", "dim": name}, hint="ks")
-                fw = b.emit("pointwise", (s, one), {"f": "eq"}, hint="kf")
-                first = b.emit("pointwise", (m, fw), {"f": "mul"}, hint="kw")
-                cotan = b.emit("pointwise", (rep(cotan, d0), first), {"f": "mul"}, hint="kg")
+                lay_ = _dense_like(sdims)
+                one, zero = const_like(lay_, 1.0), const_like(lay_, 0.0)
+                m = emit("pointwise", (srcp, rep(prev, d0)), {"f": "eq"}, hint="kt")
+                mnum = emit("pointwise", (m, one, zero), {"f": "where"}, hint="kn")
+                s = emit("scan", (mnum,), {"f": "sum", "dim": name}, hint="ks")
+                fw = emit("pointwise", (s, one), {"f": "eq"}, hint="kf")
+                first = emit("pointwise", (m, fw), {"f": "mul"}, hint="kw")
+                cotan = emit("pointwise", (rep(cotan, d0), first), {"f": "mul"}, hint="kg")
                 prev = srcp
             contribute(A, cotan)
         else:
             raise NotImplementedError(f"reduce({f}) has no adjoint rule yet")
 
-    def scan_rule(ins: Instr, c: str) -> None:
-        if ins.params["f"] in REDUCERS and ins.params["f"] not in RED:
-            composite_scan_adjoint(ins.params["f"], ins.params["dim"], ins.operands, c)
+    def scan_rule(nd, c):
+        p = dict(nd.attrs)
+        if p["f"] in REDUCERS and p["f"] not in RED:
+            composite_scan_adjoint(p["f"], p["dim"], nd.args, c)
             return
-        if ins.params["f"] != "sum":
+        if p["f"] != "sum":
             raise NotImplementedError("only scan(sum) is differentiable so far")
-        dim = ins.params["dim"]
-        f1 = b.emit("flip", (c,), {"name": dim})
-        s1 = b.emit("scan", (f1,), {"f": "sum", "dim": dim})
-        contribute(ins.operands[0], b.emit("flip", (s1,), {"name": dim}))
+        dim = p["dim"]
+        f1 = emit("flip", (c,), {"name": dim})
+        s1 = emit("scan", (f1,), {"f": "sum", "dim": dim})
+        contribute(nd.args[0], emit("flip", (s1,), {"name": dim}))
 
-    def tap_rule(ins: Instr, c: str) -> None:
-        """Shared adjoint for window and stencil: per-tap overlap-add."""
-        p = ins.params
+    def tap_rule(nd, c, p):
         name, k_name = p["name"], p.get("k_name") or f"{p['name']}_k"
         dilation = p.get("dilation", 1)
-        A = ins.operands[0]
-        src = shadows[A].dim(name)
-        kdim = shadows[ins.var].dim(k_name)
+        A = nd.args[0]
+        src = lay(A).dim(name)
+        kdim = lay(nd).dim(k_name)
         for kappa in range(kdim.start, kdim.stop):
-            t1 = b.emit("select", (c,), {"coords": {k_name: kappa}})
-            t2 = b.emit("shift", (t1,), {"deltas": {name: kappa * dilation}})
-            anchor = shadows[ins.var].dim(name)
+            t1 = emit("select", (c,), {"coords": {k_name: kappa}})
+            t2 = emit("shift", (t1,), {"deltas": {name: kappa * dilation}})
+            anchor = lay(nd).dim(name)
             lo = max(src.start, anchor.start + kappa * dilation)
             hi = min(src.stop, anchor.stop + kappa * dilation)
             if hi <= lo:
-                # empty overlap, including taps entirely outside the source:
-                # anchor the empty slice inside src so the pad-back is legal
                 lo = hi = src.start
-            t3 = b.emit("slice", (t2,), {"ranges": {name: (lo, hi)}})
-            t4 = b.emit("pad", (t3,), {"fill": 0.0, "extents": {name: (src.start, src.stop)}})
+            t3 = emit("slice", (t2,), {"ranges": {name: (lo, hi)}})
+            t4 = emit("pad", (t3,), {"fill": 0.0, "extents": {name: (src.start, src.stop)}})
             contribute(A, t4)
 
-    def decimate_rule(ins: Instr, c: str) -> None:
-        p = ins.params
+    def decimate_rule(nd, c, p):
         name, f = p["name"], p["factor"]
-        A = ins.operands[0]
-        c = b.emit("strip_charts", (c,), {}, hint="lat")  # lattice-mode internals
-        src = shadows[A].dim(name)
+        A = nd.args[0]
+        c = emit("strip_charts", (c,), {}, hint="lat")
+        src = lay(A).dim(name)
         phase = src.delta_to_lattice(p.get("phase", 0)) % f
         s, e = src.start, src.stop
-        out = shadows[ins.var].dim(name)
-        if (e - s) % f or (e - s) // f != out.size:
+        outd = lay(nd).dim(name)
+        if (e - s) % f or (e - s) // f != outd.size:
             raise NotImplementedError(
                 f"decimate adjoint needs a factor-divisible domain: [{s}, {e}) with factor {f} (pad the source first)"
             )
-        slot = (phase - s) % f  # interleave slot of the kept residue class
-        used = {d.name for d in shadows[ins.var].dims}
-        cname = b.fresh_dim("c", used)
-        ph = b.fresh_dim("ph", used)
-        r0 = b.emit("rename", (c,), {"mapping": {name: cname}})
-        r1 = b.emit("repeat", (r0,), {"name": ph, "extent": (0, f)})
-        i1 = b.emit("iota", (r1,), {"name": ph})
-        r1_dims = tuple((cname if d.name == name else d.name, (d.start, d.stop)) for d in shadows[ins.var].dims) + (
+        slot = (phase - s) % f
+        used = {d.name for d in lay(nd).dims}
+
+        def fresh_dim(base):
+            i = 0
+            while f"_{base}{i}" in used:
+                i += 1
+            used.add(f"_{base}{i}")
+            return f"_{base}{i}"
+
+        cname = fresh_dim("c")
+        ph = fresh_dim("ph")
+        r0 = emit("rename", (c,), {"mapping": {name: cname}})
+        r1 = emit("repeat", (r0,), {"name": ph, "extent": (0, f)})
+        i1 = emit("iota", (r1,), {"name": ph})
+        r1_dims = tuple((cname if d.name == name else d.name, (d.start, d.stop)) for d in lay(nd).dims) + (
             (ph, (0, f)),
         )
-        cp = b.emit("const", (), {"value": slot, "dims": r1_dims, "dtype": "int64"})
-        m = b.emit("pointwise", (i1, cp), {"f": "eq"})
-        z0 = b.emit("const", (), {"value": 0.0, "dims": r1_dims})
-        w = b.emit("pointwise", (m, r1, z0), {"f": "where"})
-        others = tuple(n for n, _ in r1_dims if n not in (cname, ph))
-        mo = b.emit("materialize", (w,), {"order": others + (cname, ph)})
-        mg = b.emit("merge", (mo,), {"parts": (cname, ph), "name": name, "start": s})
+        cp = emit("const", (), {"value": slot, "dims": r1_dims, "dtype": "int64"})
+        m = emit("pointwise", (i1, cp), {"f": "eq"})
+        z0 = emit("const", (), {"value": 0.0, "dims": r1_dims})
+        w = emit("pointwise", (m, r1, z0), {"f": "where"})
+        others = tuple(nm for nm, _ in r1_dims if nm not in (cname, ph))
+        mo = emit("materialize", (w,), {"order": others + (cname, ph)})
+        mg = emit("merge", (mo,), {"parts": (cname, ph), "name": name, "start": s})
         contribute(A, mg)
 
-    def diagonal_rule(ins: Instr, c: str) -> None:
-        parts = tuple(ins.params["parts"])
+    def diagonal_rule(nd, c, p):
+        parts = tuple(p["parts"])
         if len(parts) != 2:
             raise NotImplementedError("n-ary diagonal adjoint not written yet")
         x, y = parts
-        z = ins.params["name"]
-        A = ins.operands[0]
-        xdom, ydom = shadows[A].dim(x), shadows[A].dim(y)
-        if shadows[ins.var].dim(z).size == 0:
-            # disjoint parts: the diagonal read nothing, the gradient is zero
-            contribute(A, zeros_like(shadows[A]))
+        z = p["name"]
+        A = nd.args[0]
+        xdom, ydom = lay(A).dim(x), lay(A).dim(y)
+        if lay(nd).dim(z).size == 0:
+            contribute(A, zeros_like(lay(A)))
             return
-        c = b.emit("strip_charts", (c,), {}, hint="lat")  # lattice-mode internals
-        r1 = c if z == x else b.emit("rename", (c,), {"mapping": {z: x}})
-        r2 = b.emit("repeat", (r1,), {"name": y, "extent": (ydom.start, ydom.stop)})
-        ix = b.emit("iota", (r2,), {"name": x})
-        iy = b.emit("iota", (r2,), {"name": y})
-        m = b.emit("pointwise", (ix, iy), {"f": "eq"})
-        r2_dims = tuple((x if d.name == z else d.name, (d.start, d.stop)) for d in shadows[ins.var].dims) + (
+        c = emit("strip_charts", (c,), {}, hint="lat")
+        r1 = c if z == x else emit("rename", (c,), {"mapping": {z: x}})
+        r2 = emit("repeat", (r1,), {"name": y, "extent": (ydom.start, ydom.stop)})
+        ix = emit("iota", (r2,), {"name": x})
+        iy = emit("iota", (r2,), {"name": y})
+        m = emit("pointwise", (ix, iy), {"f": "eq"})
+        r2_dims = tuple((x if d.name == z else d.name, (d.start, d.stop)) for d in lay(nd).dims) + (
             (y, (ydom.start, ydom.stop)),
         )
-        z0 = b.emit("const", (), {"value": 0.0, "dims": r2_dims})
-        w = b.emit("pointwise", (m, r2, z0), {"f": "where"})
-        zdim = shadows[ins.var].dim(z)
+        z0 = emit("const", (), {"value": 0.0, "dims": r2_dims})
+        w = emit("pointwise", (m, r2, z0), {"f": "where"})
+        zdim = lay(nd).dim(z)
         if (zdim.start, zdim.stop) != (xdom.start, xdom.stop):
-            w = b.emit("pad", (w,), {"fill": 0.0, "extents": {x: (xdom.start, xdom.stop)}})
+            w = emit("pad", (w,), {"fill": 0.0, "extents": {x: (xdom.start, xdom.stop)}})
         contribute(A, w)
 
-    def layout_rule(ins: Instr, c: str) -> None:
-        A = ins.operands[0]
-        a_shape = shadows[A]
-        p = ins.params
-        if ins.op == "slice":
-            extents = {n: (a_shape.dim(n).start, a_shape.dim(n).stop) for n in p["ranges"]}
-            contribute(A, b.emit("pad", (c,), {"fill": 0.0, "extents": extents}))
-        elif ins.op == "pad":
-            ranges = {n: (a_shape.dim(n).start, a_shape.dim(n).stop) for n in p["extents"]}
-            contribute(A, b.emit("slice", (c,), {"ranges": ranges}))
-        elif ins.op == "shift":
-            deltas = {n: -a_shape.dim(n).delta_to_lattice(v) for n, v in p["deltas"].items()}
-            contribute(A, b.emit("shift", (c,), {"deltas": deltas}))
-        elif ins.op == "flip":
-            contribute(A, b.emit("flip", (c,), {"name": p["name"]}))
-        elif ins.op == "rename":
+    def layout_rule(nd, c):
+        base = nd.op[3:]
+        A = nd.args[0]
+        a_shape = lay(A)
+        p = _thaw_params(dict(nd.attrs))
+        if base == "slice":
+            extents = {nm: (a_shape.dim(nm).start, a_shape.dim(nm).stop) for nm in p["ranges"]}
+            contribute(A, emit("pad", (c,), {"fill": 0.0, "extents": extents}))
+        elif base == "pad":
+            ranges = {nm: (a_shape.dim(nm).start, a_shape.dim(nm).stop) for nm in p["extents"]}
+            contribute(A, emit("slice", (c,), {"ranges": ranges}))
+        elif base == "shift":
+            deltas = {nm: -a_shape.dim(nm).delta_to_lattice(v) for nm, v in p["deltas"].items()}
+            contribute(A, emit("shift", (c,), {"deltas": deltas}))
+        elif base == "flip":
+            contribute(A, emit("flip", (c,), {"name": p["name"]}))
+        elif base == "rename":
             inv = {new: old for old, new in p["mapping"].items()}
-            contribute(A, b.emit("rename", (c,), {"mapping": inv}))
-        elif ins.op == "repeat":
-            contribute(A, b.emit("reduce", (c,), {"f": "sum", "dims": (p["name"],)}))
-        elif ins.op == "select":
+            contribute(A, emit("rename", (c,), {"mapping": inv}))
+        elif base == "repeat":
+            contribute(A, emit("reduce", (c,), {"f": "sum", "dims": (p["name"],)}))
+        elif base == "select":
             cur = c
-            names = list(p["coords"])
-            for n, coord in p["coords"].items():
-                i = a_shape.dim(n).to_lattice(coord)
-                cur = b.emit("repeat", (cur,), {"name": n, "extent": (i, i + 1)})
-            extents = {n: (a_shape.dim(n).start, a_shape.dim(n).stop) for n in names}
-            contribute(A, b.emit("pad", (cur,), {"fill": 0.0, "extents": extents}))
-        elif ins.op == "split":
+            coord_names = list(p["coords"])
+            for nm, coord in p["coords"].items():
+                i = a_shape.dim(nm).to_lattice(coord)
+                cur = emit("repeat", (cur,), {"name": nm, "extent": (i, i + 1)})
+            extents = {nm: (a_shape.dim(nm).start, a_shape.dim(nm).stop) for nm in coord_names}
+            contribute(A, emit("pad", (cur,), {"fill": 0.0, "extents": extents}))
+        elif base == "split":
             parts = tuple(p["parts"])
-            others = tuple(d.name for d in shadows[ins.var].dims if d.name not in parts)
-            mo = b.emit("materialize", (c,), {"order": others + parts})
+            others = tuple(d.name for d in lay(nd).dims if d.name not in parts)
+            mo = emit("materialize", (c,), {"order": others + parts})
             contribute(
                 A,
-                b.emit(
-                    "merge",
-                    (mo,),
-                    {"parts": parts, "name": p["name"], "start": a_shape.dim(p["name"]).start},
-                ),
+                emit("merge", (mo,), {"parts": parts, "name": p["name"], "start": a_shape.dim(p["name"]).start}),
             )
-        elif ins.op == "merge":
-            parts = {n: (a_shape.dim(n).start, a_shape.dim(n).stop) for n in p["parts"]}
-            contribute(A, b.emit("split", (c,), {"name": p["name"], "parts": parts}))
-        elif ins.op in ("window", "stencil"):
-            tap_rule(ins, c)
-        elif ins.op == "decimate":
-            decimate_rule(ins, c)
-        elif ins.op == "diagonal":
-            diagonal_rule(ins, c)
-        elif ins.op in (
+        elif base == "merge":
+            # ORDERED parts: pre-tupled so the canonical attr sort cannot
+            # reorder the mixed-radix nesting (the lifting packer precedent)
+            parts = tuple((nm, (a_shape.dim(nm).start, a_shape.dim(nm).stop)) for nm in p["parts"])
+            contribute(A, emit("split", (c,), {"name": p["name"], "parts": parts}))
+        elif base in ("window", "stencil"):
+            tap_rule(nd, c, p)
+        elif base == "decimate":
+            decimate_rule(nd, c, p)
+        elif base == "diagonal":
+            diagonal_rule(nd, c, p)
+        elif base in (
             "strip_charts",
             "with_charts",
             "with_labels",
@@ -867,100 +821,96 @@ def _grad(
         ):
             contribute(A, c)  # value-preserving metadata / identity copy
         else:
-            raise NotImplementedError(f"no adjoint rule for {ins.op!r}")
+            raise NotImplementedError(f"no adjoint rule for {base!r}")
 
     # ---- reverse walk --------------------------------------------------
-    for ins in reversed(fwd):
-        c = finalize(ins.var)
+    for nd in reversed(fwd):
+        c = finalize(nd)
         if c is None:
             continue
-        if ins.op in ("input", "const", "iota", "random"):
-            continue  # leaves: gradient stops (iota/const/random are gradient-free —
-            # a mask field acts as a constant; AD through dropout needs no rule)
-        if ins.op in ("argtopk", "argsort"):
-            # index producers have NO adjoint rules by declaration (200 §1.9):
-            # integer indices are piecewise-constant in the data — zero a.e.,
-            # the partition law. Their gradient path is take's, by composition.
+        if nd.op in ("core.param", "core.const") or not nd.op.startswith("tl."):
             continue
-        if ins.op == "repeat_like":
-            # adjoint: reduce-sum over the ADDED dims (layout-derived, from
-            # the shadows); the like operand is layout-only — no gradient
-            have = {d.name for d in shadows[ins.operands[0]].dims}
-            added = tuple(d.name for d in shadows[ins.var].dims if d.name not in have)
-            gv = b.emit("reduce", (c,), {"f": "sum", "dims": added}) if added else c
-            contribute(ins.operands[0], gv)
-        elif ins.op == "round_to":
-            # STRAIGHT-THROUGH by default (200 §4): a zero derivative would
-            # make every quantized parameter untrainable; zero by declaration
-            if ins.params.get("grad", "straight_through") != "zero":
-                contribute(ins.operands[0], c)
-        elif ins.op == "take":
-            # take† = scatter_add (200 §1.9): duplicates SUM — the embedding
-            # gradient — and addition is order-independent, hence
-            # deterministic. Indices are integer-carrier: gradient-free
-            # (d_idx = None), so only the table receives a contribution.
-            d = shadows[ins.operands[0]].dim(ins.params["dim"])
-            # the consumed dims are exactly the SPLICED idx dims (aligned
-            # idx dims ride in the adjoint too — the batched forms)
-            survivors = {x.name for x in shadows[ins.operands[0]].dims if x.name != d.name}
-            spliced = tuple(n for n in shadows[ins.operands[1]].names if n not in survivors)
-            gv = b.emit(
+        base = nd.op[3:]
+        if base in ("const", "iota", "random"):
+            continue
+        if base in ("argtopk", "argsort"):
+            continue
+        if base == "repeat_like":
+            have = {d.name for d in lay(nd.args[0]).dims}
+            added = tuple(d.name for d in lay(nd).dims if d.name not in have)
+            gv = emit("reduce", (c,), {"f": "sum", "dims": added}) if added else c
+            contribute(nd.args[0], gv)
+        elif base == "round_to":
+            if dict(nd.attrs).get("grad", "straight_through") != "zero":
+                contribute(nd.args[0], c)
+        elif base == "take":
+            d = lay(nd.args[0]).dim(dict(nd.attrs)["dim"])
+            survivors = {x.name for x in lay(nd.args[0]).dims if x.name != d.name}
+            spliced = tuple(nm for nm in lay(nd.args[1]).names if nm not in survivors)
+            gv = emit(
                 "scatter_add",
-                (c, ins.operands[1]),
+                (c, nd.args[1]),
                 {"dim": d.name, "extent": (d.start, d.stop), "over": spliced},
             )
-            contribute(ins.operands[0], gv)
-        elif ins.op == "scatter_add":
-            # scatter_add† = take at the same indices — the self-dual pair
-            # (like repeat† = reduce); indices stay gradient-free.
-            gv = b.emit("take", (c, ins.operands[1]), {"dim": ins.params["dim"]})
-            contribute(ins.operands[0], gv)
-        elif ins.op == "pointwise":
-            pw_rule(ins, c)
-        elif ins.op == "reduce":
-            reduce_rule(ins, c)
-        elif ins.op == "scan":
-            scan_rule(ins, c)
-        elif ins.op == "fold":
-            fold_rule(ins, c)
+            contribute(nd.args[0], gv)
+        elif base == "scatter_add":
+            gv = emit("take", (c, nd.args[1]), {"dim": dict(nd.attrs)["dim"]})
+            contribute(nd.args[0], gv)
+        elif base == "pointwise":
+            pw_rule(nd, c)
+        elif base == "reduce":
+            reduce_rule(nd, c)
+        elif base == "scan":
+            scan_rule(nd, c)
+        elif base == "fold":
+            fold_rule(nd, c)
         else:
-            layout_rule(ins, c)
+            layout_rule(nd, c)
 
-    grads: dict[str, str | None] = {}
-    names = wrt if wrt is not None else tuple(i.var for i in fwd)
-    for v in names:
-        gv = final.get(v)
-        if gv is not None and target_unit is not None:
-            uv = sigs[v].unit  # inferred, so INTERMEDIATE grads annotate too
+    # ---- outputs -------------------------------------------------------
+    grads: dict = {}
+    req = tuple(wrt) if wrt is not None else tuple(names[id(p_)] for p_ in region.params)
+    ynodes_out = [tnode]
+    outputs = [target]
+    for v in req:
+        node_v = by_name.get(v)
+        if node_v is None:
+            raise KeyError(f"wrt name {v!r} is not defined by the program")
+        gn = finalize(node_v)
+        if gn is not None and target_unit is not None:
+            uv = sigs[v].unit if v in sigs else None
             gu = target_unit if uv is None or uv == ONE else target_unit / uv
-            gv = b.emit("with_value_units", (gv,), {"value_units": gu}, hint="vu")
-        grads[v] = gv
-    return Program(tuple(fwd) + tuple(b.instrs)), grads
+            gn = emit("with_value_units", (gn,), {"value_units": gu}, hint="vu")
+        if gn is None:
+            grads[v] = None
+            continue
+        grads[v] = jnames[id(gn)]
+        ynodes_out.append(gn)
+        outputs.append(jnames[id(gn)])
+    y = ynodes_out[0] if len(ynodes_out) == 1 else b.emit("core.tuple", *ynodes_out)
+    joint_params = tuple(region.params) + ((seed_param,) if seed_param is not None else ())
+    joint = Region(params=joint_params, body=(b.emit("core.yield", y),))
+    return RegionGrad(joint, grads, jnames, tuple(outputs), {jnames[id(x)]: x for x in ynodes_out})
 
 
-# ----------------------------------------------------------------------
-# validation harness
-# ----------------------------------------------------------------------
-
-
-def numeric_grad(prog: Program, target: str, wrt_var: str, inputs: dict, eps: float = 1e-6):
-    """Central finite differences of a SCALAR target w.r.t. one input tensor.
-    Rebuilds perturbed inputs via from_numpy (0-based, uncharted) — use
-    simple inputs in FD tests."""
+def numeric_grad(region, target: str, wrt_var: str, inputs: dict, names, eps: float = 1e-6):
+    """Central finite differences of a SCALAR target w.r.t. one input tensor,
+    on the region face. Rebuilds perturbed inputs via from_numpy with the
+    base tensor's stamps — use simple inputs in FD tests."""
     import numpy as np
 
-    from .ir import run
+    from .dialect import run_named
     from .tensor import Tensor
 
     base = inputs[wrt_var]
     arr = base.to_numpy().astype(np.float64)
-    names = base.names
+    tnames = base.names
     charts = {d.name: d.chart for d in base.layout.dims if d.chart is not None}
     labels = {d.name: d.labels for d in base.layout.dims if d.labels is not None}
     levels = {d.name: d.level for d in base.layout.dims if d.level is not None}
 
     def rebuild(pert):
-        t = Tensor.from_numpy(pert, names)
+        t = Tensor.from_numpy(pert, tnames)
         if charts:
             t = t.with_charts(**charts)
         if labels:
@@ -977,7 +927,7 @@ def numeric_grad(prog: Program, target: str, wrt_var: str, inputs: dict, eps: fl
         for sign in (+1, -1):
             pert = arr.copy()
             pert[idx] += sign * eps
-            env = run(prog, {**inputs, wrt_var: rebuild(pert)})
-            out.append(float(env[target].item()))
+            vals = run_named(region, {**inputs, wrt_var: rebuild(pert)}, names)
+            out.append(float(vals[target].to_numpy()))
         g[idx] = (out[0] - out[1]) / (2 * eps)
     return g

@@ -11,7 +11,6 @@ from typing import Callable
 import numpy as np
 
 from ..compute import const_like, iota, pointwise, red, reduce, repeat_like
-from ..ir import Program
 from ..markers import exp, le, sqrt, where
 from ..mdsl import defmarker, tanh
 from ..tensor import Tensor
@@ -38,11 +37,12 @@ def np_softmax(s, axis):
 
 @dataclass(frozen=True)
 class ZooModel:
-    program: Program
+    region: object  # the dialect Region — THE representation
     inputs: dict[str, Tensor]
-    out: str  # the output var
+    out: str  # the output's name
     ref: Callable  # dict[str, np.ndarray] -> np.ndarray, the numpy denotation
     order: tuple  # dim order matching the reference array's axes
+    names: dict  # the naming law's assignment over the region
 
     def numpy_inputs(self) -> dict[str, np.ndarray]:
         return {k: v.to_numpy() for k, v in self.inputs.items()}

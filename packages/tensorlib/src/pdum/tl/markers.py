@@ -46,6 +46,8 @@ from pdum.dsl.markers import (  # noqa: F401 — THE vocabulary, one home
     where,
 )
 
+from .registry import MARKERS, REDUCERS
+
 
 @dataclass(frozen=True)
 class Reducer:
@@ -70,3 +72,24 @@ class red:
     max = Reducer("max", np.maximum)
     min = Reducer("min", np.minimum)
     mean = Reducer("mean", np.add, identity=0, normalize=True)
+
+
+PW = {m.name: m for m in vars(pw).values() if isinstance(m, Marker)}
+RED = {m.name: m for m in vars(red).values() if isinstance(m, Reducer)}
+
+
+def pw_marker(name: str):
+    # resolve a pointwise marker name: primitives, then registered composites
+    if name in PW:
+        return PW[name]
+    if name in MARKERS:
+        return MARKERS[name]
+    raise KeyError(f"unknown pointwise marker {name!r}")
+
+
+def reducer(name: str):
+    if name in RED:
+        return RED[name]
+    if name in REDUCERS:
+        return REDUCERS[name]
+    raise KeyError(f"unknown reducer {name!r}")

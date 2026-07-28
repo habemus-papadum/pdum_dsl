@@ -7,9 +7,11 @@ literal expectation; a drifted message is an API break, not a cleanup.
 
 import numpy as np
 import pytest
+from pdum.dsl.ir import Builder, Region
 from pdum.dsl.naming import NameCollision, Namer
+from pdum.dsl.ops import CORE_OPS
 from pdum.tl import Tensor, defmarker, pointwise, pw
-from pdum.tl.ir import Instr, Program, run
+from pdum.tl.dialect import TL_OPS, run_region, tensor_type_of_layout
 from pdum.tl.mdsl import exp
 from pdum.tl.registry import RegistryConflict
 
@@ -62,16 +64,23 @@ def test_explicit_name_collision_refuses_never_suffixes():
         root.param("x", d=3)
 
 
+def _one_op_region(op: str, **attrs) -> Region:
+    """A hand-built region: one input, one op referencing compute by name."""
+    b = Builder({**CORE_OPS, **TL_OPS})
+    a = b.param(0, tensor_type_of_layout(T([1.0], ("i",)).layout))
+    y = b.emit(op, a, **attrs)
+    return Region(params=(a,), body=(b.emit("core.yield", y),))
+
+
 def test_unknown_marker_and_reducer_refuse_by_name():
-    """Programs reference compute by NAME; an unregistered name refuses at
+    """Regions reference compute by NAME; an unregistered name refuses at
     the resolution seam, quoting the name."""
-    prog = Program((Instr("a", "input"), Instr("y", "pointwise", ("a",), {"f": "no_such_marker"})))
+    region = _one_op_region("tl.pointwise", f="no_such_marker")
     with pytest.raises(KeyError, match=r"unknown pointwise marker 'no_such_marker'"):
-        run(prog, {"a": T([1.0], ("i",))})
-    prog = Program((Instr("a", "input"), Instr("y", "reduce", ("a",), {"f": "no_such_reducer", "dims": ("i",)}))
-    )
+        run_region(region, [T([1.0], ("i",))])
+    region = _one_op_region("tl.reduce", f="no_such_reducer", dims=("i",))
     with pytest.raises(KeyError, match=r"unknown reducer 'no_such_reducer'"):
-        run(prog, {"a": T([1.0], ("i",))})
+        run_region(region, [T([1.0], ("i",))])
 
 
 def test_primitive_names_stay_reserved():

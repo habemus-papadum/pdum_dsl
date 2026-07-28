@@ -874,3 +874,15 @@ def _diagonal_chart(ds: list[Dim], spec) -> Chart | None:
         kind = "position" if any(c.kind == "position" for c in charts) else "displacement"
         return Chart(origin, step, kind, _axis_of(ds[0]))
     return None
+
+
+def _dense_like(dims: tuple[Dim, ...]) -> Layout:
+    """A plain layout over the given dims with fabricated C-order strides
+    (uniform 8-byte itemsize; only relative nesting matters)."""
+    strides = []
+    acc = 8
+    for d in reversed(dims):
+        strides.append(acc)
+        acc *= max(d.size, 1)
+    new = tuple(replace(d, stride=s, chart=d.chart, labels=d.labels) for d, s in zip(dims, reversed(strides)))
+    return Layout(new, offset=-sum(d.stride * d.start for d in new))

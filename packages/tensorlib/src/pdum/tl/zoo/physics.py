@@ -21,7 +21,7 @@ import numpy as np
 from pdum.dsl.types import Literal
 
 from ..chart import chart
-from ..ir import Instr, Program
+from ..dialect import fold_region, region_names, tensor_type_of_layout
 from ..lifting import lift_step
 from .zoo_common import ZooModel, t_in
 
@@ -47,16 +47,16 @@ def heat2d(N=5, M=5, T=3, alpha=0.1, seed=13) -> ZooModel:
     inputs: dict = {}
     t_in(inputs, "u0", rng.standard_normal((N, M)), ("x", "y"))
     ls = lift_step(_heat_step, u=inputs["u0"].layout, n=N, m=M, alpha=alpha)
-    fold_params = {
-        "step": ls.program,
-        "dim": "tm",
-        "state": ("u",),
-        "element": (),
-        "carry": {"u": ls.outputs[0]},
-        "out": ("final", ls.outputs[0]),
-        "extent": (0, T),
-    }
-    prog = Program((Instr("u0", "input"), Instr("uf", "fold", ("u0",), fold_params)))
+    region, fold = fold_region(
+        ls.region,
+        dim="tm",
+        state=("u",),
+        element=(),
+        out=("final", 0),
+        init_types=(tensor_type_of_layout(inputs["u0"].layout),),
+        extent=(0, T),
+    )
+    named = {id(fold): "uf"}
 
     def ref(inp):
         u = inp["u0"].copy()
@@ -67,7 +67,7 @@ def heat2d(N=5, M=5, T=3, alpha=0.1, seed=13) -> ZooModel:
             u = u + alpha * lap
         return u
 
-    return ZooModel(prog, inputs, "uf", ref, ("x", "y"))
+    return ZooModel(region, inputs, "uf", ref, ("x", "y"), region_names(region, ("u0",), named))
 
 
 def fdtd1d_staggered(N=6, T=3, c=0.4, seed=17) -> ZooModel:
@@ -96,16 +96,19 @@ def fdtd1d_staggered(N=6, T=3, c=0.4, seed=17) -> ZooModel:
         return E1, H1
 
     ls = lift_step(step, E=inputs["E0"].layout, H=inputs["H0"].layout, n=N)
-    fold_params = {
-        "step": ls.program,
-        "dim": "tm",
-        "state": ("E", "H"),
-        "element": (),
-        "carry": {"E": ls.outputs[0], "H": ls.outputs[1]},
-        "out": ("final", ls.outputs[0]),
-        "extent": (0, T),
-    }
-    prog = Program((Instr("E0", "input"), Instr("H0", "input"), Instr("Ef", "fold", ("E0", "H0"), fold_params)))
+    region, fold = fold_region(
+        ls.region,
+        dim="tm",
+        state=("E", "H"),
+        element=(),
+        out=("final", 0),
+        init_types=(
+            tensor_type_of_layout(inputs["E0"].layout),
+            tensor_type_of_layout(inputs["H0"].layout),
+        ),
+        extent=(0, T),
+    )
+    named = {id(fold): "Ef"}
 
     def ref(inp):
         E, H = inp["E0"].copy(), inp["H0"].copy()
@@ -116,7 +119,7 @@ def fdtd1d_staggered(N=6, T=3, c=0.4, seed=17) -> ZooModel:
             E = E + c * dH
         return E
 
-    return ZooModel(prog, inputs, "Ef", ref, ("x",))
+    return ZooModel(region, inputs, "Ef", ref, ("x",), region_names(region, ("E0", "H0"), named))
 
 
 def Tensor_from(arr, ch):

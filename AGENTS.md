@@ -11,7 +11,7 @@ in LOCKSTEP versioning:
   infrastructure (capture, two-tier cache, Node/Region IR, the value language, the fuse pipe,
   the reference evaluator).
 - `packages/tensorlib` — dist **habemus-papadum-tl**, module `pdum.tl`: the assemblage tensor
-  language (layout algebra, compute primitives, Program/Instr IR, AD, cost semantics, the zoo).
+  language (layout algebra, compute primitives, the Region dialect over the dsl core, AD, cost semantics, the zoo).
 
 **THE SPECIFICATION is `docs/design/200_the-spec.md`** — the system, its principles, and the
 migration plan (P0–P9). Everything numbered 010–195 in `docs/design/history/` is history.

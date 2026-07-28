@@ -8,8 +8,8 @@ summed gradient."""
 import numpy as np
 from pdum.tl.assemblage import assemblage, unit
 from pdum.tl.autodiff import grad, numeric_grad
-from pdum.tl.compute import repeat_like
-from pdum.tl.ir import Instr, Program, run
+from pdum.tl.compute import red, reduce, repeat_like
+from pdum.tl.dialect import run_named
 from pdum.tl.scope import scope
 from pdum.tl.zoo.gpt2 import GPT2Config, gpt2, make_gpt2
 
@@ -31,8 +31,7 @@ def test_the_naming_law_literal_pins():
 
 def test_a_rebuilt_closure_maps_the_same_capture_to_the_same_name():
     root1, root2 = scope(), scope()
-    from pdum.tl.ir import _dense_like
-    from pdum.tl.layout import Dim
+    from pdum.tl.layout import Dim, _dense_like
 
     lay = _dense_like((Dim("t", 0, 0, CFG.t),))
     a1 = assemblage(make_gpt2(root1, CFG), scope=root1, ids=lay)
@@ -43,10 +42,12 @@ def test_a_rebuilt_closure_maps_the_same_capture_to_the_same_name():
 
 def test_grad_map_joins_on_contract_names():
     m = gpt2()
-    prog = Program(m.program.instrs + (Instr("zloss", "reduce", (m.out,), {"f": "sum", "dims": ("t", "v")}),))
-    _, grads = grad(prog, "zloss", m.inputs)
-    assert "h.0.attn.wq" in grads and grads["h.0.attn.wq"] is not None
-    assert "h.1.mlp.b2" in grads  # every leaf is addressable by its contract name
+    # the hand-appended zloss Instr died with the Program; the logits are
+    # non-scalar on the region face, so the joint takes a seed — the
+    # name-join pins are unchanged
+    rg = grad(m.region, m.out, m.inputs, seed="zseed", names=m.names)
+    assert "h.0.attn.wq" in rg.grads and rg.grads["h.0.attn.wq"] is not None
+    assert "h.1.mlp.b2" in rg.grads  # every leaf is addressable by its contract name
 
 
 def test_the_tied_gradient_pin():
@@ -64,23 +65,25 @@ def test_the_tied_gradient_pin():
     def second(h):
         return h + repeat_like(w * w, h)  # capture 2, nonlinearly
 
-    from pdum.tl.ir import _dense_like
-    from pdum.tl.layout import Dim
+    @unit
+    def zloss(h):  # the scalar target the hand-appended reduce Instr used to add
+        return reduce(red.sum, h, ("t", "d"))
+
+    from pdum.tl.layout import Dim, _dense_like
     from pdum.tl.tensor import Tensor
 
     lay = _dense_like((Dim("t", 0, 0, 2), Dim("d", 0, 0, 3)))
-    a = assemblage(first | second, scope=root, h=lay)
+    a = assemblage(first | second | zloss, scope=root, h=lay)
     assert list(a.params) == ["w"]  # ONE leaf despite two captures
     rng = np.random.default_rng(3)
     inputs = {
         "h": Tensor.from_numpy(rng.standard_normal((2, 3)), ("t", "d")),
         "w": Tensor.from_numpy(rng.standard_normal(3), ("d",)),
     }
-    prog = Program(a.program.instrs + (Instr("zloss", "reduce", (a.output,), {"f": "sum", "dims": ("t", "d")}),))
-    jp, grads = grad(prog, "zloss", inputs)
-    env = run(jp, inputs)
-    got = env[grads["w"]].to_numpy(order=("d",))
-    fd = numeric_grad(prog, "zloss", "w", inputs)
+    rg = grad(a.region, a.output, inputs, names=a.names)
+    env = run_named(rg.region, inputs, rg.names)
+    got = env[rg.grads["w"]].to_numpy(order=("d",))
+    fd = numeric_grad(a.region, a.output, "w", inputs, a.names)
     np.testing.assert_allclose(got, fd, rtol=1e-5, atol=1e-8)  # summed, once
 
 

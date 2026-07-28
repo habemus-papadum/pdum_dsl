@@ -43,13 +43,13 @@ from .placement import Collective, Level, Machine, TrafficReport, mesh, traffic
 from .random import fold_in, normal, uniform
 from .signatures import SignatureError, VInfo, infer_signatures, marker_signature
 from .tensor import Misalignment, Tensor, aligned, alignment
-from .transforms import CheckpointReport, checkpoint, dce
+from .transforms import RegionCheckpoint, checkpoint, dce
 from .units import Quantity, Unit, UnitRegistry, q, u
 
 __all__ = [
     "Buffer",
     "CARRIERS",
-    "CheckpointReport",
+    "RegionCheckpoint",
     "checkpoint",
     "dce",
     "CompositeMarker",

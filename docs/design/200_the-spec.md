@@ -47,12 +47,12 @@ lockstep:
   assemblage language and representation: the layout algebra (affine map
   + box + guards + charts + units + placement), carriers, the compute
   primitives (pointwise/reduce/scan/fold and the indexing family of
-  §1.9), the Program/Instr IR, reverse-mode AD with derived adjoints,
+  §1.9), the Region dialect over the dsl core, reverse-mode AD with derived adjoints,
   the transforms (requested-gradients DCE, min-cut checkpointing,
   revolve), the cost semantics (opcount, peak memory, traffic),
   placement, signatures — built on `pdum.dsl`'s caching, naming, and
-  capture. **`pdum.tl.zoo`** ships inside it, and `ir.run` is the tensor
-  tier's reference executor and oracle. Tensorlib's design docs live
+  capture. **`pdum.tl.zoo`** ships inside it, and `run_region`/`run_named`
+  is the tensor tier's reference executor and oracle. Tensorlib's design docs live
   with the package, revised where this document changes them.
 
 There are **no device backends in the tree**. Device backends (WebGPU,
@@ -61,7 +61,7 @@ notes (§3.3) and the two reference executors. The reference executors
 are the exception to the purge: oracles are not backends.
 
 **Oracle execution is always spelled.** Reference execution is invoked
-by name — `reference(f)(...)` (and `ir.run` at the tensor tier) — never
+by name — `reference(f)(...)` (and `run_named` at the tensor tier) — never
 by a plain call silently interpreting. A plain call on a kind with no
 routed backend refuses; it does not degrade to interpretation.
 
@@ -865,7 +865,7 @@ def gelu(x):
     return 0.5 * x * (1 + tanh(GELU_C * (x + 0.044715 * x*x*x)))
 ```
 
-— lowered as a pointwise marker body under `ir.run` AND inlined as a
+— lowered as a pointwise marker body under the region evaluator AND inlined as a
 device function into a `@compute` kernel; the two paths must agree
 numerically.
 
@@ -976,7 +976,7 @@ my_shader(f, img, launch=grid(blocks=ceil_div(img.shape, 16), threads=(16, 16)))
   over coordinate iotas; the iota→thread_idx descent is a rewrite stage
   whose WF predicate is "no iota reaches a materialization boundary";
   the fused and assemblage forms are differential-tested against
-  `ir.run`.
+  the region evaluator.
 
 **S.3 amendment (P7, owner-ruled): the one-body-language law.** There
 is ONE body language — the value language. A kernel body is the value

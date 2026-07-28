@@ -16,8 +16,7 @@ import numpy as np
 
 from ..assemblage import assemblage, unit
 from ..compute import contract, extent, iota, pointwise, repeat_like
-from ..ir import _dense_like
-from ..layout import Dim
+from ..layout import Dim, _dense_like
 from ..markers import cos, sin
 from ..scope import scope
 from ..tensor import Tensor
@@ -123,7 +122,7 @@ def llama_block(cfg: LlamaConfig = LlamaConfig(), seed: int = 11) -> ZooModel:
         z1 = a2 @ inp["w1"]
         return h + (z1 * np_sigmoid(z1) * (a2 @ inp["w3"])) @ inp["w2"]
 
-    return ZooModel(model.program, inputs, model.output, ref, ("t", "d"))
+    return ZooModel(model.region, inputs, model.output, ref, ("t", "d"), model.names)
 
 
 def _t(arr, names):

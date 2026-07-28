@@ -7,87 +7,92 @@ expectations; a drifted selection is an API break.
 """
 
 import numpy as np
-from pdum.tl import Tensor
+from pdum.tl import Tensor, pointwise, red, reduce
 from pdum.tl.autodiff import grad
-from pdum.tl.ir import Instr, Program, run
+from pdum.tl.dialect import run_named, run_region
+from pdum.tl.lifting import lift_step
+from pdum.tl.markers import maximum, minimum
 
 
 def T(arr, names):
     return Tensor.from_numpy(np.asarray(arr, dtype=np.float64), names)
 
 
-def I(var, op, operands=(), **params):  # noqa: E743
-    return Instr(var, op, tuple(operands), params)
-
-
-def _grad_of(prog, target, inputs):
-    joint, grads = grad(prog, target, inputs)
-    env = run(joint, inputs)
-    return {v: (None if gv is None else env[gv].to_numpy()) for v, gv in grads.items()}
+def _grad_of(step, target, inputs):
+    ls = lift_step(step, **{k: v.layout for k, v in inputs.items()})
+    rg = grad(ls.region, target, inputs, names=ls.names)
+    env = run_named(rg.region, inputs, rg.names)
+    return {v: (None if gn is None else env[gn]) for v, gn in rg.grads.items()}
 
 
 def test_pointwise_maximum_tie_goes_left():
-    prog = Program(
-        (
-            I("a", "input"),
-            I("b", "input"),
-            I("y", "pointwise", ("a", "b"), f="maximum"),
-            I("s", "reduce", ("y",), f="sum", dims=("i",)),
-        )
-    )
+    def step(a, b):
+        y = pointwise(maximum, a, b)
+        s = reduce(red.sum, y, "i")
+        return s
+
     inputs = {"a": T([2.0, 5.0, 1.0], ("i",)), "b": T([2.0, 3.0, 4.0], ("i",))}
-    g = _grad_of(prog, "s", inputs)
-    np.testing.assert_allclose(g["a"], [1.0, 1.0, 0.0])  # the tie at i=0 goes LEFT
-    np.testing.assert_allclose(g["b"], [0.0, 0.0, 1.0])  # never double-counted
+    g = _grad_of(step, "s", inputs)
+    np.testing.assert_allclose(g["a"].to_numpy(), [1.0, 1.0, 0.0])  # the tie at i=0 goes LEFT
+    np.testing.assert_allclose(g["b"].to_numpy(), [0.0, 0.0, 1.0])  # never double-counted
 
 
 def test_pointwise_minimum_tie_goes_left():
-    prog = Program(
-        (
-            I("a", "input"),
-            I("b", "input"),
-            I("y", "pointwise", ("a", "b"), f="minimum"),
-            I("s", "reduce", ("y",), f="sum", dims=("i",)),
-        )
-    )
+    def step(a, b):
+        y = pointwise(minimum, a, b)
+        s = reduce(red.sum, y, "i")
+        return s
+
     inputs = {"a": T([2.0, 5.0], ("i",)), "b": T([2.0, 3.0], ("i",))}
-    g = _grad_of(prog, "s", inputs)
-    np.testing.assert_allclose(g["a"], [1.0, 0.0])
-    np.testing.assert_allclose(g["b"], [0.0, 1.0])
+    g = _grad_of(step, "s", inputs)
+    np.testing.assert_allclose(g["a"].to_numpy(), [1.0, 0.0])
+    np.testing.assert_allclose(g["b"].to_numpy(), [0.0, 1.0])
 
 
 def test_reduce_max_all_ties_one_winner():
-    prog = Program((I("x", "input"), I("m", "reduce", ("x",), f="max", dims=("i",))))
-    x = T([7.0, 7.0, 7.0], ("i",))
-    g = _grad_of(prog, "m", {"x": x})
-    np.testing.assert_allclose(g["x"], [1.0, 0.0, 0.0])  # first along i, alone
+    def step(x):
+        m = reduce(red.max, x, "i")
+        return m
+
+    g = _grad_of(step, "m", {"x": T([7.0, 7.0, 7.0], ("i",))})
+    np.testing.assert_allclose(g["x"].to_numpy(), [1.0, 0.0, 0.0])  # first along i, alone
 
 
 def test_reduce_min_tie_first_wins():
-    prog = Program((I("x", "input"), I("m", "reduce", ("x",), f="min", dims=("i",))))
-    x = T([4.0, 1.0, 1.0], ("i",))
-    g = _grad_of(prog, "m", {"x": x})
-    np.testing.assert_allclose(g["x"], [0.0, 1.0, 0.0])
+    def step(x):
+        m = reduce(red.min, x, "i")
+        return m
+
+    g = _grad_of(step, "m", {"x": T([4.0, 1.0, 1.0], ("i",))})
+    np.testing.assert_allclose(g["x"].to_numpy(), [0.0, 1.0, 0.0])
 
 
 def test_reduce_max_two_dims_lexicographic_first():
     """Multi-dim reduce derives as a chain of single-dim reduces in declared
     order — the winner of an all-tie square is the lexicographically first
     element, and the partition never splits the cotangent."""
-    prog = Program((I("x", "input"), I("m", "reduce", ("x",), f="max", dims=("i", "j"))))
-    x = T(np.full((2, 2), 3.0), ("i", "j"))
-    g = _grad_of(prog, "m", {"x": x})
-    np.testing.assert_allclose(g["x"], [[1.0, 0.0], [0.0, 0.0]])
-    assert float(np.sum(g["x"])) == 1.0  # a partition: total mass is exactly one
+
+    def step(x):
+        m = reduce(red.max, x, ("i", "j"))
+        return m
+
+    g = _grad_of(step, "m", {"x": T(np.full((2, 2), 3.0), ("i", "j"))})
+    gx = g["x"].to_numpy(order=("i", "j"))
+    np.testing.assert_allclose(gx, [[1.0, 0.0], [0.0, 0.0]])
+    assert float(np.sum(gx)) == 1.0  # a partition: total mass is exactly one
 
 
 def test_reduce_max_gradient_mass_is_conserved():
     """Sum of the gradient equals the seed regardless of tie structure —
     the partition law's conservation face."""
-    prog = Program((I("x", "input"), I("m", "reduce", ("x",), f="max", dims=("i",))))
+
+    def step(x):
+        m = reduce(red.max, x, "i")
+        return m
+
     for data in ([3.0, 3.0, 1.0], [1.0, 3.0, 3.0], [3.0, 1.0, 3.0]):
-        g = _grad_of(prog, "m", {"x": T(data, ("i",))})
-        assert float(np.sum(g["x"])) == 1.0
+        g = _grad_of(step, "m", {"x": T(data, ("i",))})
+        assert float(np.sum(g["x"].to_numpy())) == 1.0
 
 
 def test_the_one_table_has_one_home():
@@ -105,3 +110,26 @@ def test_the_one_table_has_one_home():
 
     assert tl_m.Marker is dsl_m.Marker and tl_m.pw is dsl_m.pw  # numpy-authority: one vocabulary
     assert tl_m.sqrt is dsl_m.sqrt and tl_m.maximum is dsl_m.maximum
+
+
+# --- the Region face (the excavation, LEVELS) -------------------------------
+
+
+def test_region_grad_inherits_the_partition_law():
+    """THE at-kink gate for the region face: heavy ties in a max-reduce —
+    exactly one element per reduced line receives the cotangent
+    (first-wins), pinned to the literal partition."""
+
+    def step(x):
+        m = reduce(red.max, x, "i")
+        s = reduce(red.sum, m, "j")
+        return s
+
+    arr = np.array([[1.0, 3.0, 3.0, 2.0], [5.0, 5.0, 5.0, 5.0], [2.0, 2.0, 7.0, 7.0]])
+    x = Tensor.from_numpy(arr, ("j", "i"))
+    ls = lift_step(step, x=x.layout)
+    rg = grad(ls.region, ls.outputs[0], {"x": x}, names=ls.names)
+    _, got = run_region(rg.region, [x])
+    got = got.to_numpy(order=("j", "i"))
+    np.testing.assert_array_equal(got.sum(axis=1), np.ones(3))  # mass conserved
+    np.testing.assert_array_equal(got, np.array([[0, 1, 0, 0], [1, 0, 0, 0], [0, 0, 1, 0]], dtype=float))

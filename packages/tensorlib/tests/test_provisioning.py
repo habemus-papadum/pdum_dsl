@@ -1,5 +1,5 @@
 """Provisioning (200 §1.7/6.4): the virtual resting state analyzes for
-free and refuses execution quoting the fix; init strategies key by name
+free and refuses execution naming the missing leaves; init strategies key by name
 glob over closed-form fields; safetensors joins on contract names over the
 mmap'd file; virtual and provisioned builds share one fingerprint."""
 
@@ -8,14 +8,15 @@ import struct
 
 import numpy as np
 import pytest
-from pdum.dsl import events
 from pdum.tl import Tensor
 from pdum.tl.assemblage import assemblage, unit
 from pdum.tl.compute import contract, repeat_like
-from pdum.tl.ir import run
+from pdum.tl.dialect import run_named
 from pdum.tl.opcount import ops_count
 from pdum.tl.provisioning import init, normal, ones, provision, safetensors, zeros
 from pdum.tl.scope import scope
+
+from pdum.dsl import events
 
 
 def T(arr, names):
@@ -41,12 +42,13 @@ def _model(root):
     return assemblage(make_dense(root, CFG), scope=root, h=T(np.zeros((2, 3)), ("t", "d")).layout)
 
 
-def test_virtual_analyzes_for_free_and_execution_refuses_quoting_the_fix():
+def test_virtual_analyzes_for_free_and_execution_refuses():
     root = scope()
     a = _model(root)
-    assert ops_count(a.program, a.layouts).total  # layouts only — never values
+    assert ops_count(a.region, a.layouts, names=a.names).total  # layouts only — never values
+    # the fix-quoting refusal survives at the surviving execution seam
     with pytest.raises(KeyError, match=r"virtual leaves analyze for free.*provision\(root, source=init"):
-        run(a.program, {"h": T(np.zeros((2, 3)), ("t", "d"))})
+        run_named(a.region, {"h": T(np.zeros((2, 3)), ("t", "d"))}, a.names)
 
 
 def test_init_strategies_match_by_glob_and_regenerate_exactly():
@@ -72,7 +74,7 @@ def test_the_virtual_provisioned_cache_dividend():
     with events.forbid("assemblage.miss"):  # provisioning never touches identity
         again = _model(root)
     assert again is a
-    env = run(a.program, {"h": T(np.ones((2, 3)), ("t", "d")), **weights})
+    env = run_named(a.region, {"h": T(np.ones((2, 3)), ("t", "d")), **weights}, a.names)
     want = (np.ones((2, 3)) @ weights["w"].to_numpy()) * weights["out.g"].to_numpy()
     np.testing.assert_allclose(env[a.output].to_numpy(order=("t", "m")), want, rtol=1e-12)
 
@@ -101,7 +103,7 @@ def test_safetensors_joins_on_names_over_the_mmapped_file(tmp_path):
     _write_safetensors(path, {"w": w, "out.g": g})
     weights = provision(root, source=safetensors(path))
     np.testing.assert_array_equal(weights["w"].to_numpy(), w)
-    env = run(a.program, {"h": T(np.ones((2, 3)), ("t", "d")), **weights})
+    env = run_named(a.region, {"h": T(np.ones((2, 3)), ("t", "d")), **weights}, a.names)
     np.testing.assert_allclose(env[a.output].to_numpy(order=("t", "m")), (np.ones((2, 3)) @ w) * g)
 
 

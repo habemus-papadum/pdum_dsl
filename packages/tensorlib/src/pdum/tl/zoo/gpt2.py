@@ -21,8 +21,7 @@ import numpy as np
 from ..assemblage import assemblage, unit
 from ..compute import const_like, contract, iota, pointwise, red, reduce, repeat_like
 from ..indexing import take
-from ..ir import _dense_like
-from ..layout import Dim
+from ..layout import Dim, _dense_like
 from ..markers import exp, le, sqrt, where
 from ..scope import scope
 from ..tensor import Tensor
@@ -164,4 +163,4 @@ def gpt2(cfg: GPT2Config = GPT2Config(), seed: int = 7) -> ZooModel:
         hf = np_layernorm(h, inp["lnfg"], inp["lnfb"], cfg.eps)
         return hf @ inp["wte"].T  # tied head
 
-    return ZooModel(model.program, inputs, model.output, ref, ("t", "v"))
+    return ZooModel(model.region, inputs, model.output, ref, ("t", "v"), model.names)

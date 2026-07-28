@@ -318,33 +318,25 @@ def argsort(x: Tensor, *, dim: str) -> Tensor:
     return _tensor_like(np.transpose(order, perm), out_dims)
 
 
-def infer_take(shadows: dict, ins) -> Layout:
-    """The Program-tier shadow rule — take_dims over operand shadows, wrapped
-    dense (a take output is always freshly materialized)."""
-    from .ir import _dense_like
+def infer_take(lays, params) -> Layout:
+    """The shadow rule — take_dims over operand layouts, wrapped dense (a
+    take output is always freshly materialized)."""
+    from .layout import _dense_like
 
-    dims, _ = take_dims(shadows[ins.operands[0]], shadows[ins.operands[1]], ins.params["dim"])
+    dims, _ = take_dims(lays[0], lays[1], params["dim"])
     return _dense_like(dims)
 
 
-def infer_scatter(shadows: dict, ins) -> Layout:
-    from .ir import _dense_like
+def infer_scatter(lays, params) -> Layout:
+    from .layout import _dense_like
 
-    return _dense_like(
-        scatter_dims(
-            shadows[ins.operands[0]],
-            shadows[ins.operands[1]],
-            ins.params["dim"],
-            ins.params["extent"],
-            ins.params.get("over"),
-        )
-    )
+    return _dense_like(scatter_dims(lays[0], lays[1], params["dim"], params["extent"], params.get("over")))
 
 
-def infer_producer(shadows: dict, ins) -> Layout:
-    from .ir import _dense_like
+def infer_producer(op: str, lays, params) -> Layout:
+    from .layout import _dense_like
 
-    src = shadows[ins.operands[0]]
-    if ins.op == "argtopk":
-        return _dense_like(argtopk_dims(src, ins.params["dim"], ins.params["k"], ins.params["k_name"]))
-    return _dense_like(argsort_dims(src, ins.params["dim"]))
+    src = lays[0]
+    if op == "argtopk":
+        return _dense_like(argtopk_dims(src, params["dim"], params["k"], params["k_name"]))
+    return _dense_like(argsort_dims(src, params["dim"]))

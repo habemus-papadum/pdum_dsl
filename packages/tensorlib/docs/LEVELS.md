@@ -216,7 +216,11 @@ Recorded so the conversation starts concrete; nothing here is decided.
   bufferization consumes them. Which forces L2's ordering: after fusion
   decisions, before/alongside the runtime plan.
 
-## The Program excavation — plan (written at P9, owner-requested)
+## The Program excavation — DONE (planned at P9; executed at the L4 open)
+
+The incumbent Program/Instr IR is DELETED: the dialect is the one
+engine. The plan below is kept as the record of the executed order.
+Original text:
 
 The incumbent Program/Instr IR is scheduled to DIE: the dialect
 (Region/OpDef, one Lowerer) is the one engine, and `export_program` is

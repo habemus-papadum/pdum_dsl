@@ -190,4 +190,4 @@ def unrolled_trainer(cfg: TrainerConfig = TrainerConfig(), seed: int = 5) -> Zoo
         "gum2": f(-np.log(-np.log(np.random.default_rng(seed + 102).uniform(size=cfg.v))), ("v",)),
     }
     ls = lift_step(make_trainer(cfg), **{k: v.layout for k, v in inputs.items()})
-    return ZooModel(ls.program, inputs, ls.outputs[0], lambda inp: _np_trainer(cfg, inp), ())
+    return ZooModel(ls.region, inputs, ls.outputs[0], lambda inp: _np_trainer(cfg, inp), (), ls.names)

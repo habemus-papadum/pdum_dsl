@@ -1,25 +1,27 @@
-"""The tl side of the events seam (200 §1.10, P3): Program build and adjoint
-derivation are compile-ish acts that announce themselves, so forbid() can pin
-"this loop builds zero Programs" — and the cache-backed registries make
+"""The tl side of the events seam (200 §1.10, P3): assemblage builds and
+adjoint derivation are compile-ish acts that announce themselves, so forbid()
+can pin "this loop builds nothing" — and the cache-backed registries make
 re-registration a HIT, pinnable the same way (the idempotence gate)."""
+
+from itertools import count
 
 import numpy as np
 import pytest
-from pdum.dsl import events
 from pdum.dsl.cache import CompileForbidden
 from pdum.tl import Tensor, defmarker, defreducer
+from pdum.tl.assemblage import assemblage, unit
 from pdum.tl.autodiff import grad
-from pdum.tl.ir import Instr, Program, run
+from pdum.tl.compute import pointwise, red, reduce
+from pdum.tl.dialect import run_named
+from pdum.tl.lifting import lift_step
 from pdum.tl.mdsl import exp
 from pdum.tl.registry import MARKERS
+
+from pdum.dsl import events
 
 
 def T(arr, names):
     return Tensor.from_numpy(np.asarray(arr, dtype=np.float64), names)
-
-
-def I(var, op, operands=(), **params):  # noqa: E743
-    return Instr(var, op, tuple(operands), params)
 
 
 @pytest.fixture()
@@ -30,41 +32,53 @@ def sink():
     events.SINKS.clear()
 
 
-def _prog() -> Program:
-    return Program((I("x", "input"), I("y", "pointwise", ("x",), f="exp")))
+_FRESH = count()
 
 
-def test_building_a_program_announces_itself(sink):
-    _prog()
-    assert [e[0] for e in sink] == ["program.build"]
+def _fresh_assemblage():
+    """A never-before-seen build identity: the captured tag rides the
+    assemblage fingerprint, so every call is a COLD build."""
+    tag = 1.0 + next(_FRESH)
+
+    @unit
+    def f(h):
+        return h * tag
+
+    return assemblage(f, h=T([0.0, 1.0], ("i",)).layout)
 
 
-def test_a_hot_loop_builds_zero_programs():
-    """THE pin the seam exists for: running cached Programs is not building
-    Programs — forbid proves it, structurally."""
-    prog = _prog()
+def test_building_an_assemblage_announces_itself(sink):
+    # the program.build event died with the Program IR; the surviving
+    # compile-ish announcement is the assemblage cache seam
+    _fresh_assemblage()
+    assert [e[0] for e in sink] == ["assemblage.miss", "assemblage.compile"]
+
+
+def test_a_hot_loop_builds_zero_assemblages():
+    """THE pin the seam exists for: running a cached build is not building
+    — forbid proves it, structurally."""
+    a = _fresh_assemblage()
     x = T([0.0, 1.0], ("i",))
-    with events.forbid("program.build"):
+    with events.forbid("assemblage.miss"):
         for _ in range(5):
-            run(prog, {"x": x})
-    with events.forbid("program.build"), pytest.raises(CompileForbidden):
-        _prog()
+            run_named(a.region, {"h": x}, a.names)
+    with events.forbid("assemblage.miss"), pytest.raises(CompileForbidden):
+        _fresh_assemblage()
 
 
-def test_adjoint_derivation_is_a_span_over_its_builds(sink):
-    prog = Program(
-        (
-            I("x", "input"),
-            I("y", "pointwise", ("x",), f="exp"),
-            I("s", "reduce", ("y",), f="sum", dims=("i",)),
-        )
-    )
+def test_adjoint_derivation_is_a_span(sink):
+    from pdum.tl.markers import exp as m_exp
+
+    def step(x):
+        y = pointwise(m_exp, x)
+        return reduce(red.sum, y, "i")
+
+    ls = lift_step(step, x=T([0.0, 1.0], ("i",)).layout)
     sink.clear()
-    grad(prog, "s", {"x": T([0.0, 1.0], ("i",))})
-    names = [e[0] for e in sink]
-    assert "adjoint.derive" in names and "program.build" in names
-    by_name = {e[0]: e for e in sink}
-    assert by_name["program.build"][3] > by_name["adjoint.derive"][3]  # nested deeper
+    grad(ls.region, ls.outputs[0], {"x": T([0.0, 1.0], ("i",))}, names=ls.names)
+    assert "adjoint.derive" in [e[0] for e in sink]
+    # the "program.build nests deeper than adjoint.derive" clause died with
+    # the Program IR — the derivation builds no Program inside its span
 
 
 def test_identical_marker_reregistration_is_one_entry_and_a_hit():

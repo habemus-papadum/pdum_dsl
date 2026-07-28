@@ -119,4 +119,4 @@ def moe(cfg: MoEConfig = MoEConfig(), seed: int = 11) -> ZooModel:
         "w2": _t(0.4 * rng.standard_normal((cfg.e, cfg.m, cfg.d)), ("ee", "m", "d")),
     }
     ls = lift_step(make_moe(cfg), **{k: v.layout for k, v in inputs.items()})
-    return ZooModel(ls.program, inputs, ls.outputs[0], lambda inp: _np_moe(cfg, inp), ("t", "d"))
+    return ZooModel(ls.region, inputs, ls.outputs[0], lambda inp: _np_moe(cfg, inp), ("t", "d"), ls.names)

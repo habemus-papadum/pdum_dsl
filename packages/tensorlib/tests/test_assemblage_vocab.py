@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from pdum.tl import Tensor
 from pdum.tl.compute import const_like, contract, iota, pointwise, red, reduce, repeat_like
-from pdum.tl.ir import run
+from pdum.tl.dialect import run_named, walk_region
 from pdum.tl.lifting import lift_step
 from pdum.tl.markers import exp, le, sqrt, where
 
@@ -17,8 +17,7 @@ def T(arr, names):
 
 def _run1(fn, **tensors):
     ls = lift_step(fn, **{k: v.layout for k, v in tensors.items()})
-    env = run(ls.program, tensors)
-    return env[ls.outputs[0]]
+    return run_named(ls.region, tensors, ls.names)[ls.outputs[0]]
 
 
 # --- the spec's helpers, S.1 style (kwonly defaults, helper inlining) -------
@@ -119,7 +118,7 @@ def test_repeat_like_makes_code_batching_unaware():
         gotb.to_numpy(order=("b", "t", "m")), np.einsum("btd,dm->btm", batched, w), rtol=1e-12
     )
     ls = lift_step(step, a=T(batched, ("b", "t", "d")).layout, w=T(w, ("d", "m")).layout)
-    assert sum(1 for i in ls.program.instrs if i.op == "repeat_like") == 2  # one per operand
+    assert sum(1 for n in walk_region(ls.region) if n.op == "tl.repeat_like") == 2  # one per operand
 
 
 def test_contract_named_axis_lets_heads_ride():
@@ -195,22 +194,20 @@ def test_bare_marker_calls_refuse_on_tensors():
 
 def test_the_library_runs_eagerly_and_lowers_identically():
     """The naive backend IS the same code: the library executes eagerly on
-    numpy-backed tensors, uncompiled — and the lowered Program agrees."""
-    from pdum.tl.ir import run as _run
-
+    numpy-backed tensors, uncompiled — and the lowered region agrees."""
     rng = np.random.default_rng(11)
     x, g = rng.standard_normal((4, 6)), rng.standard_normal(6)
     xt, gt = T(x, ("t", "e")), T(g, ("e",))
     eager = rmsnorm(xt, gt, feat="e")  # EXECUTED, no IR anywhere
     ls = lift_step(lambda x, g: rmsnorm(x, g, feat="e"), x=xt.layout, g=gt.layout)
-    lowered = _run(ls.program, {"x": xt, "g": gt})[ls.outputs[0]]
+    lowered = run_named(ls.region, {"x": xt, "g": gt}, ls.names)[ls.outputs[0]]
     np.testing.assert_allclose(
         eager.to_numpy(order=("t", "e")), lowered.to_numpy(order=("t", "e")), rtol=1e-12
     )
     sc = rng.standard_normal((4, 4))
     egr = causal_softmax(T(sc, ("t", "s")))
     ls2 = lift_step(lambda sc: causal_softmax(sc), sc=T(sc, ("t", "s")).layout)
-    low = _run(ls2.program, {"sc": T(sc, ("t", "s"))})[ls2.outputs[0]]
+    low = run_named(ls2.region, {"sc": T(sc, ("t", "s"))}, ls2.names)[ls2.outputs[0]]
     np.testing.assert_allclose(
         egr.to_numpy(order=("t", "s")), low.to_numpy(order=("t", "s")), rtol=1e-12
     )
@@ -221,4 +218,4 @@ def test_binding_names_become_ssa_names():
         return rmsnorm(x, g, feat="e")
 
     ls = lift_step(step, x=T(np.zeros((2, 3)), ("t", "e")).layout, g=T(np.zeros(3), ("e",)).layout)
-    assert {"ms", "sd", "xn"} <= set(ls.program.vars)  # the source reads back
+    assert {"ms", "sd", "xn"} <= set(ls.names.values())  # the source reads back

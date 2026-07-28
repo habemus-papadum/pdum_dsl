@@ -23,8 +23,7 @@ import numpy as np
 
 from ..assemblage import assemblage, unit
 from ..compute import contract, pointwise, repeat_like
-from ..ir import _dense_like
-from ..layout import Dim
+from ..layout import Dim, _dense_like
 from ..scope import scope
 from ..tensor import Tensor
 from .zoo_common import ZooModel, causal_softmax, gelu, layernorm, np_gelu, np_layernorm, np_softmax
@@ -111,7 +110,7 @@ def megatron_block(cfg: MegatronConfig = MegatronConfig(), level: str | None = "
         mm = np_gelu(np.einsum("td,dgm->tgm", a2, inp["w1"]) + inp["b1"])
         return h + np.einsum("tgm,gmd->td", mm, inp["w2"]) + inp["b2"]
 
-    return ZooModel(model.program, inputs, model.output, ref, ("t", "d"))
+    return ZooModel(model.region, inputs, model.output, ref, ("t", "d"), model.names)
 
 
 def _t(arr, names):

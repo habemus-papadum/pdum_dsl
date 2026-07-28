@@ -32,8 +32,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping
 
-from .ir import _LAYOUT_OPS, Program, _fold_step_layouts, infer
-
 # The DECLARED interior itemsize (200 §4): the reference oracle computes in
 # f64 — a declared property, never semantics. L2's encoding assignment
 # replaces this for materialized intermediates; BOUNDARY values take their
@@ -75,90 +73,125 @@ class MemoryReport:
 
 
 def peak_memory(
-    prog: Program, input_layouts: dict, order=None, free_inputs: bool = False, local: bool = False
+    region, input_layouts: dict | None = None, order=None, free_inputs: bool = False, local: bool = False, *, names=None
 ) -> MemoryReport:
     """With local=True, machine-bound dims (L3, PLACEMENT.md) count as
-    device indices rather than memory: sizes become per-device shard
-    bytes."""
-    shadows = infer(prog, input_layouts)
-    instrs = list(prog.instrs)
+    device indices rather than memory: sizes become per-device shard bytes.
+    Layouts ride the region nodes' shadows; ``input_layouts`` contributes
+    boundary byte facts only (Tensors/Descriptors by name); ``order`` is a
+    name sequence over the naming law's assignment — pass ``names``."""
+    return _region_peak_memory(region, input_layouts or {}, order, free_inputs, local, names)
+
+
+def _region_peak_memory(region, inputs, order, free_inputs, local, names) -> MemoryReport:
+    """The Region face — the same live-byte walk over dialect nodes. The
+    default schedule is params-then-walk-order (the export order, so the
+    Program face's trajectory is reproduced exactly); consts are deferred
+    scalars (zero bytes, never scheduled); yields and the yielded tuple are
+    plumbing, never uses — an unconsumed output dies at its own node,
+    matching the Program face."""
+    from .dialect import LAYOUT_OP_NAMES, region_names, walk_region  # lazy: dialect's consumers import this module
+
+    if names is None:
+        raise ValueError(
+            "region peak_memory joins on names — pass names=region_names(region, param_names) "
+            "(LiftedStep.names / Assemblage.names carry it)"
+        )
+    param_ids = {id(p) for p in region.params}
+    yielded = region.body[-1].args[0] if region.body else None
+    nodes = list(region.params)
+    seen: set[int] = set(param_ids)
+    for n in walk_region(region):
+        if id(n) in seen or n.op in ("core.yield", "core.const") or (n.op == "core.tuple" and n is yielded):
+            continue
+        seen.add(id(n))
+        nodes.append(n)
+
     if order is not None:
-        by = {i.var: i for i in instrs}
-        if sorted(order) != sorted(by):
+        by_name = {names[id(n)]: n for n in nodes}
+        if sorted(order) != sorted(by_name):
             raise ValueError("order must be a permutation of the program's vars")
-        seen: set[str] = set()
+        placed: set[int] = set()
         reordered = []
         for v in order:
-            for o in by[v].operands:
-                if o not in seen:
-                    raise ValueError(f"order is not topological: {v!r} runs before its operand {o!r}")
-            seen.add(v)
-            reordered.append(by[v])
-        instrs = reordered
+            n = by_name[v]
+            for a in n.args:
+                if a.op != "core.const" and id(a) in seen and id(a) not in placed:
+                    raise ValueError(f"order is not topological: {v!r} runs before its operand {names[id(a)]!r}")
+            placed.add(id(n))
+            reordered.append(n)
+        nodes = reordered
 
-    defs = {i.var: i for i in instrs}
-    root: dict[str, str | None] = {}
-    size: dict[str, int] = {}
-    for ins in instrs:
-        if ins.op in _LAYOUT_OPS or ins.op in ("with_value_units", "repeat_like"):
-            root[ins.var] = root[ins.operands[0]]
-        elif ins.op in _FREE:
-            root[ins.var] = None
+    root: dict[int, int | None] = {}
+    size: dict[int, int] = {}
+    for n in nodes:
+        if id(n) in param_ids:
+            root[id(n)] = id(n)
+            size[id(n)] = _numel(n.type.layout, local) * _INTERIOR_ITEM
+            b = _boundary_bytes(inputs.get(names[id(n)]), n.type.layout, local)
+            if b is not None:
+                size[id(n)] = b
+            continue
+        if not n.op.startswith("tl."):
+            raise KeyError(f"no peak_memory rule for op {n.op!r}")
+        base = n.op[3:]
+        if base in LAYOUT_OP_NAMES or base in ("with_value_units", "repeat_like"):
+            root[id(n)] = root[id(n.args[0])]
+        elif base in _FREE:
+            root[id(n)] = None
         else:
-            root[ins.var] = ins.var
-            size[ins.var] = _numel(shadows[ins.var], local) * _INTERIOR_ITEM
-            if ins.op == "input":
-                b = _boundary_bytes(input_layouts.get(ins.var), shadows[ins.var], local)
-                if b is not None:
-                    size[ins.var] = b
+            root[id(n)] = id(n)
+            size[id(n)] = _numel(n.type.layout, local) * _INTERIOR_ITEM
 
-    last_use: dict[str, int] = {}
-    for i, ins in enumerate(instrs):
-        for o in ins.operands:
-            r = root[o]
-            if r is not None:
-                last_use[r] = i
-        r = root[ins.var]
-        if r is not None:
-            last_use.setdefault(r, i)  # dead values free immediately
-
-    def transient(ins) -> int:
-        if ins.op != "fold":
+    def transient(n) -> int:
+        if n.op != "tl.fold":
             return 0
-        state_names = tuple(ins.params["state"])
-        k = len(state_names)
-        carry_bytes = sum(size.get(o, _numel(shadows[o], local) * _INTERIOR_ITEM) for o in ins.operands[:k])
-        step_layouts = _fold_step_layouts(ins, shadows)
-        sub = peak_memory(ins.params["step"], step_layouts, free_inputs=True, local=local)
+        p = dict(n.attrs)
+        state, element = tuple(p["state"]), tuple(p["element"])
+        k = len(state)
+        carry_bytes = sum(size.get(id(a), _numel(a.type.layout, local) * _INTERIOR_ITEM) for a in n.args[:k])
+        step = n.regions[0]
+        sub = _region_peak_memory(step, {}, None, True, local, region_names(step, state + element))
         return carry_bytes + sub.peak_bytes
 
+    last: dict[int, int] = {}
+    for i, n in enumerate(nodes):
+        if id(n) not in param_ids:
+            for a in n.args:
+                r = root.get(id(a))
+                if r is not None:
+                    last[r] = i
+        r = root[id(n)]
+        if r is not None:
+            last.setdefault(r, i)  # dead values free immediately
+
     live = 0
-    live_set: dict[str, int] = {}
+    live_set: dict[int, int] = {}
     peak, peak_at, at_peak = 0, "", ()
     timeline = []
-    for i, ins in enumerate(instrs):
-        alloc = size[ins.var] if root[ins.var] == ins.var else 0
-        tr = transient(ins)
+    for i, n in enumerate(nodes):
+        alloc = size[id(n)] if root[id(n)] == id(n) else 0
+        tr = transient(n)
         if live + alloc + tr > peak:
-            peak, peak_at = live + alloc + tr, ins.var
-            snap = dict(live_set)
+            peak, peak_at = live + alloc + tr, names[id(n)]
+            snap = {names[r]: b for r, b in live_set.items()}
             if alloc:
-                snap[ins.var] = alloc
+                snap[names[id(n)]] = alloc
             if tr:
                 snap["(fold transient)"] = tr
             at_peak = tuple(sorted(snap.items()))
         if alloc:
             live += alloc
-            live_set[ins.var] = alloc
-        for r, li in list(last_use.items()):
-            if li == i and r in live_set and (free_inputs or defs[r].op != "input"):
+            live_set[id(n)] = alloc
+        for r, li in list(last.items()):
+            if li == i and r in live_set and (free_inputs or r not in param_ids):
                 live -= live_set.pop(r)
-        timeline.append((ins.var, live))
+        timeline.append((names[id(n)], live))
     return MemoryReport(
         peak_bytes=peak,
         peak_at=peak_at,
         live_at_peak=at_peak,
         timeline=tuple(timeline),
-        alloc_bytes=dict(size),
-        input_bytes=sum(size[i.var] for i in instrs if i.op == "input"),
+        alloc_bytes={names[r]: b for r, b in size.items()},
+        input_bytes=sum(size[id(p)] for p in region.params),
     )

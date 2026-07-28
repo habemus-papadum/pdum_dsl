@@ -4,13 +4,15 @@ are identity-bearing, taps select outputs, dropout is the mode-aware idiom."""
 
 import numpy as np
 import pytest
-from pdum.dsl import events
 from pdum.dsl.naming import NameCollision
 from pdum.tl import Tensor
 from pdum.tl.assemblage import assemblage, unit
 from pdum.tl.compute import contract, repeat_like
-from pdum.tl.ir import run
+from pdum.tl.dialect import run_named, walk_region
+from pdum.tl.random import uniform
 from pdum.tl.scope import dropout, scope, tap
+
+from pdum.dsl import events
 
 
 def T(arr, names):
@@ -49,16 +51,19 @@ CFG = {"d": 4, "m": 2}
 
 def test_makers_declare_level_first_names_and_the_program_runs():
     root = scope()
-    a = _model(root, CFG)
+    a = _model(root, CFG, taps=("out.y",))  # tap the pre-dropout value to rebuild the mask
     assert sorted(a.params) == ["dense.w", "out.g"]  # level-first contract names
     assert root.spec() == {"dense.w": {"d": 4, "m": 2}, "out.g": {"m": 2}}
     rng = np.random.default_rng(0)
     h = rng.standard_normal((3, 4))
     w = rng.standard_normal((4, 2))
     g = rng.standard_normal(2)
-    env = run(a.program, {"h": T(h, ("t", "d")), "dense.w": T(w, ("d", "m")), "out.g": T(g, ("m",))})
+    env = run_named(a.region, {"h": T(h, ("t", "d")), "dense.w": T(w, ("d", "m")), "out.g": T(g, ("m",))}, a.names)
     got = env[a.output].to_numpy(order=("t", "m"))
-    mask = env[next(v for v in a.program.vars if v.startswith("mask"))].to_numpy(order=("t", "m"))
+    # the mask the build drew: the closed-form field of the region's own
+    # site-derived key, regenerated over the dropout operand's lattice
+    key = dict(next(n for n in walk_region(a.region) if n.op == "tl.random").attrs)["key"]
+    mask = uniform(key, env["y"]).to_numpy(order=("t", "m")) < 0.5
     want = np.where(mask, 0.0, (h @ w) * g / 0.5)
     np.testing.assert_allclose(got, want, rtol=1e-12)
 
@@ -70,9 +75,9 @@ def test_eval_mode_drops_the_dropout_and_identity_differs():
     root = scope()
     train = _model(root.with_(mode="train"), CFG)
     ev = _model(root.with_(mode="eval"), CFG)
-    assert train.program is not ev.program
-    assert not any(i.op == "random" for i in ev.program.instrs)  # identity under eval
-    assert any(i.op == "random" for i in train.program.instrs)
+    assert train is not ev  # different cache entries
+    assert not any(n.op == "tl.random" for n in walk_region(ev.region))  # identity under eval
+    assert any(n.op == "tl.random" for n in walk_region(train.region))
     with events.forbid("assemblage.miss"):  # same policies: a warm hit, no rebuild
         again = _model(root.with_(mode="train"), CFG)
     assert again is train
@@ -84,14 +89,15 @@ def test_tap_sets_are_identity_bearing_and_select_outputs():
     root = scope()
     bare = _model(root, CFG)
     tapped = _model(root, CFG, taps=("out.y",))
-    assert tapped.program is not bare.program
+    assert tapped is not bare  # never share a derived build
     assert bare.taps == tapped.taps == {"out.y": "y"}  # the SITE exists either way
-    assert "y" in tapped.outputs and "y" in tapped.program.vars
-    got = run(tapped.program, {
+    assert "y" in tapped.outputs
+    assert "y" in {tapped.names.get(id(n)) for n in walk_region(tapped.region)}  # live in the region
+    got = run_named(tapped.region, {
         "h": T(np.ones((3, 4)), ("t", "d")),
         "dense.w": T(np.ones((4, 2)), ("d", "m")),
         "out.g": T(np.ones(2), ("m",)),
-    })["y"].to_numpy()
+    }, tapped.names)["y"].to_numpy()
     np.testing.assert_allclose(got, np.full((3, 2), 4.0))
 
 
@@ -111,7 +117,7 @@ def test_the_tie_capture_identity_makes_one_leaf():
 
     a = assemblage(first | second, scope=root, h=T(np.zeros((2, 3)), ("t", "v")).layout)
     assert list(a.params) == ["wte"]  # one leaf, not two
-    assert sum(1 for i in a.program.instrs if i.op == "input") == 2  # h + wte
+    assert len(a.region.params) == 2  # h + wte
 
 
 def test_param_conflict_refuses_idempotent_redeclare_returns_the_object():

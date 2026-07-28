@@ -2,14 +2,12 @@
 
 import numpy as np
 import pytest
-from pdum.tl import Machine, Tensor, mesh, peak_memory, pointwise, pw, traffic
-from pdum.tl.ir import Instr, Program, run
+from pdum.tl import Machine, Tensor, mesh, peak_memory, pointwise, pw, red, reduce, traffic
+from pdum.tl.autodiff import grad, numeric_grad
+from pdum.tl.dialect import run_named
 from pdum.tl.layout import Dim
+from pdum.tl.lifting import lift_step
 from pdum.tl.zoo import megatron_block
-
-
-def I(var, op, operands=(), **params):  # noqa: E743
-    return Instr(var, op, tuple(operands), params)
 
 
 def T(arr, names):
@@ -49,15 +47,15 @@ def test_megatron_block_matches_numpy_and_its_erasure():
     placed = megatron_block()
     erased = megatron_block(level=None)
     ref = placed.ref(placed.numpy_inputs())
-    got_p = run(placed.program, placed.inputs)[placed.out].to_numpy(order=placed.order)
-    got_e = run(erased.program, erased.inputs)[erased.out].to_numpy(order=erased.order)
+    got_p = run_named(placed.region, placed.inputs, placed.names)[placed.out].to_numpy(order=placed.order)
+    got_e = run_named(erased.region, erased.inputs, erased.names)[erased.out].to_numpy(order=erased.order)
     np.testing.assert_allclose(got_p, ref, rtol=1e-9)
     np.testing.assert_allclose(got_p, got_e, rtol=0, atol=0)  # placement never changes meaning
 
 
 def test_megatron_traffic_is_exactly_two_all_reduces():
     m = megatron_block()
-    rep = traffic(m.program, m.inputs, mesh(2))
+    rep = traffic(m.region, None, mesh(2), names=m.names)
     kinds = [(c.kind, c.level) for c in rep.collectives]
     assert kinds == [("all_reduce", "gpu"), ("all_reduce", "gpu")]
     # each all-reduce moves 2(p-1)/p x (t,d)-local bytes = 1 x 4*6*8 = 192
@@ -65,55 +63,63 @@ def test_megatron_traffic_is_exactly_two_all_reduces():
     assert rep.per_level["gpu"] == 384
     # the erasure communicates nothing
     e = megatron_block(level=None)
-    assert traffic(e.program, e.inputs, mesh(2)).collectives == ()
+    assert traffic(e.region, None, mesh(2), names=e.names).collectives == ()
 
 
 def test_per_device_peak_is_below_replicated_peak():
     m = megatron_block()
-    full = peak_memory(m.program, m.inputs)
-    local = peak_memory(m.program, m.inputs, local=True)
+    full = peak_memory(m.region, m.inputs, names=m.names)
+    local = peak_memory(m.region, m.inputs, local=True, names=m.names)
     assert local.peak_bytes < full.peak_bytes
 
 
 def test_merge_of_a_bound_part_is_an_all_gather():
-    prog = Program(
-        (
-            I("x", "input"),
-            I("m", "merge", ["x"], parts=("g", "i"), name="mi"),
-        )
-    )
     x = T(np.arange(6.0).reshape(2, 3), ("g", "i")).bind(g="gpu")
-    rep = traffic(prog, {"x": x}, mesh(2))
+
+    def step(x):
+        mi = x.merge(("g", "i"), "mi")
+        return mi
+
+    ls = lift_step(step, x=x.layout)
+    rep = traffic(ls.region, None, mesh(2), names=ls.names)
     assert [(c.kind, c.bytes) for c in rep.collectives] == [("all_gather", 24)]  # (p-1)/p x 48
 
 
 def test_free_distribution_costs_nothing():
-    prog = Program(
-        (
-            I("w", "input"),
-            I("wr", "repeat", ["w"], name="g", extent=(0, 2)),
-            I("wb", "bind", ["wr"], levels={"g": "gpu"}),
-        )
-    )
-    rep = traffic(prog, {"w": T(np.zeros(3), ("i",))}, mesh(2))
+    def step(w):
+        wr = w.repeat("g", (0, 2))
+        wb = wr.bind(g="gpu")
+        return wb
+
+    ls = lift_step(step, w=T(np.zeros(3), ("i",)).layout)
+    rep = traffic(ls.region, None, mesh(2), names=ls.names)
     assert rep.collectives == ()
 
 
 def test_traffic_refusals_are_loud():
     x = T(np.zeros((2, 3)), ("g", "i")).bind(g="gpu")
-    sliced = Program((I("x", "input"), I("s", "slice", ["x"], ranges={"g": (0, 1)})))
+
+    def sliced(x):
+        s = x.slice(g=(0, 1))
+        return s
+
+    lss = lift_step(sliced, x=x.layout)
     with pytest.raises(NotImplementedError, match="machine-bound"):
-        traffic(sliced, {"x": x}, mesh(2))
-    ident = Program((I("x", "input"),))
+        traffic(lss.region, None, mesh(2), names=lss.names)
+
+    def ident(x):
+        return x
+
+    lsi = lift_step(ident, x=x.layout)
     with pytest.raises(KeyError, match="no level"):
-        traffic(ident, {"x": x}, Machine(()))
+        traffic(lsi.region, None, Machine(()), names=lsi.names)
     with pytest.raises(ValueError, match="exceeds"):
-        traffic(ident, {"x": x}, mesh(1))
+        traffic(lsi.region, None, mesh(1), names=lsi.names)
 
 
 def test_alpha_beta_time_estimate():
     m = megatron_block()
-    rep = traffic(m.program, m.inputs, mesh(2))
+    rep = traffic(m.region, None, mesh(2), names=m.names)
     machine = mesh(2, link_bandwidth=1e9, link_latency=1e-6)
     expected = 2 * 1e-6 + 384 / 1e9
     assert rep.time(machine) == pytest.approx(expected)
@@ -125,48 +131,50 @@ def test_alpha_beta_time_estimate():
 
 
 def _with_loss(m):
-    from pdum.tl.ir import Program
+    """Extend the block's region with zloss = sum(out², (t, d)) — the scalar
+    target, authored by hand on the region face (Builder + names extension)."""
+    from pdum.dsl.ir import Builder, Region
+    from pdum.dsl.ops import CORE_OPS
+    from pdum.tl.dialect import TL_OPS, walk_region
 
-    return Program(
-        m.program.instrs
-        + (
-            I("zsq", "pointwise", (m.out, m.out), f="mul"),
-            I("zloss", "reduce", ("zsq",), f="sum", dims=("t", "d")),
-        )
-    )
+    out = next(n for n in walk_region(m.region) if m.names.get(id(n)) == m.out)
+    b = Builder({**CORE_OPS, **TL_OPS})
+    zsq = b.emit("tl.pointwise", out, out, f="mul")
+    zloss = b.emit("tl.reduce", zsq, f="sum", dims=("t", "d"))
+    region = Region(params=m.region.params, body=(b.emit("core.yield", zloss),))
+    names = {**m.names, id(zsq): "zsq", id(zloss): "zloss"}
+    return region, names
 
 
 def test_placed_gradients_equal_erased_gradients_bit_exact():
-    from pdum.tl.autodiff import grad
-
     p, e = megatron_block(), megatron_block(level=None)
-    jp_p, g_p = grad(_with_loss(p), "zloss", p.inputs)
-    jp_e, g_e = grad(_with_loss(e), "zloss", e.inputs)
-    ep, ee = run(jp_p, p.inputs), run(jp_e, e.inputs)
+    rp, np_p = _with_loss(p)
+    re, np_e = _with_loss(e)
+    rg_p = grad(rp, "zloss", p.inputs, names=np_p)
+    rg_e = grad(re, "zloss", e.inputs, names=np_e)
+    ep, ee = run_named(rg_p.region, p.inputs, rg_p.names), run_named(rg_e.region, e.inputs, rg_e.names)
     for v in ("x", "wq", "w2", "b1"):
         order = p.inputs[v].names
-        np.testing.assert_allclose(ep[g_p[v]].to_numpy(order=order), ee[g_e[v]].to_numpy(order=order), rtol=0, atol=0)
+        np.testing.assert_allclose(
+            ep[rg_p.grads[v]].to_numpy(order=order), ee[rg_e.grads[v]].to_numpy(order=order), rtol=0, atol=0
+        )
 
 
 def test_gradients_carry_their_primals_placement():
-    from pdum.tl.autodiff import grad
-
     p = megatron_block()
-    jp, g = grad(_with_loss(p), "zloss", p.inputs)
-    env = run(jp, p.inputs)
-    assert env[g["wq"]].layout.dim("g").level == "gpu"  # sharded weight, sharded grad
-    assert all(d.level is None for d in env[g["x"]].layout.dims)  # replicated stays replicated
+    region, names = _with_loss(p)
+    rg = grad(region, "zloss", p.inputs, names=names)
+    env = run_named(rg.region, p.inputs, rg.names)
+    assert env[rg.grads["wq"]].layout.dim("g").level == "gpu"  # sharded weight, sharded grad
+    assert all(d.level is None for d in env[rg.grads["x"]].layout.dims)  # replicated stays replicated
 
 
 def test_training_step_traffic_counts_backward_collectives():
-    from pdum.tl import mesh, traffic
-    from pdum.tl.autodiff import grad
-
     p = megatron_block()
-    prog = _with_loss(p)
-    fwd_rep = traffic(prog, p.inputs, mesh(2))
-    jp, _ = grad(prog, "zloss", p.inputs)
-    joint_rep = traffic(jp, p.inputs, mesh(2))
+    region, names = _with_loss(p)
+    fwd_rep = traffic(region, None, mesh(2), names=names)
+    rg = grad(region, "zloss", p.inputs, names=names)
+    joint_rep = traffic(rg.region, None, mesh(2), names=rg.names)
     assert len(fwd_rep.collectives) == 2  # Megatron's forward pair
     kinds = {c.kind for c in joint_rep.collectives}
     assert kinds == {"all_reduce"}
@@ -178,40 +186,62 @@ def test_training_step_traffic_counts_backward_collectives():
 
 
 def test_data_parallel_gradient_sync_falls_out():
-    from pdum.tl import mesh, traffic
-    from pdum.tl.autodiff import grad
+    def step(x, w):
+        wr = w.repeat("n", (0, 4))
+        wb = wr.bind(n="gpu")
+        p = x * wb
+        zloss = reduce(red.sum, p, ("n", "i"))
+        return zloss
 
-    prog = Program(
-        (
-            I("x", "input"),
-            I("w", "input"),
-            I("wr", "repeat", ["w"], name="n", extent=(0, 4)),
-            I("wb", "bind", ["wr"], levels={"n": "gpu"}),
-            I("p", "pointwise", ["x", "wb"], f="mul"),
-            I("zloss", "reduce", ["p"], f="sum", dims=("n", "i")),
-        )
-    )
     inputs = {
         "x": T(np.arange(12.0).reshape(4, 3), ("n", "i")).bind(n="gpu"),
         "w": T(np.array([1.0, 2.0, 3.0]), ("i",)),
     }
-    jp, g = grad(prog, "zloss", inputs)
-    rep = traffic(jp, inputs, mesh(4))
+    ls = lift_step(step, x=inputs["x"].layout, w=inputs["w"].layout)
+    rg = grad(ls.region, "zloss", dict(inputs), names=ls.names)
+    rep = traffic(rg.region, None, mesh(4), names=rg.names)
     # forward: loss aggregation over the bound batch; backward: THE
     # data-parallel gradient all-reduce for the replicated weight
     assert len(rep.collectives) == 2
     assert all(c.kind == "all_reduce" for c in rep.collectives)
-    env = run(jp, inputs)
-    np.testing.assert_allclose(env[g["w"]].to_numpy(), inputs["x"].to_numpy().sum(axis=0))
-    assert all(d.level is None for d in env[g["w"]].layout.dims)  # replicated grad
+    env = run_named(rg.region, inputs, rg.names)
+    np.testing.assert_allclose(env[rg.grads["w"]].to_numpy(), inputs["x"].to_numpy().sum(axis=0))
+    assert all(d.level is None for d in env[rg.grads["w"]].layout.dims)  # replicated grad
 
 
 def test_fd_rebuild_preserves_placement():
-    from pdum.tl.autodiff import grad, numeric_grad
-
     p = megatron_block()
-    prog = _with_loss(p)
-    jp, g = grad(prog, "zloss", p.inputs)
-    env = run(jp, p.inputs)
-    fd = numeric_grad(prog, "zloss", "x", p.inputs)  # would misalign without the rebind
-    np.testing.assert_allclose(env[g["x"]].to_numpy(order=("t", "d")), fd, rtol=3e-4, atol=1e-6)
+    region, names = _with_loss(p)
+    rg = grad(region, "zloss", p.inputs, names=names)
+    env = run_named(rg.region, p.inputs, rg.names)
+    fd = numeric_grad(region, "zloss", "x", p.inputs, names)  # would misalign without the rebind
+    np.testing.assert_allclose(env[rg.grads["x"]].to_numpy(order=("t", "d")), fd, rtol=3e-4, atol=1e-6)
+
+
+# --- the Region face (the excavation, LEVELS) -------------------------------
+
+
+def test_region_face_traffic_reads_the_all_reduce_off_the_algebra():
+    x = T(np.zeros((4, 8)), ("g", "e")).bind(g="gpu")
+    w = T(np.zeros((4, 8)), ("g", "e")).bind(g="gpu")
+
+    def step(x, w):
+        p = x * w
+        s = reduce(red.sum, p, "g")  # bound g: the all-reduce, read off
+        return s
+
+    ls = lift_step(step, x=x.layout, w=w.layout)
+    ro = traffic(ls.region, None, mesh(4), names=ls.names)
+    assert len(ro.collectives) == 1 and ro.collectives[0].kind == "all_reduce"
+    assert ro.collectives[0].var == "s"
+
+
+def test_region_face_refuses_lattice_surgery_on_bound_dims():
+    x = T(np.zeros((4, 8)), ("g", "e")).bind(g="gpu")
+
+    def step(x):
+        return x.slice(g=(0, 2))
+
+    ls = lift_step(step, x=x.layout)
+    with pytest.raises(NotImplementedError, match="slice on machine-bound dim 'g'"):
+        traffic(ls.region, None, mesh(4), names=ls.names)

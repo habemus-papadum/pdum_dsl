@@ -41,7 +41,7 @@ from .dialect import (
     _tl_call,
     _tl_name,
     capture_shim,
-    export_program,
+    region_names,
     tensor_type_of_layout,
 )
 from .lifting import _Intrinsic
@@ -118,15 +118,16 @@ def pipe(units) -> Unit:
 
 @dataclass(frozen=True)
 class Assemblage:
-    """The built model: one Program, named leaves, tap sites."""
+    """The built model: one region, named leaves, tap sites."""
 
-    program: object
+    region: object  # the dialect Region, dce'd against the requested outputs
     inputs: tuple  # flowing input names, in order
-    output: str  # the final SSA var
+    output: str  # the final value's name
     params: dict  # flat contract name -> Param (declaration order preserved)
-    taps: dict  # site path -> SSA var (every SITE; requested ones are outputs)
-    outputs: tuple  # requested tap vars (+ the output) that survive in program
-    layouts: dict  # EVERY input's layout — what virtual analyses consume
+    taps: dict  # site path -> name (every SITE; requested ones are outputs)
+    outputs: tuple  # requested tap names (+ the output) that survive the dce
+    layouts: dict  # EVERY live input's layout — what virtual analyses consume
+    names: dict  # the naming law's assignment (id-keyed; dce-stable)
 
 
 def _u_name(ctx, node):
@@ -242,11 +243,11 @@ def _lower(u: Unit, input_layouts: dict) -> tuple:
         body=(ctx.builder.emit("core.yield", yielded),),
     )
     in_names = (flow_name, *(n for n, _ in c["u.param_order"]))
-    program, outs = export_program(region, in_names, names_of=names_led)
-    taps = dict(zip(sites, outs[1:]))
+    mapping = region_names(region, in_names, names_led)
+    taps = {site: mapping[id(node)] for site, node in zip(sites, tap_nodes)}
     layouts = {flow_name: region.params[0].type.layout}
     layouts.update({n: p.layout for n, p in c["u.params"].items()})
-    return program, in_names, outs[0], dict(c["u.params"]), taps, layouts
+    return in_names, mapping[id(flow)], dict(c["u.params"]), taps, layouts, region, mapping
 
 
 def assemblage(u: Unit, *, scope: Scope | None = None, taps: tuple = (), **input_layouts) -> Assemblage:
@@ -264,17 +265,18 @@ def assemblage(u: Unit, *, scope: Scope | None = None, taps: tuple = (), **input
 
 
 def _build(u: Unit, taps: tuple, input_layouts: dict) -> Assemblage:
-    prog, in_names, out, params, tap_vars, layouts = _lower(u, input_layouts)
+    in_names, out, params, tap_vars, layouts, region, mapping = _lower(u, input_layouts)
     requested = [v for site, v in sorted(tap_vars.items()) if any(fnmatch.fnmatch(site, p) for p in taps)]
     keep = (out, *requested)
-    prog = dce(prog, keep) if len(prog.instrs) else prog
-    live = {i.var for i in prog.instrs if i.op == "input"}
+    region = dce(region, keep, names=mapping)  # re-yield + reachability pruning
+    live = {mapping[id(p)] for p in region.params}
     return Assemblage(
-        program=prog,
+        region=region,
         inputs=(in_names[0],),
         output=out,
         params=params,
         taps=tap_vars,
         outputs=keep,
         layouts={n: v for n, v in layouts.items() if n in live},
+        names=mapping,
     )

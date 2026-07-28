@@ -282,7 +282,7 @@ def compile_wgsl(art):
             cp.dispatch_workgroups((ext[0] + 63) // 64, 1, 1)
         cp.end()
         device.queue.submit([enc.finish()])
-        from pdum.tl.ir import Token, _store
+        from pdum.tl.tensor import Token, _store
 
         for (name, order, shape), buf, t in zip(orders, bufs, values):
             if name in writable:

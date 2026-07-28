@@ -6,18 +6,15 @@ boundary-facts terms."""
 
 import numpy as np
 import pytest
-from pdum.tl import Tensor
+from pdum.tl import Tensor, red, reduce
 from pdum.tl.autodiff import grad
+from pdum.tl.dialect import run_named
 from pdum.tl.encoding import Descriptor, FormatEncoding, NumpyEncoding, QuantGroupEncoding, adopt
-from pdum.tl.ir import Instr, Program, run
+from pdum.tl.lifting import lift_step
 
 
 def T(arr, names):
     return Tensor.from_numpy(np.asarray(arr, dtype=np.float64), names)
-
-
-def I(var, op, operands=(), **params):  # noqa: E743
-    return Instr(var, op, tuple(operands), params)
 
 
 # --- exact decode -----------------------------------------------------------
@@ -75,8 +72,15 @@ def test_inf_nan_refuse_at_decode_and_at_the_degenerate_boundary():
 
 
 def test_astype_as_semantics_does_not_exist():
-    with pytest.raises(ValueError, match="unknown op 'astype'"):
-        Program((I("x", "input"), I("y", "astype", ("x",), dtype="float16")))
+    # the dialect op registry has no astype door: emitting one refuses
+    from pdum.dsl.ir import Builder, VerifyError
+    from pdum.dsl.ops import CORE_OPS
+    from pdum.tl.dialect import TL_OPS, tensor_type_of_layout
+
+    b = Builder({**CORE_OPS, **TL_OPS})
+    x = b.param(0, tensor_type_of_layout(T(np.zeros(3), ("d",)).layout))
+    with pytest.raises(VerifyError, match="unknown op 'tl.astype'"):
+        b.emit("tl.astype", x, dtype="float16")
 
 
 # --- round_to: the one sanctioned door --------------------------------------
@@ -84,42 +88,48 @@ def test_astype_as_semantics_does_not_exist():
 
 def test_round_to_is_encode_decode_exactly():
     enc = QuantGroupEncoding(group=4)
-    prog = Program((I("w", "input"), I("wq", "round_to", ("w",), encoding=enc)))
+
+    def step(w):
+        wq = w.round_to(enc)
+        return wq
+
     w = T([0.5, -0.3, 0.7, 0.1], ("d",))
-    got = run(prog, {"w": w})["wq"].to_numpy()
+    ls = lift_step(step, w=w.layout)
+    got = run_named(ls.region, {"w": w}, ls.names)["wq"].to_numpy()
     q, scales = enc.encode(w.to_numpy())
     np.testing.assert_array_equal(got, enc.decode((q, scales)))  # exact roundtrip
 
 
 def test_round_to_grad_is_straight_through_by_default():
     enc = NumpyEncoding(np.float16)
-    prog = Program(
-        (
-            I("w", "input"),
-            I("wq", "round_to", ("w",), encoding=enc),
-            I("y", "pointwise", ("wq", "wq"), f="mul"),
-            I("s", "reduce", ("y",), f="sum", dims=("d",)),
-        )
-    )
+
+    def step(w):
+        wq = w.round_to(enc)
+        y = wq * wq
+        s = reduce(red.sum, y, "d")
+        return wq, s
+
     w = T([0.5, -0.25, 1.5], ("d",))
-    jp, grads = grad(prog, "s", {"w": w})
-    env = run(jp, {"w": w})
-    got = env[grads["w"]].to_numpy()
-    wq = env["wq"].to_numpy()
+    ls = lift_step(step, w=w.layout)
+    rg = grad(ls.region, "s", {"w": w}, names=ls.names)
+    env = run_named(rg.region, {"w": w}, rg.names)
+    got = env[rg.grads["w"]].to_numpy()
+    wq = run_named(ls.region, {"w": w}, ls.names)["wq"].to_numpy()
     np.testing.assert_allclose(got, 2 * wq)  # d(sum wq²)/dw straight-through = 2·wq
 
 
 def test_round_to_zero_grad_by_declaration():
     enc = NumpyEncoding(np.float16)
-    prog = Program(
-        (
-            I("w", "input"),
-            I("wq", "round_to", ("w",), encoding=enc, grad="zero"),
-            I("s", "reduce", ("wq",), f="sum", dims=("d",)),
-        )
-    )
-    _, grads = grad(prog, "s", {"w": T([1.0, 2.0], ("d",))})
-    assert grads["w"] is None  # declared zero: no gradient flows
+
+    def step(w):
+        wq = w.round_to(enc, grad="zero")
+        s = reduce(red.sum, wq, "d")
+        return s
+
+    w = T([1.0, 2.0], ("d",))
+    ls = lift_step(step, w=w.layout)
+    rg = grad(ls.region, "s", {"w": w}, names=ls.names)
+    assert rg.grads["w"] is None  # declared zero: no gradient flows
 
 
 # --- descriptors + adopt: interop and precision facts are one concept -------
@@ -151,25 +161,25 @@ def test_qat_master_weights_train_through_quantized_forward():
     a boundary fact nor round_to — the fallback criterion is NOT met, and
     the two-surface fallback stays unexercised."""
     enc = NumpyEncoding(np.float16)  # the bf16-class stand-in numpy ships
-    prog = Program(
-        (
-            I("w", "input"),  # master weights: interior, exact
-            I("x", "input"),
-            I("wq", "round_to", ("w",), encoding=enc),  # the quantized view
-            I("xy", "pointwise", ("x", "wq"), f="mul"),
-            I("loss", "reduce", ("xy",), f="sum", dims=("d",)),
-        )
-    )
+
+    def step(w, x):
+        # w: master weights, interior, exact; wq: the quantized view
+        wq = w.round_to(enc)
+        xy = x * wq
+        loss = reduce(red.sum, xy, "d")
+        return loss
+
     rng = np.random.default_rng(0)
     inputs = {"w": T(rng.standard_normal(8), ("d",)), "x": T(rng.standard_normal(8), ("d",))}
-    jp, grads = grad(prog, "loss", inputs)
-    env = run(jp, inputs)
-    g = env[grads["w"]].to_numpy(order=("d",))
+    ls = lift_step(step, w=inputs["w"].layout, x=inputs["x"].layout)
+    rg = grad(ls.region, "loss", dict(inputs), names=ls.names)
+    env = run_named(rg.region, inputs, rg.names)
+    g = env[rg.grads["w"]].to_numpy(order=("d",))
     np.testing.assert_allclose(g, inputs["x"].to_numpy())  # straight-through: x, not 0
     # one SGD step on the MASTER weights moves the quantized forward
     w2 = inputs["w"].to_numpy() - 0.5 * g
-    loss1 = run(prog, inputs)["loss"].item()
-    loss2 = run(prog, {"w": T(w2, ("d",)), "x": inputs["x"]})["loss"].item()
+    loss1 = run_named(ls.region, inputs, ls.names)["loss"].item()
+    loss2 = run_named(ls.region, {"w": T(w2, ("d",)), "x": inputs["x"]}, ls.names)["loss"].item()
     assert float(loss2) < float(loss1)
 
 
@@ -182,10 +192,16 @@ def test_cost_oracles_read_boundary_byte_truth():
     enters at descriptors, never mid-program."""
     from pdum.tl.memory import peak_memory
 
-    prog = Program((I("w", "input"), I("y", "pointwise", ("w", "w"), f="mul")))
+    def step(w):
+        y = w * w
+        return y
+
     lay = T(np.zeros(16), ("d",)).layout
-    full = peak_memory(prog, {"w": T(np.zeros(16), ("d",))})
-    fact16 = peak_memory(prog, {"w": Descriptor(buffer=None, layout=lay, encoding=NumpyEncoding(np.float16))})
+    ls = lift_step(step, w=lay)
+    full = peak_memory(ls.region, {"w": T(np.zeros(16), ("d",))}, names=ls.names)
+    fact16 = peak_memory(
+        ls.region, {"w": Descriptor(buffer=None, layout=lay, encoding=NumpyEncoding(np.float16))}, names=ls.names
+    )
     assert full.input_bytes == 16 * 8
     assert fact16.input_bytes == 16 * 2  # the checkpoint's dtype is a FACT
     assert full.alloc_bytes["y"] == fact16.alloc_bytes["y"] == 16 * 8  # declared interior
@@ -194,7 +210,13 @@ def test_cost_oracles_read_boundary_byte_truth():
 def test_quant_descriptor_bytes_are_sub_byte_exact():
     from pdum.tl.memory import peak_memory
 
-    prog = Program((I("w", "input"), I("y", "pointwise", ("w", "w"), f="mul")))
+    def step(w):
+        y = w * w
+        return y
+
     lay = T(np.zeros(64), ("d",)).layout
-    q = peak_memory(prog, {"w": Descriptor(buffer=None, layout=lay, encoding=QuantGroupEncoding(group=16))})
+    ls = lift_step(step, w=lay)
+    q = peak_memory(
+        ls.region, {"w": Descriptor(buffer=None, layout=lay, encoding=QuantGroupEncoding(group=16))}, names=ls.names
+    )
     assert q.input_bytes == 32 + 4 * 4  # nibbles + f32 scales, byte-exact

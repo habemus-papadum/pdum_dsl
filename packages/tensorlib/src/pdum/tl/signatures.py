@@ -183,63 +183,104 @@ def _info_of(src) -> VInfo:
     return VInfo(getattr(src, "carrier", None), vu if isinstance(vu, Unit) else None)
 
 
-def infer_signatures(prog, inputs=None) -> dict[str, VInfo]:
-    """Propagate (carrier, unit) facts through a program — the metadata twin
-    of `ir.infer`. `inputs` maps input vars to Tensors (or VInfos); missing
-    or unit-less entries contribute unknowns, so unlabeled programs sail
-    through while declared-unit conflicts raise SignatureError."""
-    from .ir import _LAYOUT_OPS  # lazy: keeps compute -> signatures acyclic
+def infer_signatures(region, inputs=None, *, names=None) -> dict[str, VInfo]:
+    """Propagate (carrier, unit) facts through a region — the metadata twin
+    of layout inference. ``inputs`` maps param names to Tensors (or VInfos);
+    missing or unit-less entries contribute unknowns, so unlabeled programs
+    sail through while declared-unit conflicts raise SignatureError. Reports
+    key by the naming law — pass ``names`` (``region_names``' assignment;
+    LiftedStep/Assemblage carry it)."""
+    return _region_signatures(region, inputs or {}, names)
 
-    inputs = inputs or {}
+
+def _region_signatures(region, inputs, names) -> dict[str, VInfo]:
+    """The Region face — the same rules over dialect nodes. Reports join on
+    names (the naming law), so the result agrees with the Program face over
+    the migration view by construction; consts are plumbing (deferred
+    scalars) and get no report row."""
+    from .dialect import (  # lazy: dialect imports compute imports signatures
+        LAYOUT_OP_NAMES,
+        _thaw_params,
+        region_names,
+        walk_region,
+    )
+
+    if names is None:
+        raise ValueError(
+            "region signatures join on names — pass names=region_names(region, param_names) "
+            "(LiftedStep.names / Assemblage.names carry it)"
+        )
+    sig_of: dict[int, VInfo] = {}
     sigs: dict[str, VInfo] = {}
-    for ins in prog.instrs:
-        p = ins.params
-        if ins.op == "input":
-            sigs[ins.var] = _info_of(inputs.get(ins.var))
-        elif ins.op == "const":
+
+    def record(n, info: VInfo) -> None:
+        sig_of[id(n)] = info
+        name = names.get(id(n))
+        if name is not None:
+            sigs[name] = info
+
+    for p in region.params:
+        record(p, _info_of(inputs.get(names[id(p)])))
+    for n in walk_region(region):
+        if id(n) in sig_of or n.op in ("core.yield", "core.tuple"):
+            continue
+        if n.op == "core.const":
+            sig_of[id(n)] = _const_info(dict(n.attrs)["value"])
+            continue
+        if not n.op.startswith("tl."):
+            raise KeyError(f"no signature rule for op {n.op!r}")
+        base, p = n.op[3:], _thaw_params(dict(n.attrs))
+        a = tuple(sig_of[id(x)] for x in n.args)
+        if base == "const":
             carrier = carrier_of(np.dtype(p.get("dtype", "float64")))
-            sigs[ins.var] = VInfo(carrier, None if p["value"] == 0 else ONE)
-        elif ins.op == "iota":
+            record(n, VInfo(carrier, None if p["value"] == 0 else ONE))
+        elif base == "iota":
             unit = p.get("unit")
             if unit is None:
-                sigs[ins.var] = VInfo("int", None)
+                record(n, VInfo("int", None))
             else:
-                sigs[ins.var] = VInfo("rat", u.parse_unit(unit) if isinstance(unit, str) else unit)
-        elif ins.op == "random":  # uniform bits are exact rationals; normal is real (§1.8)
-            sigs[ins.var] = VInfo("rat" if p["dist"] == "uniform" else "real", ONE)
-        elif ins.op in ("round_to", "repeat_like", "take", "scatter_add"):
-            # carrier and units ride through (indices are addresses: no units)
-            sigs[ins.var] = sigs[ins.operands[0]]
-        elif ins.op in ("argtopk", "argsort"):
-            sigs[ins.var] = VInfo("int", None)  # lattice positions: exact, unitless
-        elif ins.op == "pointwise":
-            sigs[ins.var] = marker_signature(p["f"], tuple(sigs[o] for o in ins.operands))
-        elif ins.op in ("reduce", "scan"):
-            sigs[ins.var] = _reducer_sig(p["f"], tuple(sigs[o] for o in ins.operands))
-        elif ins.op == "with_value_units":
+                record(n, VInfo("rat", u.parse_unit(unit) if isinstance(unit, str) else unit))
+        elif base == "random":
+            record(n, VInfo("rat" if p["dist"] == "uniform" else "real", ONE))
+        elif base in ("round_to", "repeat_like", "take", "scatter_add"):
+            record(n, a[0])
+        elif base in ("argtopk", "argsort"):
+            record(n, VInfo("int", None))
+        elif base == "pointwise":
+            record(n, marker_signature(p["f"], a))
+        elif base in ("reduce", "scan"):
+            record(n, _reducer_sig(p["f"], a))
+        elif base == "with_value_units":
             vu = p["value_units"]
-            sigs[ins.var] = VInfo(sigs[ins.operands[0]].carrier, vu if isinstance(vu, Unit) else None)
-        elif ins.op == "fold":
-            state_names, elem_names = tuple(p["state"]), tuple(p["element"])
-            carry = dict(p["carry"])
-            sigmap = {n: sigs[o] for n, o in zip(state_names + elem_names, ins.operands)}
-            ss = {}
-            for _ in range(len(CARRIERS) + 1):  # carry fixed point, like reducers
-                ss = infer_signatures(p["step"], sigmap)
+            record(n, VInfo(a[0].carrier, vu if isinstance(vu, Unit) else None))
+        elif base == "fold":
+            # positional carry (the widened contract): the step yields the
+            # next states in state order (+ the emit value); fixed point as
+            # in the Program face
+            state, element = tuple(p["state"]), tuple(p["element"])
+            k = len(state)
+            step = n.regions[0]
+            subnames = region_names(step, state + element)
+            yielded = step.body[-1].args[0]
+            ynodes = tuple(yielded.args) if yielded.op == "core.tuple" else (yielded,)
+            sigmap = {nm: sig_of[id(x)] for nm, x in zip(state + element, n.args)}
+            ss: dict = {}
+            for _ in range(len(CARRIERS) + 1):
+                ss = _region_signatures(step, sigmap, subnames)
                 merged = {
                     sn: VInfo(
-                        _join(sigmap[sn].carrier, ss[carry[sn]].carrier),
-                        _same_unit("fold.carry", sigmap[sn].unit, ss[carry[sn]].unit),
+                        _join(sigmap[sn].carrier, ss[subnames[id(ynodes[i])]].carrier),
+                        _same_unit("fold.carry", sigmap[sn].unit, ss[subnames[id(ynodes[i])]].unit),
                     )
-                    for sn in state_names
+                    for i, sn in enumerate(state)
                 }
-                if all(merged[sn] == sigmap[sn] for sn in state_names):
+                if all(merged[sn] == sigmap[sn] for sn in state):
                     break
                 sigmap.update(merged)
-            sigs[ins.var] = ss[p["out"][1]]
-        elif ins.op == "materialize" or ins.op in _LAYOUT_OPS:
-            # layout ops move coordinates, never values (pad fills unchecked)
-            sigs[ins.var] = sigs[ins.operands[0]]
+            out = tuple(p["out"])
+            record(n, ss[subnames[id(ynodes[out[1] if out[0] == "final" else k])]])
+        elif base == "materialize" or base in LAYOUT_OP_NAMES:
+            record(n, a[0])
         else:
-            raise KeyError(f"no signature rule for op {ins.op!r}")
+            raise KeyError(f"no signature rule for op {n.op!r}")
     return sigs

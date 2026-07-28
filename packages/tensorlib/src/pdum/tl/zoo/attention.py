@@ -16,8 +16,7 @@ import numpy as np
 
 from ..assemblage import assemblage, unit
 from ..compute import const_like, contract, iota, pointwise, reduce, repeat_like
-from ..ir import _dense_like
-from ..layout import Dim
+from ..layout import Dim, _dense_like
 from ..markers import le, lt, where
 from ..mdsl import defreducer, exp, maximum
 from ..scope import scope
@@ -106,7 +105,7 @@ def sliding_attention(T=5, E=3, OD=2, W=2, seed=3) -> ZooModel:
         mask = (s <= t) & (t - s < W)
         return np_softmax(np.where(mask, sc, -1e9), axis=1) @ inp["v"]
 
-    return ZooModel(model.program, inputs, model.output, ref, ("t", "o"))
+    return ZooModel(model.region, inputs, model.output, ref, ("t", "o"), model.names)
 
 
 def gated_attention(T=5, E=3, OD=2, seed=4) -> ZooModel:
@@ -132,7 +131,7 @@ def gated_attention(T=5, E=3, OD=2, seed=4) -> ZooModel:
         ctx = np_softmax(np.where(mask, sc, -1e9), axis=1) @ inp["v"]
         return np_sigmoid(inp["q"] @ inp["wg"]) * ctx
 
-    return ZooModel(model.program, inputs, model.output, ref, ("t", "o"))
+    return ZooModel(model.region, inputs, model.output, ref, ("t", "o"), model.names)
 
 
 def qknorm_attention(T=5, E=3, OD=2, eps=1e-6, seed=5) -> ZooModel:
@@ -162,7 +161,7 @@ def qknorm_attention(T=5, E=3, OD=2, eps=1e-6, seed=5) -> ZooModel:
         mask = np.tril(np.ones((T, T), dtype=bool))
         return np_softmax(np.where(mask, sc, -1e9), axis=1) @ inp["v"]
 
-    return ZooModel(model.program, inputs, model.output, ref, ("t", "o"))
+    return ZooModel(model.region, inputs, model.output, ref, ("t", "o"), model.names)
 
 
 def flash_attention(T=5, E=3, OD=2, seed=6, naive=False) -> ZooModel:
@@ -194,4 +193,4 @@ def flash_attention(T=5, E=3, OD=2, seed=6, naive=False) -> ZooModel:
         mask = np.tril(np.ones((T, T), dtype=bool))
         return np_softmax(np.where(mask, sc, -1e9), axis=1) @ inp["v"]
 
-    return ZooModel(model.program, inputs, model.output, ref, ("t", "o"))
+    return ZooModel(model.region, inputs, model.output, ref, ("t", "o"), model.names)

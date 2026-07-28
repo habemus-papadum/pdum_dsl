@@ -32,8 +32,7 @@ from dataclasses import dataclass, field, replace
 
 from pdum.dsl.naming import NameCollision
 
-from .ir import _dense_like
-from .layout import Dim
+from .layout import Dim, _dense_like
 from .lifting import _Intrinsic
 
 tap = _Intrinsic("tap")
