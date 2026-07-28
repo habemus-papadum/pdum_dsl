@@ -262,6 +262,29 @@ Added by `spike_runner` (measured, not read):
   binding indices are baked into the shader; that is the zero-copy
   mechanism, and it needs only an encoding descriptor (f64→f32
   elementwise narrowing preserves indices), not L2's full machinery.
+  **Corrections from the dual-backend windowed demo**
+  (`explorations/graphics/demo/FINDINGS.md`, which ran this shape
+  against a second, structurally different API): (1) `encode(pass)`
+  is NOT the portable primitive — Metal needs the full pass
+  descriptor (attachment/load/clear) BEFORE an encoder exists, so the
+  primitive is `encode(command_buffer_or_encoder, target, clear=...)`;
+  target and load-op are inseparable from pass creation. (2) The
+  binding table is PER-STAGE data — Metal's vertex and fragment
+  stages index two separate buffer tables (the same logical resource
+  gets two indices), so one shared index space is a WebGPU-shaped
+  assumption. (3) Presentation needs a seat the sketch lacks:
+  in-flight synchronization (semaphore + rotating slot buffers) — on
+  unified memory a slot refresh IS a host-memory write and an
+  in-flight frame can see torn uniforms. (4) Render-stage rows are
+  100% WGSL→MSL portable under ONE added lexical rule (vector type
+  spelling — four rules total), so the shared-emitter design extends
+  to render unchanged; the remaining diff is shell (per-stage
+  bindings, varying-struct spelling, stage qualifiers, and the
+  surface-expansion axis — confirmed on both targets). (5) The
+  capture fingerprint discriminates `float` from `np.float64` — a
+  numpy-derived uniform silently keys a different artifact and
+  recompiles every frame with no warning; the closure-swap/warmth
+  guard should graduate to library-tier in the cleanup.
 - **D. The Metal twin** (design + spike `spike_metal`, DONE): MSL
   emission + a PyObjC Metal runtime; the seam's existence proof
   delivered (see B's verdict above). ~40 lines of glue; zero-copy
