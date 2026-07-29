@@ -369,6 +369,14 @@ def _infer_base(base: str, lays, p):
 
         dims = tuple(_replace(lays[0].dim(n), chart=None, labels=None) for n in tuple(p["order"]))
         return _dense_like(dims)
+    if base == "stage":
+        # 320 §4: the ONE copying op with a residence — a dense copy in the
+        # declared order at the named level. Charts RIDE (same physics,
+        # different residence); chart-stripping stays materialize's separate
+        # contract. `level` is a name resolved by cost analysis, never here.
+        order = p.get("order")
+        dims = tuple(lays[0].dim(n) for n in tuple(order)) if order else lays[0].dims
+        return _dense_like(dims)
     if base == "round_to":
         return _dense_like(lays[0].dims)
     if base == "repeat_like":
@@ -423,6 +431,14 @@ def _eval_base(base: str, vals, p):
         return _eager_scan(reducer(p["f"]), vals[0] if len(vals) == 1 else tuple(vals), p["dim"], p.get("zero"))
     if base == "materialize":
         return _materialize(vals[0], p)
+    if base == "stage":
+        from .compute import _tensor_like
+
+        t = vals[0]
+        order = tuple(p["order"]) if p.get("order") else t.names
+        arr = t.to_numpy(order=order) if order else t.to_numpy()
+        dims = tuple(t.layout.dim(n) for n in order)
+        return _tensor_like(arr, dims, value_units=t.value_units)
     if base == "round_to":
         return _round_to(vals[0], p["encoding"])
     if base == "repeat_like":
@@ -444,6 +460,7 @@ _BRIDGED = (
     "reduce",
     "scan",
     "materialize",
+    "stage",
     "round_to",
     "repeat_like",
     "random",
@@ -1080,7 +1097,7 @@ _FAMILIES = {
     "POINTWISE": frozenset({"tl.pointwise"}),
     "COMPUTE": frozenset(
         {"tl.reduce", "tl.scan", "tl.fold", "tl.take", "tl.scatter_add", "tl.argtopk", "tl.argsort"}
-        | {"tl.random", "tl.materialize", "tl.round_to", "tl.repeat_like", "tl.with_value_units"}
+        | {"tl.random", "tl.materialize", "tl.stage", "tl.round_to", "tl.repeat_like", "tl.with_value_units"}
     ),
     "LAYOUT": frozenset(f"tl.{n}" for n in LAYOUT_ADAPTERS),
     "EFFECT": frozenset({"tl.store", "tl.read", "tl.token"}),
@@ -1097,6 +1114,10 @@ TIERS = {
     "compute": frozenset({"STRUCTURAL", "SCALAR", "ABI", "LATTICE", "POINTWISE", "EFFECT"}),
     "vertex": frozenset({"STRUCTURAL", "SCALAR", "ABI", "POINTWISE"}),
     "fragment": frozenset({"STRUCTURAL", "SCALAR", "ABI", "POINTWISE", "GRAPHICS"}),
+    # 320: the tile tier — tensor ops on pre-selected tiles. COMPUTE is NOT
+    # admitted as a family: the extras below name its tile-legal subset, and
+    # the K-G ops (take/scatter/argtopk/argsort/random) refuse at the tier.
+    "tile": frozenset({"STRUCTURAL", "SCALAR", "POINTWISE", "LAYOUT", "EFFECT"}),
 }
 _TIER_EXTRA = {
     "tensor": frozenset({"tl.iota"}),
@@ -1105,6 +1126,7 @@ _TIER_EXTRA = {
     "compute": frozenset({"tl.split", "tl.merge"}),  # machinery emissions (grid bracket,
     # global-index stores) — never author-spelled, ledgered for device coverage (290 §4.1)
     "vertex": frozenset({"tl.iota", "tl.select"}),  # select = the pulled read, params only
+    "tile": frozenset({"tl.iota", "tl.reduce", "tl.scan", "tl.fold", "tl.repeat_like", "tl.stage", "tl.materialize"}),
 }
 _QUOTED_TIER = {"tl.fold": "step"}  # ops carrying a foreign-tier region as DATA (290 §4.5)
 
@@ -1148,7 +1170,13 @@ def check_tier(region: Region, tier: str) -> Region:
                 f"pulled-read spelling) — layout algebra on derived values stages outside{where}"
             )
         for sub in n.regions:
-            check_tier(sub, _QUOTED_TIER.get(n.op, tier))
+            quoted = _QUOTED_TIER.get(n.op, tier)
+            if tier == "tile" and n.op == "tl.fold":
+                # 320 §3: the tile-fold's step widens INSIDE the tile
+                # discipline — the quoted "step" tier would readmit the K-G
+                # ops the tile tier refuses
+                quoted = "tile"
+            check_tier(sub, quoted)
     return region
 
 

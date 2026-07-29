@@ -61,9 +61,11 @@ is `tl.fold` with a carried state, `store` is the effect.
 Admitted: STRUCTURAL, SCALAR, POINTWISE, reduce/scan, the affine layout
 ops (slice/select/shift/pad/window/stencil/split/merge), `tl.iota`
 (masks and positions are free closed forms), the tile-fold, `stage`,
-EFFECT. Refused at v1, each with a ledger row (290's coverage law):
+EFFECT. Refused at v1 AT THE TIER (290's never-legal treatment):
 take/scatter_add/argtopk/argsort/random — data-dependent addressing is
-K-G's conversation. The store-free statement-if law carries unchanged.
+K-G's conversation. Ledger rows enter only when a tile TRANSLATOR
+exists with legal-but-untranslated gaps to record; a tier refusal is
+not a ledger fact. The store-free statement-if law carries unchanged.
 
 Two consciously widened laws:
 

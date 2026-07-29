@@ -235,7 +235,7 @@ class Evaluator:
             "tl.with_value_units",
         ):
             return ev(n.args[0])  # coordinates move, values do not
-        if n.op == "tl.materialize":
+        if n.op in ("tl.materialize", "tl.stage"):  # copies: the type carries the chosen order
             return self._align(ev(n.args[0]), _dims(n.args[0].type), _dims(n.type))
         if n.op == "tl.slice":
             out, src = _dims(n.type), _dims(n.args[0].type)

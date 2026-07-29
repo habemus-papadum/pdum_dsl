@@ -45,6 +45,41 @@ _DEFAULT_BAN = frozenset({"reduce", "scan", "fold"})
 _ITEM = 8
 
 
+def erase_stages(region):
+    """The erasure oracle's stage half (320 §6): a stage moves residence and
+    presentation order, never values-by-name — denotationally IDENTITY, so
+    the erased region's denotation is bit-exactly the staged one's (the
+    megatron ``level=None`` precedent, one level down). Rebuild without the
+    ``tl.stage`` nodes, recursing into sub-regions; types re-infer, and
+    every consumer aligns by name, so the order a stage chose disappears
+    with it. Params are kept BY IDENTITY (callers' name maps stay valid)."""
+    from pdum.dsl.ir import Builder, Region
+    from pdum.dsl.ops import CORE_OPS
+
+    from .dialect import TL_OPS
+
+    ops = {**CORE_OPS, **TL_OPS}
+    b = Builder(ops)
+    memo: dict[int, object] = {}
+
+    def rebuild(n):
+        if id(n) in memo:
+            return memo[id(n)]
+        if n.op == "tl.stage":
+            out = rebuild(n.args[0])
+        elif n.op == "core.param":
+            out = n
+        else:
+            args = tuple(rebuild(a) for a in n.args)
+            regs = tuple(erase_stages(r) for r in n.regions)
+            explicit = {} if ops[n.op].type_rule is not None else {"type": n.type}
+            out = b.emit(n.op, *args, regions=regs, loc=n.loc, **explicit, **dict(n.attrs))
+        memo[id(n)] = out
+        return out
+
+    return Region(params=region.params, body=tuple(rebuild(x) for x in region.body))
+
+
 def dce(region, keep, *, names=None):
     """Drop values that don't (transitively) feed a kept name: a region IS
     its yield-reachable graph, so DCE re-yields exactly ``keep`` (a name

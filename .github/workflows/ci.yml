@@ -102,3 +102,4 @@ jobs:
           conformance/test_torch_baselines.py
           conformance/test_jax_baselines.py
           conformance/test_f32_columns.py
+          conformance/test_tile_columns.py
