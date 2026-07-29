@@ -21,6 +21,7 @@ The two per-frame scalars and where they live:
 from __future__ import annotations
 
 import numpy as np
+
 from pdum.dsl import value_and_grad
 from pdum.dsl.intrinsics import clamp  # noqa: F401 — inlines by capture-and-call
 from pdum.dsl.markers import sqrt  # noqa: F401 — bare in the fragment body

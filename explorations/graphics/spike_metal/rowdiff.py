@@ -68,6 +68,7 @@ def _body(src: str, lang: str) -> list[str]:
 
 def measure_a():
     from msl_backend import _translate as msl_translate
+
     from wgsl_executor import Untranslatable as WU
     from wgsl_executor import _translate as wgsl_translate
 
@@ -118,6 +119,7 @@ def _code_only(lines: list[str]) -> list[str]:
 
 def measure_b():
     from msl_backend import _translate as msl_translate
+
     from wgsl_executor import _translate as wgsl_translate
 
     w = inspect.getsource(wgsl_translate).splitlines()
@@ -134,6 +136,7 @@ def measure_b():
 def preamble_diff():
     """The structural (non-row) difference, shown once on one subject."""
     from msl_backend import _translate as msl_translate
+
     from wgsl_executor import _translate as wgsl_translate
 
     art = artifact(*(SUBJECTS["uniform"][0], SUBJECTS["uniform"][1]()))

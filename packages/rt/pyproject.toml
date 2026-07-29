@@ -1,0 +1,56 @@
+[project]
+name = "habemus-papadum-rt"
+# Managed by the release workflow (scripts/_versioning.py); between releases it carries a
+# "+dev" marker (a PEP 440 local version, which PyPI refuses to upload). Do not hand-edit.
+version = "0.0.0+dev"
+description = "pdum.rt — runtimes and backend emitters (the device registry, the launch contract, the WGSL/MSL/CUDA columns)"
+readme = "README.md"
+license = { text = "MIT" }
+keywords = []
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+authors = [
+    { name = "Nehal Patel", email = "nehal@alum.mit.edu" }
+]
+requires-python = ">=3.14"
+# rt consumes REGIONS STRUCTURALLY (ops are strings, attrs are data) and so
+# depends on pdum.dsl only — never on pdum.tl. That direction is what lets
+# the tensor tier import rt (executors, textures) without a cycle, and it is
+# the layer boundary the Metal spike proved physically (283 §1).
+dependencies = [
+    "numpy>=2.5.0",
+    "habemus-papadum-dsl",
+]
+
+[project.optional-dependencies]
+# Device APIs are OPTIONAL: importing pdum.rt is always safe; a column's
+# runtime imports its API lazily at acquire/compile time and refuses loudly
+# when it is absent.
+webgpu = [
+    "wgpu>=0.19",
+    "rendercanvas>=1.0",
+]
+metal = [
+    "pyobjc-framework-Metal>=12; sys_platform == 'darwin'",
+    "pyobjc-framework-Cocoa>=12; sys_platform == 'darwin'",
+    "pyobjc-framework-Quartz>=12; sys_platform == 'darwin'",
+]
+
+[project.urls]
+Homepage = "https://github.com/habemus-papadum/pdum_dsl"
+Repository = "https://github.com/habemus-papadum/pdum_dsl"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# pdum is a PEP 420 implicit namespace package (no src/pdum/__init__.py), shared with the
+# sibling habemus-papadum-* distributions. Don't add pdum/__init__.py.
+packages = ["src/pdum"]

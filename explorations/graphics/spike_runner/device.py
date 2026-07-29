@@ -24,6 +24,7 @@ def make_device(want_timestamps: bool = True):
     """Create the device (timestamps when the adapter offers them) and make
     it the one ``pdum.tl.graphics`` will hand out."""
     import wgpu
+
     from pdum.tl import graphics
 
     if graphics._GPU:  # somebody already forced the featureless singleton

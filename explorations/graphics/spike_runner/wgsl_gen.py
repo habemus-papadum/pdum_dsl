@@ -28,8 +28,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
-from pdum.tl.dialect import _thaw_params, walk_region
 from residency import Residency, index_expr
+
+from pdum.tl.dialect import _thaw_params, walk_region
 
 # --- lifted verbatim from wgsl_executor.py -----------------------------------
 _INFIX = {"add": "+", "sub": "-", "mul": "*", "div": "/"}

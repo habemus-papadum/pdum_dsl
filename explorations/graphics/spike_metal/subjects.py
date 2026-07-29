@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import _paths  # noqa: F401  (sys.path side effect, must precede pdum imports)
 import numpy as np
+
 from pdum.dsl import jit, op
 from pdum.tl import Tensor, compute, f32, global_idx, i32  # noqa: F401 -- bodies' globals
 from pdum.tl.markers import maximum, sqrt, tanh  # noqa: F401 -- bare in kernel bodies

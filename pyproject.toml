@@ -46,6 +46,7 @@ members = ["packages/*"]
 [tool.uv.sources]
 habemus-papadum-dsl = { workspace = true }
 habemus-papadum-tl = { workspace = true }
+habemus-papadum-rt = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -69,6 +70,13 @@ dev = [
     "numpy>=2.5.0",
     "xarray>=2026.7.0",
     "wgpu>=0.19",
+    "habemus-papadum-rt",
+    "rendercanvas>=1.0",
+    # The Metal column's runtime (Darwin-only; the CUDA column's twin joins
+    # from the L4 side): PyObjC is adequate — no native shim (210).
+    "pyobjc-framework-Metal>=12; sys_platform == 'darwin'",
+    "pyobjc-framework-Cocoa>=12; sys_platform == 'darwin'",
+    "pyobjc-framework-Quartz>=12; sys_platform == 'darwin'",
 ]
 
 [tool.ruff]
@@ -96,7 +104,7 @@ ignore = []
 known-first-party = ["pdum", "wgsl_executor"]
 
 [tool.pytest.ini_options]
-testpaths = ["packages/dsl/tests", "packages/tensorlib/tests", "conformance"]
+testpaths = ["packages/dsl/tests", "packages/tensorlib/tests", "packages/rt/tests", "conformance"]
 # importlib mode: the two members' suites may share test basenames (test_ir.py)
 addopts = "-s --import-mode=importlib"
 python_files = ["test_*.py"]

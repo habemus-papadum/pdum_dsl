@@ -5,6 +5,7 @@ Each probe builds a tiny kernel using one construct and reports lowered/refused.
 
 
 import numpy as np
+
 from pdum.tl import Tensor, compute, global_idx
 
 N = 8

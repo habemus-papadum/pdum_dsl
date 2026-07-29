@@ -130,6 +130,7 @@ def proof():
 
 def protocol_bench():
     import wgpu
+
     from pdum.tl.graphics import _device
 
     rt = runtime()
@@ -222,6 +223,7 @@ def protocol_bench():
 def artifact_bench():
     """The same contrast through the real launch protocol."""
     from metal_executor import compile_msl
+
     from pdum.tl import Tensor, compute, global_idx
     from pdum.tl.kernel import _compile
     from wgsl_executor import compile_wgsl

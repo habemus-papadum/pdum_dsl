@@ -48,12 +48,13 @@ import _paths  # noqa: F401,E402 -- puts this worktree's packages on sys.path
 import numpy as np  # noqa: E402
 import program as P  # noqa: E402
 import verify  # noqa: E402
+from pngw import write_gray  # noqa: E402
+
 from pdum.dsl import jit, value_and_grad  # noqa: E402
 from pdum.dsl.intrinsics import clamp  # noqa: F401,E402 -- inlines by capture-and-call
 from pdum.dsl.markers import cos, exp, sin, sqrt  # noqa: F401,E402 -- bare in shader bodies
 from pdum.tl import Tensor, compute, global_idx, thread_idx  # noqa: F401,E402 -- bodies' globals
 from pdum.tl.graphics import fragment, pair, position, vertex  # noqa: E402
-from pngw import write_gray  # noqa: E402
 
 TAU = 6.283185307179586
 SEGMENTS = 16

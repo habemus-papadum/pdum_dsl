@@ -33,6 +33,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 import _paths  # noqa: F401
+
 import wgsl_executor as flat
 from pdum.tl.dialect import walk_region
 from wgsl_executor import Untranslatable

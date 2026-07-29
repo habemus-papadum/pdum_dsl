@@ -19,6 +19,7 @@ import _paths  # noqa: F401
 import numpy as np
 from ifrecon import recon_artifact, translate
 from kernels import SUBJECTS, T, artifact
+
 from wgsl_executor import _translate as flat_translate
 from wgsl_executor import wgpu_artifact
 

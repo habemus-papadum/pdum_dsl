@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import _paths  # noqa: F401  (sys.path side effect, must precede pdum imports)
 import numpy as np
+
 from pdum.dsl import jit
 from pdum.tl import Tensor, compute, f32, global_idx
 from pdum.tl.markers import exp, sqrt, tanh

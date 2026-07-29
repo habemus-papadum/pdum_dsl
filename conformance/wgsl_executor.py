@@ -33,15 +33,11 @@ from dataclasses import replace
 
 import numpy as np
 
+from pdum.rt import executor_for as _rt_executor_for
+from pdum.rt import webgpu as _rt_webgpu
+from pdum.rt.emit import Untranslatable  # noqa: F401 — the ONE refusal class (rt's)
 from pdum.tl.dialect import _thaw_params, walk_region
 from pdum.tl.tensor import Tensor
-
-WGPU_FP = ("wgsl", "wgpu")  # the backend column's second value
-
-
-class Untranslatable(Exception):
-    """This region has no WGSL translation yet — the reason names the op."""
-
 
 _INFIX = {"add": "+", "sub": "-", "mul": "*", "div": "/"}
 _CMP = {"lt": "<", "gt": ">", "le": "<=", "ge": ">=", "eq": "==", "ne": "!="}
@@ -297,8 +293,13 @@ def compile_wgsl(art):
 def wgpu_artifact(art):
     """The drop-in: the same artifact with only the backend column
     swapped — launch() then runs staging/rebind/overlap identically and
-    lands on the device."""
-    return replace(art, executor=compile_wgsl(art))
+    lands on the device. The executor comes from ``pdum.rt`` THROUGH
+    the content door (never the ``replace``-bypass this function used
+    to be — FAIL-5): same artifact, same pair, same executor object;
+    the tanh math row and the declared slot narrowing ride along.
+    ``_translate``/``compile_wgsl`` below survive only as the render
+    path's local machinery and die with the render increment."""
+    return replace(art, executor=_rt_executor_for(art, _rt_webgpu))
 
 
 # --- the render path: the quad+f golden (the P8 gate's named item) -----------

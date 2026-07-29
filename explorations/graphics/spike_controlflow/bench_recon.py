@@ -26,6 +26,7 @@ import numpy as np
 from gpubench import Program, has_timestamps, warm_gpu
 from ifrecon import translate
 from kernels import T
+
 from pdum.dsl import jit
 from pdum.tl import compute, f32, global_idx
 from pdum.tl.kernel import _compile
