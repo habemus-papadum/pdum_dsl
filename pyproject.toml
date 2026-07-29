@@ -35,6 +35,9 @@ Documentation = "https://github.com/habemus-papadum/pdum_dsl"
 # workspace env. The members are the packages.
 [tool.uv]
 package = false
+# torch and torch-cpu are the SAME package from different wheel indexes
+# (CUDA vs CPU builds) — one env holds one or the other, never both.
+conflicts = [[{ group = "torch" }, { group = "torch-cpu" }]]
 
 # --- uv workspace: unpublished root + published members under packages/* ---
 # One workspace, one lock. Members: packages/dsl (habemus-papadum-dsl), packages/tensorlib
@@ -46,6 +49,14 @@ members = ["packages/*"]
 [tool.uv.sources]
 habemus-papadum-dsl = { workspace = true }
 habemus-papadum-tl = { workspace = true }
+torch = [{ index = "pytorch-cpu", group = "torch-cpu" }]
+
+# CPU torch builds live on PyTorch's own index, never PyPI; explicit = the
+# index serves only what tool.uv.sources pins to it.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [dependency-groups]
 dev = [
@@ -74,6 +85,10 @@ dev = [
 # numpy+wgpu; conformance tests importorskip, benchmarks opt in explicitly.
 torch = ["torch>=2.13"]
 jax = ["jax[cuda13]>=0.11"]
+# The CPU twins serve ci.yml's conformance-frameworks job: the same CHECK/
+# BASELINE columns on CPU wheels — no multi-GB CUDA stacks on hosted runners.
+torch-cpu = ["torch>=2.13"]
+jax-cpu = ["jax>=0.11"]
 
 [tool.ruff]
 target-version = "py314"

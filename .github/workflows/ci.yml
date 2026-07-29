@@ -79,3 +79,26 @@ jobs:
         with:
           name: python-coverage-comment-action
           path: python-coverage-comment-action.txt
+
+  # The framework CHECK/BASELINE columns on CPU wheels (310): substrate
+  # correctness gates like any conformance — a dialect-semantics regression
+  # that breaks torch/jax agreement must be visible here, not only on a GPU
+  # box. The cuda halves of the batteries skip on hosted runners and light
+  # up unchanged the day a GPU worker exists.
+  conformance-frameworks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Run the framework batteries (CPU wheels)
+        run: >
+          uv run --frozen --group torch-cpu --group jax-cpu pytest -rs
+          conformance/test_torch_zoo.py
+          conformance/test_jax_zoo.py
+          conformance/test_torch_baselines.py
+          conformance/test_jax_baselines.py
+          conformance/test_f32_columns.py

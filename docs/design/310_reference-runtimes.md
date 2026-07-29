@@ -66,8 +66,13 @@ carries the torch version so the content door keys artifacts correctly
 on arrival.
 
 Dependencies are OPT-IN groups (`--group torch`), never default: the
-core stays numpy+wgpu, the 21-second gate is untouched (torch tests
-importorskip), and CI never downloads a framework.
+core stays numpy+wgpu and the 21-second gate is untouched (framework
+tests importorskip). CI runs the columns anyway — as their OWN job
+(`conformance-frameworks` in ci.yml) on CPU-wheel twins of the groups
+(`torch-cpu` pins PyTorch's CPU index conditionally; `jax-cpu` is plain
+jax), so substrate correctness gates without multi-GB CUDA stacks on
+hosted runners. The batteries' cuda halves skip there and light up
+unchanged the day a GPU worker exists.
 
 ## The benchmark discipline (`benchmarks/`)
 
@@ -84,6 +89,29 @@ assemblage/fusion level (this rig — e.g. the flash entry's composite
 reducer runs ~50x behind fused sdpa on CUDA, which is precisely the
 fusion gap made visible) and the tiling level (arrives with the tiling
 era; the gemm/heat2d entries are its subjects).
+
+## The dtype axis
+
+Dtype is representation, never semantics (200 §4), so it is a PARAMETER
+of the columns, not a variant of an entry: the substrates carry their
+float width, `--dtype f32` runs the framework columns at the dtype the
+hardware actually competes at (the 4090 runs f64 at 1/64 rate — f64
+boards understate the machine). Three laws hold the axis honest:
+
+- **conformance stays tight**: `test_f32_columns.py` asserts the f32
+  CHECK columns against the f64 oracle under stated tolerances (first
+  subjects heat2d and gemm — pointwise/reduce chains, no tensor-core
+  paths), and asserts the output dtype IS f32 so a silent f64
+  promotion cannot pass;
+- **the rig's f32 verification is scale-aware sanity**: XLA routes f32
+  matmuls through TF32 tensor cores whose error rides the output's
+  magnitude (torch keeps matmul TF32 off by default) — those defaults
+  ARE the benchmarked thing, so the check separates wrong-program from
+  tensor-core rounding at 1e-2 of the oracle's scale;
+- **discontinuous entries refuse at f32**: moe's top-k routing flips
+  when a rounded logit crosses a choice boundary (observed: one token
+  of 64 rerouted), so no tolerance separates rounding from a different
+  program — the rig refuses the entry VISIBLY (the ledger's law).
 
 ## Sequence
 

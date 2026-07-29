@@ -92,7 +92,30 @@ PROFILES = {
 }
 
 WARMTH = ("spec.miss", "artifact.miss", "kernel.miss", "assemblage.miss")
-TOL = dict(rtol=1e-7, atol=1e-9)
+
+# Entries whose denotation is DISCONTINUOUS in the data refuse at f32: moe's
+# top-k routing flips when an f32-rounded logit crosses a choice boundary
+# (observed: one token of 64 rerouted at the small profile), so the f64
+# oracle is ill-posed there — no tolerance separates rounding from a
+# different program. Visible refusal over silent widening (the ledger's law).
+F32_ILL_POSED = {"moe"}
+
+
+
+def _verify(got, want, dtype):
+    """Verification is SANITY, not conformance (the conformance columns hold
+    the tight law). At f32 the check is SCALE-AWARE: XLA routes f32 matmuls
+    through TF32 tensor cores whose error rides the output's magnitude
+    (measured 1.6e-2 abs on llama's O(28) outputs at the small profile;
+    torch keeps matmul TF32 off by default) — and those defaults ARE the
+    thing being benchmarked. A wrong program misses by the scale itself;
+    1e-2 of max|oracle| separates the two. The reference column stays the
+    f64 oracle."""
+    if dtype == "f64":
+        np.testing.assert_allclose(got, want, rtol=1e-7, atol=1e-9)
+    else:
+        scale = max(1.0, float(np.max(np.abs(want))))
+        np.testing.assert_allclose(got, want, rtol=0.0, atol=1e-2 * scale)
 
 
 def _param_inputs(m):
@@ -119,7 +142,7 @@ def _time(fn, *, repeat: int, warmup: int) -> float:
 def _reference_column(m, want, opts):
     ref_inputs = dict(m.inputs)
     got = run_named(m.region, ref_inputs, m.names)[m.out].to_numpy(order=m.order)
-    np.testing.assert_allclose(got, want, **TOL)
+    _verify(got, want, "f64")
 
     def call():
         run_named(m.region, ref_inputs, m.names)
@@ -127,28 +150,32 @@ def _reference_column(m, want, opts):
     return [("reference", _time(call, **opts))]
 
 
-def _torch_columns(name, m, want, bkw, device, opts):
+def _torch_columns(name, m, want, bkw, device, dtype, opts):
     import torch
 
     from torch_evaluator import run_named_torch
     from torch_zoo import BASELINES
 
+    dt = torch.float32 if dtype == "f32" else torch.float64
     sync = torch.cuda.synchronize if device == "cuda" else (lambda: None)
     rows = []
     tin = _param_inputs(m)
-    got = run_named_torch(m.region, tin, m.names, device=device)[m.out].numpy(order=m.order)
-    np.testing.assert_allclose(got, want, **TOL)
+    got = run_named_torch(m.region, tin, m.names, device=device, dtype=dt)[m.out].numpy(order=m.order)
+    _verify(got, want, dtype)
     tin_dev = {k: torch.as_tensor(v).to(device) for k, v in tin.items()}
 
     def translated():
-        run_named_torch(m.region, tin_dev, m.names, device=device)
+        run_named_torch(m.region, tin_dev, m.names, device=device, dtype=dt)
         sync()
 
     rows.append(("torch/translated", _time(translated, **opts)))
     if name in BASELINES:
-        binp = {k: torch.as_tensor(v).to(device=device) for k, v in m.numpy_inputs().items()}
+        binp = {}
+        for k, v in m.numpy_inputs().items():
+            t = torch.as_tensor(v).to(device=device)
+            binp[k] = t.to(dt) if t.is_floating_point() else t
         got = BASELINES[name](binp, **bkw).cpu().numpy()
-        np.testing.assert_allclose(got, want, **TOL)
+        _verify(got, want, dtype)
 
         def idiomatic():
             BASELINES[name](binp, **bkw)
@@ -158,28 +185,33 @@ def _torch_columns(name, m, want, bkw, device, opts):
     return rows
 
 
-def _jax_columns(name, m, want, bkw, device, opts):
+def _jax_columns(name, m, want, bkw, device, dtype, opts):
     import jax
+    import jax.numpy as jnp
 
     from jax_evaluator import run_named_jax
     from jax_zoo import BASELINES
 
+    dt = jnp.float32 if dtype == "f32" else jnp.float64
     rows = []
     tin = _param_inputs(m)
-    fields = run_named_jax(m.region, tin, m.names, device=device)
-    np.testing.assert_allclose(fields[m.out].numpy(order=m.order), want, **TOL)
+    fields = run_named_jax(m.region, tin, m.names, device=device, dtype=dt)
+    _verify(fields[m.out].numpy(order=m.order), want, dtype)
     dev = jax.devices("gpu" if device == "cuda" else "cpu")[0]
     tin_dev = {k: jax.device_put(v, dev) for k, v in tin.items()}
 
     def translated():
-        out = run_named_jax(m.region, tin_dev, m.names, device=device)
+        out = run_named_jax(m.region, tin_dev, m.names, device=device, dtype=dt)
         jax.block_until_ready([f.data for f in out.values()])
 
     rows.append(("jax/translated", _time(translated, **opts)))
     if name in BASELINES:
-        binp = {k: jax.device_put(v, dev) for k, v in m.numpy_inputs().items()}
+        binp = {}
+        for k, v in m.numpy_inputs().items():
+            a = v.astype(np.float32) if dtype == "f32" and v.dtype.kind == "f" else v
+            binp[k] = jax.device_put(a, dev)
         jitted = jax.jit(lambda i: BASELINES[name](i, **bkw))
-        np.testing.assert_allclose(np.asarray(jitted(binp)), want, **TOL)
+        _verify(np.asarray(jitted(binp)), want, dtype)
 
         def idiomatic():
             jax.block_until_ready(jitted(binp))
@@ -193,6 +225,10 @@ def main() -> None:
     ap.add_argument("--profile", choices=sorted(PROFILES), default="toy")
     ap.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     ap.add_argument("--frameworks", default="torch,jax", help="comma-separated: torch, jax")
+    ap.add_argument(
+        "--dtype", choices=("f64", "f32"), default="f64",
+        help="framework columns' dtype (the reference column stays the f64 oracle)",
+    )
     ap.add_argument("--entries", default=None, help="comma-separated subset")
     ap.add_argument("--repeat", type=int, default=20)
     ap.add_argument("--warmup", type=int, default=3)
@@ -209,14 +245,20 @@ def main() -> None:
         entries = {k: entries[k] for k in args.entries.split(",")}
     opts = dict(repeat=args.repeat, warmup=args.warmup)
 
-    print(f"profile={args.profile} device={args.device} frameworks={frameworks} median of {args.repeat}")
+    print(
+        f"profile={args.profile} device={args.device} dtype={args.dtype} "
+        f"frameworks={frameworks} median of {args.repeat}"
+    )
     print(f"{'entry':10s} {'column':17s} {'ms/iter':>10s} {'vs reference':>13s}")
     for name, (ctor, mkw, bkw) in entries.items():
+        if args.dtype == "f32" and name in F32_ILL_POSED:
+            print(f"{name:10s} refused at f32: discrete routing makes the f64 oracle ill-posed")
+            continue
         m = ctor(**mkw)
         want = m.ref(m.numpy_inputs())
         rows = [] if args.skip_reference else _reference_column(m, want, opts)
         for fw in frameworks:
-            rows += columns[fw](name, m, want, bkw, args.device, opts)
+            rows += columns[fw](name, m, want, bkw, args.device, args.dtype, opts)
         base = rows[0][1] if rows and rows[0][0] == "reference" else None
         for col, ms in rows:
             speed = f"{base / ms:10.1f}x" if base is not None else f"{'—':>11s}"
