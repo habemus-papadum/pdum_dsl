@@ -103,3 +103,4 @@ jobs:
           conformance/test_jax_baselines.py
           conformance/test_f32_columns.py
           conformance/test_tile_columns.py
+          conformance/test_triton_tile.py

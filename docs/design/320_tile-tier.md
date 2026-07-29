@@ -1,9 +1,11 @@
 # 320 — The tile tier: a sister kind, one dialect
 
-**Status: DRAFT — positions converged with the owner (2026-07-29);
-implementation not started.** This records the design conversation's
-outcome so the tiling era opens against written law. Supersedes nothing;
-K-A…K-G (LEVELS.md) remain the parent conversation, 260/270 the arc.
+**Status: RATIFIED IN PRACTICE — §10 items 2–5 are LANDED** (the tier
+gate, stage, the erasure oracle, the three K-D flagships, the
+certification harness, and the Triton pair); the K-A fusion pass (§10.6)
+remains. This records the design conversation's outcome so the tiling
+era opens against written law. K-A…K-G (LEVELS.md) remain the parent
+conversation, 260/270 the arc.
 
 ## The central claim
 
