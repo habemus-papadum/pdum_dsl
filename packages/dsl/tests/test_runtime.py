@@ -2,13 +2,14 @@
 capture values must compile once and only move bytes thereafter — exercised
 through the SPELLED oracle door (200 §1.1): reference(f)(...)."""
 
-import pdum.dsl  # noqa: F401  — batteries: value language + reference oracle into DEFAULT
 import pytest
 from pdum.dsl.api import jit
 from pdum.dsl.cache import CompileForbidden, no_compile
 from pdum.dsl.pipe import collect, op
 from pdum.dsl.reference import REFERENCE, reference
 from pdum.dsl.registry import DEFAULT, Registry
+
+import pdum.dsl  # noqa: F401  — batteries: value language + reference oracle into DEFAULT
 
 _SOURCES = {
     "compiles": lambda: DEFAULT.specializations.compiles,

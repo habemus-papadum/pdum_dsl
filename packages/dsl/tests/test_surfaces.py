@@ -4,15 +4,16 @@ this file touches ONLY public registry surfaces."""
 
 from dataclasses import dataclass
 
-import pdum.dsl  # noqa: F401  — batteries
 import pytest
-from pdum.dsl import install as install_lang
 from pdum.dsl.api import jit
 from pdum.dsl.reference import install as install_reference
 from pdum.dsl.reference import reference
 from pdum.dsl.registry import Registry
 from pdum.dsl.render import emit_dominated  # noqa: F401  (namespace pkg importable)
 from pdum.dsl.surfaces import Dialect, defop, intrinsic, overload, record, spell
+
+import pdum.dsl  # noqa: F401  — batteries
+from pdum.dsl import install as install_lang
 
 
 def _length2(v):  # module-level battery: cross-refs are globals, not captures

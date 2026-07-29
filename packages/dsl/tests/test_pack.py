@@ -6,7 +6,6 @@ import random
 import struct
 
 import pytest
-from pdum.dsl import types as T
 from pdum.dsl.api import jit
 from pdum.dsl.ir import Builder, Region, VerifyError
 from pdum.dsl.lower import lower_handle
@@ -28,6 +27,8 @@ from pdum.dsl.pack import (
 from pdum.dsl.rewrite import Stage, run_stage
 from pdum.dsl.value import LOWER_RULES
 from pdum.dsl.valuekind import BUILTINS
+
+from pdum.dsl import types as T
 
 ALL_OPS = {**CORE_OPS, **ABI_OPS}
 

@@ -3,6 +3,7 @@
 import dataclasses
 
 import pytest
+
 from pdum.dsl import types as T
 
 # --- structural equality and hashing -----------------------------------------

@@ -1,7 +1,6 @@
 """Step 6 — lowering: source -> typed IR, fates, inlining, the build rule."""
 
 import pytest
-from pdum.dsl import types as T
 from pdum.dsl.api import jit
 from pdum.dsl.capture import SourceSnapshot, make_handle
 from pdum.dsl.ir import format_loc, verify
@@ -15,6 +14,8 @@ from pdum.dsl.lower import (
 from pdum.dsl.ops import CORE_OPS
 from pdum.dsl.pipe import PIPE_BUILDERS, op
 from pdum.dsl.value import LOWER_RULES
+
+from pdum.dsl import types as T
 
 # Stand-in registrations (idempotent; also done in test_combinators):
 

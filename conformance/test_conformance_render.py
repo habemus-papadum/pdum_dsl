@@ -4,11 +4,12 @@ vertex/fragment pipeline, differentially, on the development Mac."""
 
 import numpy as np
 import pytest
-from pdum.dsl import jit
 from pdum.dsl.markers import sqrt  # noqa: F401 — bare in device bodies
 from pdum.tl import Tensor, i32, thread_idx  # noqa: F401 — ambient vocabulary: bodies' globals
 from pdum.tl.graphics import fragment, pair, position, render, vertex  # noqa: F401
 from wgsl_executor import Untranslatable, render_wgpu
+
+from pdum.dsl import jit
 
 
 def T(arr, names):
@@ -161,11 +162,12 @@ def test_the_cylinder_renders_on_the_device():
     through the steep AA ramp (max observed ~4e-4 vs the f64
     reference)."""
     _require_device()
-    from pdum.dsl import value_and_grad
     from pdum.dsl.intrinsics import clamp  # noqa: F401 — inlines by capture-and-call
     from pdum.dsl.markers import sqrt  # noqa: F401 — bare in the body
     from pdum.tl.graphics import fragment as _fragment
     from pdum.tl.zoo.cylinder import MESH_DT, TAU, cylinder_mesh, ripple, spun, stripes
+
+    from pdum.dsl import value_and_grad
 
     mesh = cylinder_mesh(16)
     n = mesh.layout.dim("vertex_id").size

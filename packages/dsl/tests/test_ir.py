@@ -4,10 +4,11 @@ import dataclasses
 import typing
 
 import pytest
-from pdum.dsl import types as T
 from pdum.dsl.ir import Builder, CallLoc, FusedLoc, Loc, Node, Region, VerifyError, format_loc, verify
 from pdum.dsl.ops import CORE_OPS, UNIT
 from pdum.dsl.printer import print_program
+
+from pdum.dsl import types as T
 
 b = Builder(CORE_OPS)
 

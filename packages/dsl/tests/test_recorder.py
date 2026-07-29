@@ -1,11 +1,12 @@
 """Design 120 §6 — the recorder: exact counts under sampling, interned
 traces naming the user's loop, the drift canary, expect(), non-reentrancy."""
 
-import pdum.dsl  # noqa: F401
 import pytest
-from pdum.dsl import recorder as events
 from pdum.dsl.api import jit
 from pdum.dsl.reference import reference
+
+import pdum.dsl  # noqa: F401
+from pdum.dsl import recorder as events
 
 
 def drifty_pair():

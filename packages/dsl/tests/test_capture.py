@@ -1,10 +1,11 @@
 """Step 2 — phase-A capture: Handles, FnTypes from live closures, snapshots."""
 
 import pytest
-from pdum.dsl import types as T
 from pdum.dsl.api import jit
 from pdum.dsl.capture import Handle, make_handle
 from pdum.dsl.valuekind import fingerprint, typeof
+
+from pdum.dsl import types as T
 
 
 def make_closure(x):
