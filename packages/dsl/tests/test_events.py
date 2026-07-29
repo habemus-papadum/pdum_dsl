@@ -2,9 +2,9 @@
 wildcards, exception-path spans, depth nesting, and no_compile equivalence."""
 
 import pytest
-from pdum.dsl.events import EventForbidden, emit, forbid, span
 
 from pdum.dsl import events
+from pdum.dsl.events import EventForbidden, emit, forbid, span
 
 
 @pytest.fixture()

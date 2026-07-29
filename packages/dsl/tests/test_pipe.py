@@ -3,6 +3,8 @@
 import itertools
 
 import pytest
+
+from pdum.dsl import types as T
 from pdum.dsl.api import jit
 from pdum.dsl.cache import FastRecord, SpecializationCache, no_compile
 from pdum.dsl.pipe import (
@@ -16,8 +18,6 @@ from pdum.dsl.pipe import (
 )
 from pdum.dsl.registry import DEFAULT
 from pdum.dsl.valuekind import fingerprint, typeof
-
-from pdum.dsl import types as T
 
 # The "device" role and the fuse rule now ship with the stdlib package
 # (batteries, step 8) — importing pdum.dsl.* wired them. Earlier revisions

@@ -7,6 +7,8 @@ from itertools import count
 
 import numpy as np
 import pytest
+
+from pdum.dsl import events
 from pdum.dsl.cache import CompileForbidden
 from pdum.tl import Tensor, defmarker, defreducer
 from pdum.tl.assemblage import assemblage, unit
@@ -16,8 +18,6 @@ from pdum.tl.dialect import run_named
 from pdum.tl.lifting import lift_step
 from pdum.tl.mdsl import exp
 from pdum.tl.registry import MARKERS
-
-from pdum.dsl import events
 
 
 def T(arr, names):

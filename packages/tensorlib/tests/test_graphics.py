@@ -8,6 +8,7 @@ count IS the vid extent.
 """
 
 import numpy as np
+
 from pdum.tl import Tensor, f32, thread_idx  # noqa: F401 — ambient vocabulary: bodies' globals
 from pdum.tl.graphics import fragment, pair, position, render, vertex
 

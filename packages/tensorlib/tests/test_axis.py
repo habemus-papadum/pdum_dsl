@@ -3,6 +3,7 @@ built on it (select compensation, decimate, dilation, align)."""
 
 import numpy as np
 import pytest
+
 from pdum.tl import Dim, Layout, Tensor, aligned, alignment, chart, q
 
 

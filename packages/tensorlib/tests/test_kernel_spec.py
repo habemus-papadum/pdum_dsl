@@ -25,6 +25,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pytest
+
 from pdum.dsl.intrinsics import clamp
 from pdum.dsl.markers import sqrt
 from pdum.tl import (  # noqa: F401 — ambient vocabulary resolved from bodies' globals
@@ -247,10 +248,9 @@ def test_derivative_type_law_records_mirror_their_value():
     records). The record is DECLARED (surface C) — its constructor joins
     the vocabulary; construction folds at lowering, so the spliced kernel
     stays scalar rows."""
+    from pdum.dsl import jit
     from pdum.dsl.registry import DEFAULT
     from pdum.dsl.surfaces import record
-
-    from pdum.dsl import jit
 
     if not getattr(_RG, "__dsl_record__", None):
         record(DEFAULT, _RG)
@@ -408,9 +408,8 @@ def test_quad_from_the_draw_ambient_pairs_with_the_compute_zoo_f():
     zoo, PSO pairing (its own composition, never |), and rendering
     through the reference interpolator. Return is MANDATORY (position /
     color0); everything else is claimed by naming it."""
-    from pdum.tl.graphics import fragment, pair, position, render, vertex  # noqa: F401
-
     from pdum.dsl import jit
+    from pdum.tl.graphics import fragment, pair, position, render, vertex  # noqa: F401
 
     def circle(cy, cx, r):
         @jit()
@@ -446,9 +445,8 @@ def test_subset_pairing_shares_one_fragment_artifact():
     pairing checks produced ⊇ required — so two vertex shaders with
     different superset interfaces share ONE fragment artifact, and
     adding a varying breaks no existing pairing."""
-    from pdum.tl.graphics import fragment, pair, position, vertex  # noqa: F401
-
     from pdum.dsl import events
+    from pdum.tl.graphics import fragment, pair, position, vertex  # noqa: F401
 
     @vertex
     def lean():
@@ -492,10 +490,9 @@ def test_fragment_taps_bind_render_buffers_mrt():
     """A claimed binding in the fragment — or inside the f it calls — binds
     to a second render target at the pass: MRT, G-buffers for free. The
     bound NAME SET specializes the pair; the buffers are invocation data."""
+    from pdum.dsl import jit
     from pdum.tl.graphics import fragment, pair, position, render, vertex  # noqa: F401
     from pdum.tl.kernel import config
-
-    from pdum.dsl import jit
 
     def shaded(cy, cx, r):
         @jit()

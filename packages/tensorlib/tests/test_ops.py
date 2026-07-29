@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+
 from pdum.tl import Dim, Injectivity, Layout, Tensor, bfloat16
 
 

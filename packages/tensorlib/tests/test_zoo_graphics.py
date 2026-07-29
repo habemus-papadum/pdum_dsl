@@ -1,6 +1,7 @@
 """The graphics zoo: the spinning cylinder (P8) — reference tier."""
 
 import numpy as np
+
 from pdum.tl.zoo.cylinder import TAU, cylinder_mesh, demo_frames, stripes
 
 

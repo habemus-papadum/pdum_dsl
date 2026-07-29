@@ -4,9 +4,9 @@ value_and_grad as a Derived transform, refusals where the doctrine draws
 lines (branches unvetted, the table never guesses)."""
 
 import pytest
-from pdum.dsl.ir import VerifyError
 
 from pdum.dsl import jit, reference, value_and_grad
+from pdum.dsl.ir import VerifyError
 
 
 @jit()

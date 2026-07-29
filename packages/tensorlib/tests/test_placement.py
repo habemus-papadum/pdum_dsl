@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+
 from pdum.tl import Machine, Tensor, mesh, peak_memory, pointwise, pw, red, reduce, traffic
 from pdum.tl.autodiff import grad, numeric_grad
 from pdum.tl.dialect import run_named

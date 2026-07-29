@@ -2,11 +2,11 @@
 traces naming the user's loop, the drift canary, expect(), non-reentrancy."""
 
 import pytest
-from pdum.dsl.api import jit
-from pdum.dsl.reference import reference
 
 import pdum.dsl  # noqa: F401
 from pdum.dsl import recorder as events
+from pdum.dsl.api import jit
+from pdum.dsl.reference import reference
 
 
 def drifty_pair():

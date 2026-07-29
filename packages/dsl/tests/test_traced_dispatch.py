@@ -5,12 +5,12 @@ and Pipelines — through both paths via the spelled oracle door. (Transform
 targets rejoin the matrix with the tensor tier.)"""
 
 import pytest
-from pdum.dsl.api import jit
-from pdum.dsl.pipe import op
-from pdum.dsl.registry import DEFAULT
 
 import pdum.dsl  # noqa: F401
 from pdum.dsl import events  # the SEAM (emit/span/SINKS), not the recorder
+from pdum.dsl.api import jit
+from pdum.dsl.pipe import op
+from pdum.dsl.registry import DEFAULT
 
 PHASES = {"dispatch.probe", "dispatch.extract", "dispatch.pack", "dispatch.launch"}
 

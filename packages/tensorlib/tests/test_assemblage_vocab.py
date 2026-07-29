@@ -4,6 +4,7 @@ mandatory contract axes — lowered AND eager, matching numpy."""
 
 import numpy as np
 import pytest
+
 from pdum.tl import Tensor
 from pdum.tl.compute import const_like, contract, iota, pointwise, red, reduce, repeat_like
 from pdum.tl.dialect import run_named, walk_region

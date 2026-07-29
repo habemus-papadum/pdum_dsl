@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 import numpy as np
+
 from pdum.dsl.derivative import TABLE, Const, Prim
 from pdum.dsl.ir import Builder, Region
 from pdum.dsl.lower import Lowerer, check_coherence

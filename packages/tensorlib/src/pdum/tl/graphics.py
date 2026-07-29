@@ -39,6 +39,7 @@ import struct
 from dataclasses import dataclass
 
 import numpy as np
+
 from pdum.dsl.cache import Memo
 from pdum.dsl.ir import Region
 from pdum.dsl.lower import Lowerer, check_coherence

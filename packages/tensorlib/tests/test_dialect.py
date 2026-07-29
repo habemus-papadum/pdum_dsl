@@ -10,6 +10,7 @@ bit-identical, dropout on)."""
 
 import numpy as np
 import pytest
+
 from pdum.dsl.ir import Builder, Region
 from pdum.tl import Tensor, compute, f32, thread_idx  # noqa: F401 — ambient vocabulary: bodies' globals
 from pdum.tl.compute import const_like, pointwise, reduce, repeat_like  # noqa: F401 — S.1 spellings in bodies

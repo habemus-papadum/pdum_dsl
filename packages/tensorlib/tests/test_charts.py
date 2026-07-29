@@ -4,6 +4,7 @@ from fractions import Fraction
 
 import numpy as np
 import pytest
+
 from pdum.tl import Chart, Dim, Layout, Tensor, chart, q, u
 
 

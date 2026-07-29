@@ -4,12 +4,11 @@ the same child walker, and its methods inline like any other."""
 
 from dataclasses import dataclass
 
+import pdum.dsl  # noqa: F401 — batteries
+from pdum.dsl import Registry, install, jit
 from pdum.dsl.cache import no_compile
 from pdum.dsl.reference import reference
 from pdum.dsl.surfaces import record
-
-import pdum.dsl  # noqa: F401 — batteries
-from pdum.dsl import Registry, install, jit
 
 
 @dataclass(frozen=True)

@@ -9,6 +9,7 @@ embedding gradient); indices are gradient-free.
 
 import numpy as np
 import pytest
+
 from pdum.tl import (
     Tensor,
     argsort,

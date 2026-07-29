@@ -9,6 +9,7 @@ distinct unknown-op voice, and tier preservation through transforms.
 
 import numpy as np
 import pytest
+
 from pdum.dsl.ir import Builder, VerifyError
 from pdum.dsl.ops import CORE_OPS
 from pdum.tl import Tensor, red, reduce

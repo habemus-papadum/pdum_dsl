@@ -8,6 +8,8 @@ import struct
 
 import numpy as np
 import pytest
+
+from pdum.dsl import events
 from pdum.tl import Tensor
 from pdum.tl.assemblage import assemblage, unit
 from pdum.tl.compute import contract, repeat_like
@@ -15,8 +17,6 @@ from pdum.tl.dialect import run_named
 from pdum.tl.opcount import ops_count
 from pdum.tl.provisioning import init, normal, ones, provision, safetensors, zeros
 from pdum.tl.scope import scope
-
-from pdum.dsl import events
 
 
 def T(arr, names):

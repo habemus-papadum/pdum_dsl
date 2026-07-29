@@ -1,6 +1,7 @@
 """Step 1: the affine + box core, at the Layout level (no buffers)."""
 
 import pytest
+
 from pdum.tl import Dim, Injectivity, Layout
 
 

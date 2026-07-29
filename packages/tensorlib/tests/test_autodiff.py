@@ -7,6 +7,7 @@ representation."""
 
 import numpy as np
 import pytest
+
 from pdum.dsl.ir import Builder, Region
 from pdum.dsl.ops import CORE_OPS
 from pdum.tl import Tensor, red, reduce, scan

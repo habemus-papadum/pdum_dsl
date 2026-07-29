@@ -6,6 +6,7 @@ boundary-facts terms."""
 
 import numpy as np
 import pytest
+
 from pdum.tl import Tensor, red, reduce
 from pdum.tl.autodiff import grad
 from pdum.tl.dialect import run_named

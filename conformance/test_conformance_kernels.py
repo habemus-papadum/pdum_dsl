@@ -9,11 +9,11 @@ no adapter, or a named untranslatable op.
 
 import numpy as np
 import pytest
+
+from pdum.dsl import jit, op
 from pdum.tl import Tensor, compute, f32, global_idx, i32, thread_idx  # noqa: F401 — bodies' globals
 from pdum.tl.markers import exp, log, maximum, sin, sqrt, tanh  # noqa: F401 — bare in kernel bodies
 from wgsl_executor import Untranslatable, wgpu_artifact
-
-from pdum.dsl import jit, op
 
 
 def T(arr, names):

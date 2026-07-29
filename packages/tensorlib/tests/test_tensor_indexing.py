@@ -5,6 +5,7 @@ store-side promotion (scalar → memoryless const broadcast)."""
 
 import numpy as np
 import pytest
+
 from pdum.tl import Frame, Slice, Tensor, extent, q
 
 

@@ -6,6 +6,7 @@ from fractions import Fraction
 
 import numpy as np
 import pytest
+
 from pdum.dsl.types import Literal
 from pdum.tl import Tensor
 from pdum.tl.chart import chart

@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+
 from pdum.dsl.markers import (  # noqa: F401 — THE vocabulary, one home
     Marker,
     add,

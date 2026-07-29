@@ -15,12 +15,12 @@ buffer, so the far side overdraws in draw order (BOUNDARIES.md).
 """
 
 import numpy as np
+
+from pdum.dsl import jit, value_and_grad
 from pdum.dsl.intrinsics import clamp  # noqa: F401 — inlines by capture-and-call
 from pdum.dsl.markers import cos, sin, sqrt  # noqa: F401 — bare in bodies
 from pdum.tl import Tensor, compute, global_idx, thread_idx  # noqa: F401 — bodies' globals
 from pdum.tl.graphics import fragment, pair, position, render, vertex
-
-from pdum.dsl import jit, value_and_grad
 
 TAU = 6.283185307179586
 

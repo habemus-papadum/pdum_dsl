@@ -6,6 +6,7 @@ the grad map joins on those names; one leaf captured twice receives ONE
 summed gradient."""
 
 import numpy as np
+
 from pdum.tl.assemblage import assemblage, unit
 from pdum.tl.autodiff import grad, numeric_grad
 from pdum.tl.compute import red, reduce, repeat_like

@@ -10,6 +10,7 @@ mechanism.
 """
 
 import pytest
+
 from pdum.tl import defmarker
 from pdum.tl.derivative import TABLE
 from pdum.tl.mdsl import exp, tanh

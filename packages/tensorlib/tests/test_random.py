@@ -4,6 +4,7 @@ foundation — with the dropout idiom and gradient-free AD behavior."""
 
 import numpy as np
 import pytest
+
 from pdum.tl import Tensor, fold_in, normal, uniform
 from pdum.tl.autodiff import grad
 from pdum.tl.random import RandomBuffer, _philox2x32

@@ -6,6 +6,7 @@ the contract."""
 from fractions import Fraction
 
 import pytest
+
 from pdum.tl import Coordinate, Displacement, Frame, Slice, chart, extent, q
 
 Y = Frame("y", 0, 512)

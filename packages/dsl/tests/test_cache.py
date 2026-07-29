@@ -4,6 +4,7 @@ import itertools
 import threading
 
 import pytest
+
 from pdum.dsl.api import jit
 from pdum.dsl.cache import (
     ArtifactCache,

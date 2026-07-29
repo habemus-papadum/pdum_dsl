@@ -3,9 +3,9 @@
 import random
 
 import pytest
-from pdum.dsl.valuekind import BUILTINS, BigIntError, fingerprint, typeof
 
 from pdum.dsl import types as T
+from pdum.dsl.valuekind import BUILTINS, BigIntError, fingerprint, typeof
 
 
 def test_typeof_scalars():

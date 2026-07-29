@@ -1,6 +1,7 @@
 """The license schema stub (200 §4/§8): declarations, closed taxonomy."""
 
 import pytest
+
 from pdum.tl.licenses import GEMM_F16_TILES, KINDS, Descent, License
 
 

@@ -60,6 +60,8 @@ from dataclasses import dataclass
 from dataclasses import replace as _dc_replace
 
 import numpy as np
+
+from pdum.dsl import events
 from pdum.dsl.cache import ArtifactCache, Memo
 from pdum.dsl.ir import Builder, Node, Region
 from pdum.dsl.lower import Lowerer, check_coherence, lower_handle
@@ -73,8 +75,6 @@ from pdum.dsl.value import _assign as _value_assign
 from pdum.dsl.value import _name as _value_name
 from pdum.dsl.value import _subscript as _value_subscript
 from pdum.dsl.valuekind import typeof
-
-from pdum.dsl import events
 
 from .coords import Frame, admit_frame
 from .dialect import (

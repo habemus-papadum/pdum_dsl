@@ -8,14 +8,14 @@ struct-element round-trip through a structured encoding."""
 
 import numpy as np
 import pytest
+
+from pdum.dsl import events, jit, op
 from pdum.dsl.reference import reference
 from pdum.tl import Tensor
 from pdum.tl.compute import iota, pointwise
 from pdum.tl.kernel import KERNELS, compute, config, f32, i32, thread_idx
 from pdum.tl.zoo.zoo_common import GELU_C, np_gelu
 from pdum.tl.zoo.zoo_common import gelu as gelu_marker
-
-from pdum.dsl import events, jit, op
 
 
 def T(arr, names):

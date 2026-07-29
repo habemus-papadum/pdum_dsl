@@ -4,6 +4,8 @@ are identity-bearing, taps select outputs, dropout is the mode-aware idiom."""
 
 import numpy as np
 import pytest
+
+from pdum.dsl import events
 from pdum.dsl.naming import NameCollision
 from pdum.tl import Tensor
 from pdum.tl.assemblage import assemblage, unit
@@ -11,8 +13,6 @@ from pdum.tl.compute import contract, repeat_like
 from pdum.tl.dialect import run_named, walk_region
 from pdum.tl.random import uniform
 from pdum.tl.scope import dropout, scope, tap
-
-from pdum.dsl import events
 
 
 def T(arr, names):

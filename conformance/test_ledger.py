@@ -13,14 +13,14 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+
 import wgsl_executor as wx
+from pdum.dsl import events, jit
 from pdum.tl import Tensor, compute, f32, global_idx, i32, thread_idx  # noqa: F401 — bodies' globals
 from pdum.tl.dialect import _FAMILIES, _TIER_EXTRA, TIERS
 from pdum.tl.kernel import _compile
 from pdum.tl.zoo.zoo_common import gelu  # noqa: F401 — a composite marker: no device row
 from wgsl_executor import Untranslatable, _translate
-
-from pdum.dsl import events, jit
 
 LEDGER = tomllib.loads((Path(wx.__file__).parent.parent / "packages/tensorlib/src/pdum/tl/ledger.toml").read_text())
 

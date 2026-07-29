@@ -3,6 +3,7 @@ categorical labels — the nominal rung of the measurement ladder."""
 
 import numpy as np
 import pytest
+
 from pdum.tl import Chart, Dim, Tensor, characteristic, chart, q
 
 # ----------------------------------------------------------------------

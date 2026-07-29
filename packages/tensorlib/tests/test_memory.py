@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+
 from pdum.tl import Tensor, iota, pointwise, red, reduce
 from pdum.tl.autodiff import grad
 from pdum.tl.compute import const_like

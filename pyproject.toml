@@ -89,6 +89,12 @@ line-length = 120
 select = ["E", "F", "W", "I"]
 ignore = []
 
+[tool.ruff.lint.isort]
+# Explicit so classification never depends on the environment: the workspace
+# has no root src/ (members live under packages/*/src), and a stray local
+# src/ dir would otherwise flip pdum to first-party only on that machine.
+known-first-party = ["pdum", "wgsl_executor"]
+
 [tool.pytest.ini_options]
 testpaths = ["packages/dsl/tests", "packages/tensorlib/tests", "conformance"]
 # importlib mode: the two members' suites may share test basenames (test_ir.py)

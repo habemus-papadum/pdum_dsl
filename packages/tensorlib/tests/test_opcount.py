@@ -1,6 +1,7 @@
 """The ops-count model: named buckets, cost models, MAC fusion."""
 
 import numpy as np
+
 from pdum.tl import Tensor, defmarker, defreducer, ops_count, pointwise, red, reduce, scan
 from pdum.tl.lifting import lift_step
 from pdum.tl.mdsl import exp as sym_exp

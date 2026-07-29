@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+
 from pdum.dsl.ir import Builder, Region
 from pdum.dsl.ops import CORE_OPS
 from pdum.tl import Tensor, defreducer, ops_count, peak_memory, red, reduce, scan

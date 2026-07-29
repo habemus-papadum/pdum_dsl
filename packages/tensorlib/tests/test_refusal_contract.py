@@ -7,6 +7,7 @@ literal expectation; a drifted message is an API break, not a cleanup.
 
 import numpy as np
 import pytest
+
 from pdum.dsl.ir import Builder, Region
 from pdum.dsl.naming import NameCollision, Namer
 from pdum.dsl.ops import CORE_OPS

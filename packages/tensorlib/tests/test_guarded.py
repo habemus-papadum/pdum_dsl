@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+
 from pdum.tl import GuardedLayout, Layout, Tensor
 
 

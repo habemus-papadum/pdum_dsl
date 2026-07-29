@@ -32,6 +32,7 @@ import struct
 from dataclasses import replace
 
 import numpy as np
+
 from pdum.tl.dialect import _thaw_params, walk_region
 from pdum.tl.tensor import Tensor
 

@@ -2,13 +2,13 @@
 return, and the refusals that define the bounded-loop subset."""
 
 import pytest
+
+import pdum.dsl  # noqa: F401
 from pdum.dsl.api import jit
 from pdum.dsl.cache import no_compile
 from pdum.dsl.ir import VerifyError
 from pdum.dsl.lower import MissingRule
 from pdum.dsl.reference import reference
-
-import pdum.dsl  # noqa: F401
 
 
 def test_if_statement_joins_and_stays_lazy():
@@ -212,11 +212,10 @@ def test_loop_binder_keys_are_deterministic():
     kernel must produce the SAME content key no matter what lowered before
     it through a shared rules dict (review-caught: a shared counter made
     artifact keys depend on process history)."""
+    from pdum.dsl import types as T
     from pdum.dsl.lower import lower_handle
     from pdum.dsl.ops import CORE_OPS
     from pdum.dsl.registry import DEFAULT
-
-    from pdum.dsl import types as T
 
     def build():
         @jit()

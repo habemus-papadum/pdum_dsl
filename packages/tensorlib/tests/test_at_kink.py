@@ -7,6 +7,7 @@ expectations; a drifted selection is an API break.
 """
 
 import numpy as np
+
 from pdum.tl import Tensor, pointwise, red, reduce
 from pdum.tl.autodiff import grad
 from pdum.tl.dialect import run_named, run_region

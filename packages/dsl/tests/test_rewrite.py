@@ -1,12 +1,12 @@
 """Step 5 — the rewrite engine: rules as data, one driver, stage legality."""
 
 import pytest
+
+from pdum.dsl import types as T
 from pdum.dsl.ir import Builder, Region, VerifyError
 from pdum.dsl.ops import CORE_OPS
 from pdum.dsl.printer import print_program
 from pdum.dsl.rewrite import MatchLog, Pat, Stage, check_legal, rewrite, run_stage
-
-from pdum.dsl import types as T
 
 b = Builder(CORE_OPS)
 

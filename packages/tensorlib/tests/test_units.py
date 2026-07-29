@@ -3,6 +3,7 @@
 from fractions import Fraction
 
 import pytest
+
 from pdum.tl import Quantity, UnitRegistry, q, u
 
 

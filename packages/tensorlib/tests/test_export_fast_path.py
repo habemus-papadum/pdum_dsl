@@ -11,6 +11,7 @@ layouts (fill) and functional buffers DECLINE the fast path and keep the loop.
 
 import numpy as np
 import pytest
+
 from pdum.tl import Tensor
 from pdum.tl.compute import iota
 
