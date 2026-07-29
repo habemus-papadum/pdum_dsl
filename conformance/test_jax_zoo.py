@@ -1,15 +1,15 @@
-"""The torch CHECK column over the zoo (310): every entry's region, evaluated
-on the torch substrate at f64, matches its numpy denotation — the same
-assertion test_zoo.py makes of the reference interpreter, on a second,
-independent substrate. When a CUDA device is present the whole battery runs
-there too (whole-chain-on-device: every op of the region computes on the
-device column, nothing quietly falls back to host — PR #8's rule)."""
+"""The jax CHECK column over the zoo (310): every entry's region, evaluated
+on the jax substrate at f64 (x64 enabled), matches its numpy denotation —
+test_torch_zoo's assertion on the third substrate. When a CUDA device is
+present the whole battery runs there too, whole-chain on the device
+column (PR #8's rule)."""
 
 import numpy as np
 import pytest
 
-torch = pytest.importorskip("torch", reason="the torch reference-runtime group is not installed")
+jax = pytest.importorskip("jax", reason="the jax reference-runtime group is not installed")
 
+from jax_evaluator import Untranslatable, run_named_jax  # noqa: E402 — needs the importorskip above
 from pdum.tl.zoo import (  # noqa: E402
     fdtd1d_staggered,
     flash_attention,
@@ -23,7 +23,6 @@ from pdum.tl.zoo import (  # noqa: E402
     tiled_matmul,
     unrolled_trainer,
 )
-from torch_evaluator import Untranslatable, run_named_torch  # noqa: E402 — needs the importorskip above
 
 ENTRIES = {
     "gpt2": gpt2,
@@ -55,20 +54,20 @@ def _param_inputs(m):
 def _differential(name, device):
     m = ENTRIES[name]()
     try:
-        vals = run_named_torch(m.region, _param_inputs(m), m.names, device=device)
+        vals = run_named_jax(m.region, _param_inputs(m), m.names, device=device)
     except Untranslatable as exc:
-        pytest.skip(f"no torch translation yet: {exc}")
+        pytest.skip(f"no jax translation yet: {exc}")
     got = vals[m.out].numpy(order=m.order)
     np.testing.assert_allclose(got, m.ref(m.numpy_inputs()), rtol=1e-9, atol=1e-12)
 
 
 @pytest.mark.parametrize("name", sorted(ENTRIES))
-def test_zoo_forward_matches_numpy_on_torch_cpu(name):
+def test_zoo_forward_matches_numpy_on_jax_cpu(name):
     _differential(name, "cpu")
 
 
 @pytest.mark.parametrize("name", sorted(ENTRIES))
-def test_zoo_forward_matches_numpy_on_torch_cuda(name):
-    if not torch.cuda.is_available():
-        pytest.skip("no CUDA device available")
+def test_zoo_forward_matches_numpy_on_jax_cuda(name):
+    if not any(d.platform == "gpu" for d in jax.devices()):
+        pytest.skip("no CUDA device available to jax")
     _differential(name, "cuda")

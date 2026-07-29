@@ -1,7 +1,7 @@
 # 310 — Reference runtimes: third-party columns before tiling
 
-**Status: owner-ratified direction (2026-07-28); the torch column is
-LANDED.** Before the tiling era opens, the stack grows reference points
+**Status: owner-ratified direction (2026-07-28); the torch AND jax
+columns are LANDED.** Before the tiling era opens, the stack grows reference points
 it intends to exceed: framework-served runtime columns (torch, then
 JAX), a benchmarking discipline over them, and a cuda.tile
 reconnaissance probe. 270's arc is unchanged — whole-program analysis
@@ -41,6 +41,16 @@ per substrate is the whole porting surface. Uncovered ops raise
 `Untranslatable` naming the op (wgsl_executor's law); the zoo's full
 vocabulary (19 tl ops + 4 core) is covered.
 
+ONE core, per-framework hooks (283's emitter philosophy, and the line
+discipline's answer): the dims machinery, the take/scatter/fold
+algorithms, and the dispatch live once in
+`conformance/region_evaluator.py`; a framework column contributes a
+`Substrate` — ~16 array hooks plus the marker table (~120 lines each for
+torch and jax). Where the frameworks genuinely agree (operators, basic
+indexing, advanced-indexing gather) the core uses the shared spelling;
+hooks exist only for true divergences (mutation vs `.at[]`, axis-op
+namespaces, x64 policy).
+
 ## Placement: conformance now, rt Pair at the seam
 
 The columns live under `conformance/` today — the conformance-executor
@@ -79,8 +89,13 @@ era; the gemm/heat2d entries are its subjects).
 
 1. **torch** — landed: evaluator, 12-entry zoo differential (CPU+CUDA),
    9 idiomatic baselines, the rig.
-2. **jax** — same two columns behind a `jax` group; the evaluator's
-   dims-from-types mechanism transfers wholesale.
+2. **jax** — landed (`jax[cuda13]` group): same two columns; the whole
+   zoo passed the substrate-core port on the first run. The rig's first
+   four-column signal: jitted-jax is the strongest baseline on most
+   entries, while the EAGER jax translated column pays XLA's per-op
+   dispatch tax (up to ~25x slower than eager torch on the same
+   region, below the numpy reference on flash/moe) — the measured
+   motivation for step 3.
 3. **graph-level compile wrap** — `torch.compile` / `jax.jit` around
    the translated callable: the level-1 fusion bar for free.
 4. **cuda.tile probe** — reconnaissance for our own tiling design

@@ -73,6 +73,7 @@ dev = [
 # Reference-runtime columns (310): NEVER default groups — the core stays
 # numpy+wgpu; conformance tests importorskip, benchmarks opt in explicitly.
 torch = ["torch>=2.13"]
+jax = ["jax[cuda13]>=0.11"]
 
 [tool.ruff]
 target-version = "py314"
@@ -96,7 +97,17 @@ ignore = []
 # Explicit so classification never depends on the environment: the workspace
 # has no root src/ (members live under packages/*/src), and a stray local
 # src/ dir would otherwise flip pdum to first-party only on that machine.
-known-first-party = ["pdum", "wgsl_executor"]
+# The conformance-local modules (path-injected by conformance/conftest.py)
+# are first-party the same way wgsl_executor is.
+known-first-party = [
+    "pdum",
+    "wgsl_executor",
+    "region_evaluator",
+    "torch_evaluator",
+    "jax_evaluator",
+    "torch_zoo",
+    "jax_zoo",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["packages/dsl/tests", "packages/tensorlib/tests", "conformance"]
