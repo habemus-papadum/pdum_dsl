@@ -65,7 +65,7 @@
             <a id="nextFileLink" class="nav" href="z_ca82e93cc52c632d_gpt2_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.15.2">coverage.py v7.15.2</a>,
-            created at 2026-07-28 20:59 +0000
+            created at 2026-07-29 00:27 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -137,7 +137,7 @@
     <p class="run run2"><span class="n"><a id="t55" href="#t55">55</a></span><span class="t">        <span class="str">"b"</span><span class="op">:</span> <span class="nam">Tensor</span><span class="op">.</span><span class="nam">from_numpy</span><span class="op">(</span><span class="nam">rng</span><span class="op">.</span><span class="nam">standard_normal</span><span class="op">(</span><span class="op">(</span><span class="nam">cfg</span><span class="op">.</span><span class="nam">k</span><span class="op">,</span> <span class="nam">cfg</span><span class="op">.</span><span class="nam">n</span><span class="op">)</span><span class="op">)</span><span class="op">,</span> <span class="op">(</span><span class="str">"k"</span><span class="op">,</span> <span class="str">"n"</span><span class="op">)</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t56" href="#t56">56</a></span><span class="t">    <span class="op">}</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t57" href="#t57">57</a></span><span class="t">    <span class="nam">ls</span> <span class="op">=</span> <span class="nam">lift_step</span><span class="op">(</span><span class="nam">make_tiled_matmul</span><span class="op">(</span><span class="nam">cfg</span><span class="op">)</span><span class="op">,</span> <span class="op">**</span><span class="op">{</span><span class="nam">k</span><span class="op">:</span> <span class="nam">v</span><span class="op">.</span><span class="nam">layout</span> <span class="key">for</span> <span class="nam">k</span><span class="op">,</span> <span class="nam">v</span> <span class="key">in</span> <span class="nam">inputs</span><span class="op">.</span><span class="nam">items</span><span class="op">(</span><span class="op">)</span><span class="op">}</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t58" href="#t58">58</a></span><span class="t">    <span class="key">return</span> <span class="nam">ZooModel</span><span class="op">(</span><span class="nam">ls</span><span class="op">.</span><span class="nam">program</span><span class="op">,</span> <span class="nam">inputs</span><span class="op">,</span> <span class="nam">ls</span><span class="op">.</span><span class="nam">outputs</span><span class="op">[</span><span class="num">0</span><span class="op">]</span><span class="op">,</span> <span class="key">lambda</span> <span class="nam">inp</span><span class="op">:</span> <span class="nam">inp</span><span class="op">[</span><span class="str">"a"</span><span class="op">]</span> <span class="op">@</span> <span class="nam">inp</span><span class="op">[</span><span class="str">"b"</span><span class="op">]</span><span class="op">,</span> <span class="op">(</span><span class="str">"m"</span><span class="op">,</span> <span class="str">"n"</span><span class="op">)</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t58" href="#t58">58</a></span><span class="t">    <span class="key">return</span> <span class="nam">ZooModel</span><span class="op">(</span><span class="nam">ls</span><span class="op">.</span><span class="nam">region</span><span class="op">,</span> <span class="nam">inputs</span><span class="op">,</span> <span class="nam">ls</span><span class="op">.</span><span class="nam">outputs</span><span class="op">[</span><span class="num">0</span><span class="op">]</span><span class="op">,</span> <span class="key">lambda</span> <span class="nam">inp</span><span class="op">:</span> <span class="nam">inp</span><span class="op">[</span><span class="str">"a"</span><span class="op">]</span> <span class="op">@</span> <span class="nam">inp</span><span class="op">[</span><span class="str">"b"</span><span class="op">]</span><span class="op">,</span> <span class="op">(</span><span class="str">"m"</span><span class="op">,</span> <span class="str">"n"</span><span class="op">)</span><span class="op">,</span> <span class="nam">ls</span><span class="op">.</span><span class="nam">names</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
 </main>
 <footer>
     <div class="content">
@@ -147,7 +147,7 @@
             <a class="nav" href="z_ca82e93cc52c632d_gpt2_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.15.2">coverage.py v7.15.2</a>,
-            created at 2026-07-28 20:59 +0000
+            created at 2026-07-29 00:27 +0000
         </p>
     </div>
 </footer>

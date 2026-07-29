@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-    <title>Coverage for packages/tensorlib/src/pdum/tl/layout.py: 88%</title>
+    <title>Coverage for packages/tensorlib/src/pdum/tl/layout.py: 89%</title>
     <link rel="icon" sizes="32x32" href="favicon_32_cb_c827f16f.png">
     <link rel="stylesheet" href="style_cb_4667309f.css" type="text/css">
     <script src="coverage_html_cb_dd2e7eb5.js" defer></script>
@@ -12,7 +12,7 @@
     <div class="content">
         <h1>
             <span class="text">Coverage for </span><b>packages<span class="sep">/</span>tensorlib<span class="sep">/</span>src<span class="sep">/</span>pdum<span class="sep">/</span>tl<span class="sep">/</span>layout.py</b>:
-            <span class="pc_cov">88%</span>
+            <span class="pc_cov">89%</span>
         </h1>
         <aside id="help_panel_wrapper">
             <input id="help_panel_state" type="checkbox">
@@ -54,9 +54,9 @@
             </div>
         </aside>
         <h2>
-            <span class="text">549 statements &nbsp;</span>
-            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">485<span class="text"> run</span></button>
-            <button type="button" class="mis show_mis button_toggle_mis" value="mis" data-shortcut="m" title="Toggle lines missing">64<span class="text"> missing</span></button>
+            <span class="text">557 statements &nbsp;</span>
+            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">494<span class="text"> run</span></button>
+            <button type="button" class="mis show_mis button_toggle_mis" value="mis" data-shortcut="m" title="Toggle lines missing">63<span class="text"> missing</span></button>
             <button type="button" class="exc show_exc button_toggle_exc" value="exc" data-shortcut="x" title="Toggle lines excluded">0<span class="text"> excluded</span></button>
         </h2>
         <p class="text">
@@ -65,7 +65,7 @@
             <a id="nextFileLink" class="nav" href="z_1d26d7eea0f62213_licenses_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.15.2">coverage.py v7.15.2</a>,
-            created at 2026-07-28 20:59 +0000
+            created at 2026-07-29 00:27 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -818,7 +818,7 @@
     <p class="run run2"><span class="n"><a id="t736" href="#t736">736</a></span><span class="t">                    <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t737" href="#t737">737</a></span><span class="t">                <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t738" href="#t738">738</a></span><span class="t">            <span class="key">else</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t739" href="#t739">739</a></span><span class="t">                <span class="nam">new</span><span class="op">.</span><span class="nam">append</span><span class="op">(</span><span class="nam">x</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t739" href="#t739">739</a></span><span class="t">                <span class="nam">new</span><span class="op">.</span><span class="nam">append</span><span class="op">(</span><span class="nam">x</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t740" href="#t740">740</a></span><span class="t">        <span class="key">return</span> <span class="nam">replace</span><span class="op">(</span><span class="nam">self</span><span class="op">,</span> <span class="nam">dims</span><span class="op">=</span><span class="nam">tuple</span><span class="op">(</span><span class="nam">new</span><span class="op">)</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t741" href="#t741">741</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t742" href="#t742">742</a></span><span class="t">    <span class="key">def</span> <span class="nam">decimate</span><span class="op">(</span><span class="nam">self</span><span class="op">,</span> <span class="nam">name</span><span class="op">:</span> <span class="nam">str</span><span class="op">,</span> <span class="nam">factor</span><span class="op">:</span> <span class="nam">int</span><span class="op">,</span> <span class="nam">phase</span><span class="op">=</span><span class="num">0</span><span class="op">)</span> <span class="op">-></span> <span class="str">"Layout"</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
@@ -956,6 +956,18 @@
     <p class="run"><span class="n"><a id="t874" href="#t874">874</a></span><span class="t">        <span class="nam">kind</span> <span class="op">=</span> <span class="str">"position"</span> <span class="key">if</span> <span class="nam">any</span><span class="op">(</span><span class="nam">c</span><span class="op">.</span><span class="nam">kind</span> <span class="op">==</span> <span class="str">"position"</span> <span class="key">for</span> <span class="nam">c</span> <span class="key">in</span> <span class="nam">charts</span><span class="op">)</span> <span class="key">else</span> <span class="str">"displacement"</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t875" href="#t875">875</a></span><span class="t">        <span class="key">return</span> <span class="nam">Chart</span><span class="op">(</span><span class="nam">origin</span><span class="op">,</span> <span class="nam">step</span><span class="op">,</span> <span class="nam">kind</span><span class="op">,</span> <span class="nam">_axis_of</span><span class="op">(</span><span class="nam">ds</span><span class="op">[</span><span class="num">0</span><span class="op">]</span><span class="op">)</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t876" href="#t876">876</a></span><span class="t">    <span class="key">return</span> <span class="key">None</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t877" href="#t877">877</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t878" href="#t878">878</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t879" href="#t879">879</a></span><span class="t"><span class="key">def</span> <span class="nam">_dense_like</span><span class="op">(</span><span class="nam">dims</span><span class="op">:</span> <span class="nam">tuple</span><span class="op">[</span><span class="nam">Dim</span><span class="op">,</span> <span class="op">...</span><span class="op">]</span><span class="op">)</span> <span class="op">-></span> <span class="nam">Layout</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t880" href="#t880">880</a></span><span class="t">    <span class="str">"""A plain layout over the given dims with fabricated C-order strides</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t881" href="#t881">881</a></span><span class="t"><span class="str">    (uniform 8-byte itemsize; only relative nesting matters)."""</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t882" href="#t882">882</a></span><span class="t">    <span class="nam">strides</span> <span class="op">=</span> <span class="op">[</span><span class="op">]</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t883" href="#t883">883</a></span><span class="t">    <span class="nam">acc</span> <span class="op">=</span> <span class="num">8</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t884" href="#t884">884</a></span><span class="t">    <span class="key">for</span> <span class="nam">d</span> <span class="key">in</span> <span class="nam">reversed</span><span class="op">(</span><span class="nam">dims</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t885" href="#t885">885</a></span><span class="t">        <span class="nam">strides</span><span class="op">.</span><span class="nam">append</span><span class="op">(</span><span class="nam">acc</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t886" href="#t886">886</a></span><span class="t">        <span class="nam">acc</span> <span class="op">*=</span> <span class="nam">max</span><span class="op">(</span><span class="nam">d</span><span class="op">.</span><span class="nam">size</span><span class="op">,</span> <span class="num">1</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t887" href="#t887">887</a></span><span class="t">    <span class="nam">new</span> <span class="op">=</span> <span class="nam">tuple</span><span class="op">(</span><span class="nam">replace</span><span class="op">(</span><span class="nam">d</span><span class="op">,</span> <span class="nam">stride</span><span class="op">=</span><span class="nam">s</span><span class="op">,</span> <span class="nam">chart</span><span class="op">=</span><span class="nam">d</span><span class="op">.</span><span class="nam">chart</span><span class="op">,</span> <span class="nam">labels</span><span class="op">=</span><span class="nam">d</span><span class="op">.</span><span class="nam">labels</span><span class="op">)</span> <span class="key">for</span> <span class="nam">d</span><span class="op">,</span> <span class="nam">s</span> <span class="key">in</span> <span class="nam">zip</span><span class="op">(</span><span class="nam">dims</span><span class="op">,</span> <span class="nam">reversed</span><span class="op">(</span><span class="nam">strides</span><span class="op">)</span><span class="op">)</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t888" href="#t888">888</a></span><span class="t">    <span class="key">return</span> <span class="nam">Layout</span><span class="op">(</span><span class="nam">new</span><span class="op">,</span> <span class="nam">offset</span><span class="op">=</span><span class="op">-</span><span class="nam">sum</span><span class="op">(</span><span class="nam">d</span><span class="op">.</span><span class="nam">stride</span> <span class="op">*</span> <span class="nam">d</span><span class="op">.</span><span class="nam">start</span> <span class="key">for</span> <span class="nam">d</span> <span class="key">in</span> <span class="nam">new</span><span class="op">)</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
 </main>
 <footer>
     <div class="content">
@@ -965,7 +977,7 @@
             <a class="nav" href="z_1d26d7eea0f62213_licenses_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.15.2">coverage.py v7.15.2</a>,
-            created at 2026-07-28 20:59 +0000
+            created at 2026-07-29 00:27 +0000
         </p>
     </div>
 </footer>
