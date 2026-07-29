@@ -1,5 +1,12 @@
 # 284 — Syntax sketches: three programs, written to be marked up (DRAFT)
 
+> **MARKED UP (2026-07-29).** Sketch 2 and Sketch 3 are superseded by
+> `285_sketch-training.md` — the training program redone in the model-zoo
+> idiom (makers, closed-over params, gradients via the naming law) and
+> the compiler pipeline moved from `.then` to `|`. Sketch 1 (graphics)
+> is ruled substantially off; its replacement is the next step and will
+> be built by transforming a real render loop toward the target syntax.
+
 **Status: DRAFT FOR OWNER MARKUP.** These are NOT transcriptions of the
 current design. Per the vetting process: assume the built design is
 wrong where it disagrees with these; this is the syntax I believe the
@@ -119,6 +126,16 @@ shader line and one slider line, and there is no object in the file
 whose job is "binding". The `expect` line is the warmth doctrine made
 enforceable — if a numpy float sneaks into a capture and rekeys the
 artifact, this app FAILS instead of quietly recompiling per frame.
+
+
+
+
+-------------- 
+owner's comments:
+This is too much like a traditional shader program. I want something that's more functional. 
+Have a look at https://github.com/pygfx/wgpu-py/blob/main/examples/imgui_backend_sea.py -- this is not what I want either. But it does show a bunch of actual details of the web GPU render loop that are important to understand. I want the example to include that detail and not have some magical app. I like to control the loop myself. Which, again, I don't think this application actually does. 
+
+
 
 ---
 
