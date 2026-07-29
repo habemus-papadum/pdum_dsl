@@ -9,12 +9,17 @@ roundoff."""
 import numpy as np
 import pytest
 
-from pdum.tl.licenses import GEMM_F16_TILES
-from pdum.tl.zoo.tiles import gemm_tile, stencil_tile
+from pdum.tl.licenses import FLASH_ONLINE_SOFTMAX, GEMM_F16_TILES
+from pdum.tl.zoo.tiles import flash_tile, gemm_tile, stencil_tile
 
-FLAGSHIPS = {"gemm": gemm_tile, "stencil": stencil_tile}
-_LIC = next(x for x in GEMM_F16_TILES if x.kind == "reassociation")
-TOL = {"gemm": dict(rtol=_LIC.rtol, atol=_LIC.atol), "stencil": dict(rtol=1e-13, atol=1e-14)}
+FLAGSHIPS = {"gemm": gemm_tile, "stencil": stencil_tile, "flash": flash_tile}
+_GEMM = next(x for x in GEMM_F16_TILES if x.kind == "reassociation")
+(_FLASH,) = FLASH_ONLINE_SOFTMAX
+TOL = {
+    "gemm": dict(rtol=_GEMM.rtol, atol=_GEMM.atol),
+    "flash": dict(rtol=_FLASH.rtol, atol=_FLASH.atol),
+    "stencil": dict(rtol=1e-13, atol=1e-14),
+}
 
 
 def _differential(run, to_numpy, name, device):

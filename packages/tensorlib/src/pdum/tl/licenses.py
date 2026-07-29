@@ -42,6 +42,27 @@ class License:
             )
 
 
+# flash attention's tiling deviation (320 §6, the K-D flagship): the
+# softmax·V reduction re-bracketed by s-tile with running max/denominator
+# rescaling — the online-softmax lemma, exact over reals, reordered (and
+# re-scaled through exp) over floats.
+FLASH_ONLINE_SOFTMAX = (
+    License(
+        name="flash.online-softmax",
+        kind="reassociation",
+        equivalence=(
+            "softmax·V over s re-bracketed by tile (so, si) with running-max rescale — the online-softmax lemma"
+        ),
+        rtol=1e-6,
+        atol=1e-7,
+        input_domain=(
+            "finite masked scores; the -1e9 mask fill (exp underflows exactly to 0); "
+            "no fully-masked row (causal masking guarantees the diagonal)"
+        ),
+    ),
+)
+
+
 # the worked declaration (200 §4's worked check): a real-carrier
 # contraction lowered to f16 tiles + f32 accumulators. Reassociation is
 # implied by tiling (the k-sum re-brackets); the demotion is the tiles.

@@ -8,10 +8,10 @@ from pdum.dsl.ir import Builder, Region
 from pdum.dsl.ops import CORE_OPS
 from pdum.tl.chart import chart
 from pdum.tl.dialect import TL_OPS, check_tier, run_region, tensor_type_of_layout
-from pdum.tl.licenses import GEMM_F16_TILES
+from pdum.tl.licenses import FLASH_ONLINE_SOFTMAX, GEMM_F16_TILES
 from pdum.tl.tensor import Tensor
 from pdum.tl.transforms import erase_stages
-from pdum.tl.zoo.tiles import gemm_tile, stencil_tile
+from pdum.tl.zoo.tiles import flash_tile, gemm_tile, stencil_tile
 
 OPS = {**CORE_OPS, **TL_OPS}
 
@@ -27,6 +27,7 @@ def test_tile_tier_admits_the_flagship_vocabulary():
     # construction runs check_tier(region, "tile") — building IS the assertion
     gemm_tile()
     stencil_tile()
+    flash_tile()
 
 
 def test_tile_tier_refuses_data_dependent_addressing():
@@ -89,7 +90,7 @@ def test_stage_reorders_and_charts_ride():
 # --- the erasure oracle --------------------------------------------------------
 
 
-@pytest.mark.parametrize("flagship", [gemm_tile, stencil_tile])
+@pytest.mark.parametrize("flagship", [gemm_tile, stencil_tile, flash_tile])
 def test_erasure_is_bit_exact(flagship):
     """A stage moves residence and presentation, never values-by-name: the
     erased region's denotation is BIT-exactly the staged one's (320 §6)."""
@@ -114,6 +115,19 @@ def test_gemm_tile_matches_its_naive_twin_under_the_reassociation_license():
     vals = list(f.inputs.values())
     tiled = run_region(f.region, vals).to_numpy(order=("mi", "ni"))
     naive = run_region(f.naive, vals).to_numpy(order=("mi", "ni"))
+    np.testing.assert_allclose(tiled, naive, rtol=lic.rtol, atol=lic.atol)
+    np.testing.assert_allclose(tiled, f.oracle(f.numpy_inputs()), rtol=lic.rtol, atol=lic.atol)
+
+
+def test_flash_tile_matches_its_naive_twin_under_the_online_softmax_license():
+    """The materialized softmax and the s-tiled online form are the same
+    denotation re-bracketed with running-max rescale — the declared
+    ``flash.online-softmax`` license names the deviation and its bound."""
+    f = flash_tile()
+    (lic,) = FLASH_ONLINE_SOFTMAX
+    vals = list(f.inputs.values())
+    tiled = run_region(f.region, vals).to_numpy(order=("t", "o"))
+    naive = run_region(f.naive, vals).to_numpy(order=("t", "o"))
     np.testing.assert_allclose(tiled, naive, rtol=lic.rtol, atol=lic.atol)
     np.testing.assert_allclose(tiled, f.oracle(f.numpy_inputs()), rtol=lic.rtol, atol=lic.atol)
 
