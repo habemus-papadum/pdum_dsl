@@ -1,7 +1,122 @@
 # 285 — The training sketch, redone in the zoo idiom (DRAFT)
 
-**Status: DRAFT FOR OWNER MARKUP.** This supersedes 284's Sketch 2 and
-Sketch 3. The markup on 284 said two things: the training program must
+**Status: DRAFT FOR OWNER MARKUP — §0 is the live markup surface.**
+Round 2 markup: `s.field` for targets is wrong, and the mistake behind
+it is that the loss was forced into a unit. Units build the MODEL —
+they are piping, not much else. The loss is a plain function, and `y`
+is one of its arguments. §0 below is the whole idea at minimum size
+(two dense layers, one ReLU), commented seam by seam for markup. The
+longer sections are kept beneath it for reference and are not
+re-litigated here. This file supersedes 284's Sketch 2 and Sketch 3.
+
+---
+
+## §0 — the minimal case (mark this up)
+
+```python
+# train_tiny.py — a two-layer MLP, mean-squared error, SGD.
+# The whole shape in ~40 lines. Comments name each seam.
+
+import numpy as np
+
+from pdum.tl import Tensor
+from pdum.tl.assemblage import unit
+from pdum.tl.autodiff import grad
+from pdum.tl.compute import contract, pointwise, red, reduce, repeat_like
+from pdum.tl.dialect import run_named
+from pdum.tl.lifting import lift_step
+from pdum.tl.markers import relu
+from pdum.tl.scope import scope
+
+N, F, M, K = 128, 16, 32, 4      # batch, in, hidden, out
+LR = 1e-2
+
+
+# SEAM 1 — the model: makers + units, the zoo shape, unchanged.
+# Params are declared at use and closed over. With more layers this
+# maker would split and the pieces would pipe with `|`; that is ALL
+# a unit is for.
+
+def make_mlp(s):
+    w1, b1 = s.param("w1", f=F, m=M), s.param("b1", m=M)
+    w2, b2 = s.param("w2", m=M, k=K), s.param("b2", k=K)
+
+    @unit
+    def mlp(x):
+        h = contract(x, w1, axis="f")
+        h = pointwise(relu, h + repeat_like(b1, h))
+        y = contract(h, w2, axis="m")
+        return y + repeat_like(b2, y)
+
+    return mlp
+
+
+root = scope(root_key=41)
+mlp = make_mlp(root)
+
+
+# SEAM 2 — the loss: a PLAIN function, not a unit. `y` is an ordinary
+# argument — nothing is declared, nothing is a field. The model is
+# APPLIED like the function it is; its body inlines, and its
+# closed-over leaves keep their contract names.
+
+def loss(x, y):
+    p = mlp(x)
+    e = p - y
+    return reduce(red.mean, e * e, ("n", "k"))
+
+
+# SEAM 3 — lifting: the established door for plain functions.
+# x and y bind to layouts by parameter name; params do NOT appear
+# here — they ride in through the closure.
+
+step = lift_step(loss, x=Tensor.zeros(n=N, f=F), y=Tensor.zeros(n=N, k=K))
+loss_name, = step.outputs
+
+
+# SEAM 4 — gradients: over every closed-over leaf, joined on the
+# naming law. No wrt list; the grad site names nothing.
+
+rg = grad(step.region, loss_name, names=step.names)
+# rg.grads == {"w1": <name>, "b1": <name>, "w2": <name>, "b2": <name>}
+
+
+# SEAM 5 — the store: the scope collected what the makers declared.
+# Initialization reads the declared dims; nobody retypes a shape.
+
+rng = np.random.default_rng(0)
+params = {
+    name: Tensor.from_numpy(0.1 * rng.standard_normal(tuple(dims.values())), tuple(dims))
+    for name, dims in root.spec().items()
+}
+
+
+# SEAM 6 — the loop: the update is a pure expression, params to
+# params. (Reference tier shown; the fused on-device form — update
+# rows inside the program, `step[on(metal)]` — is §3/§4 below.)
+
+for t, (xb, yb) in enumerate(batches()):
+    env = run_named(rg.region, {"x": xb, "y": yb} | params, rg.names)
+    params = {k: params[k] - LR * env[rg.grads[k]] for k in params}
+    if t % 100 == 0:
+        print(t, float(env[loss_name]))
+```
+
+What §0 newly commits us to (everything else is today's tree):
+
+- **A unit applies.** `mlp(x)` inside a traced body inlines the unit
+  and adopts its captured leaves as named inputs — the same adoption
+  assemblage does, reached from `lift_step`. Today a Unit only pipes;
+  this makes it a function you can also call. (This replaces — and
+  retires — `s.field`: `y` needed a door only because the loss was
+  wrongly a unit with one flowing value.)
+- `Tensor.zeros(n=N, f=F)` as a layout-by-names spelling at the lift
+  site (today: `_dense_like((Dim(...), ...))`).
+- Host-tier tensor arithmetic in the update line (`p - LR * g` on
+  Tensors) — the reference-tier spelling of "the optimizer is a pure
+  function params → params".
+
+--- The markup on 284 said two things: the training program must
 be written in the model-zoo shape — parameter-blind library functions,
 makers that declare parameters at use, gradients over the *closed-over*
 leaves via the naming law, never a list of parameter names at the grad
@@ -353,10 +468,11 @@ for c in (naive, fused, tight, experimental):
 
 ## Divergence ledger (vs today's tree — rule per line)
 
-1. **`s.field(name, **dims)`** — a declared, named, non-trainable data
-   leaf (labels here; the Gumbel draws of `zoo/trainer.py` are the
-   precedent: "randomness enters as NAMED, KEYED INPUT FIELDS").
-   Today targets only enter via `lift_step`'s explicit arguments.
+1. ~~**`s.field(name, **dims)`**~~ — **RETIRED by round-2 markup and
+   §0.** Targets are ordinary arguments of a plain loss function that
+   *applies* the model; the field notion existed only because the loss
+   was wrongly a unit. The surviving divergence is §0's: a unit is
+   applicable inside a traced body.
 2. **Program-input randomness key** — `"tick"` mixed into site-derived
    streams so dropout redraws per step and replays by number. Today
    `tl.random` keys are build-time constants; `scope.py` explicitly
