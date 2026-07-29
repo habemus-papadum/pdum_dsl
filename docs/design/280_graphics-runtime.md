@@ -285,6 +285,17 @@ Added by `spike_runner` (measured, not read):
   numpy-derived uniform silently keys a different artifact and
   recompiles every frame with no warning; the closure-swap/warmth
   guard should graduate to library-tier in the cleanup.
+  **(6) OWNER CORRECTION (2026-07-29): `bind(name=value)` is NOT the
+  user surface** — that spelling is other frameworks' set-uniform
+  ceremony, exactly what the capture doctrine exists to end. The
+  per-frame USER act is rebinding the captured environment (an
+  ordinary Python assignment to the global a body reads, or minting
+  the fresh closure) and handing the program the new function object;
+  the machinery re-extracts captures through the existing abi.slot
+  plan and repacks — names never appear at the call site. The demo
+  already spells it right (`engine.update(bind_mouse(mouse))`); the
+  spike's `bind(**slots)` survives only as the INTERNAL seam name for
+  the queue/memory-touching half (update ≠ encode), never as API.
 - **D. The Metal twin** (design + spike `spike_metal`, DONE): MSL
   emission + a PyObjC Metal runtime; the seam's existence proof
   delivered (see B's verdict above). ~40 lines of glue; zero-copy
