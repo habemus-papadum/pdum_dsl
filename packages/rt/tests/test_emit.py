@@ -15,13 +15,6 @@ import pytest
 
 from pdum.rt import emit, msl, wgsl
 from pdum.tl import Tensor, compute, f32, global_idx, i32  # noqa: F401 — bare in kernel bodies
-
-# The artifact route is still PRIVATE: ComputeKernel keys, compiles AND
-# launches, and the artifact never escapes _invoke (spike_runner H2). The
-# public door (`kernel.artifact(...)`, `art.on(pair)`) is the next
-# increment's; until then the batteries call _compile the way conformance
-# already does.
-from pdum.tl.kernel import _compile
 from pdum.tl.markers import maximum, tanh  # noqa: F401 — bare in kernel bodies
 
 _GAIN = 3.5
@@ -51,7 +44,7 @@ def ignores_one(unused, dst):
 
 
 def _art(kernel, args):
-    return _compile(kernel.fn, args)
+    return kernel.artifact(*args)  # the PUBLIC door (H2, landed)
 
 
 @pytest.fixture

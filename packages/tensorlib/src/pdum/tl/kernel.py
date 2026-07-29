@@ -176,12 +176,18 @@ class ComputeKernel:
     def __call__(self, *args):
         return self._invoke(Config(), args)
 
-    def __getitem__(self, cfg: Config) -> "_Bound":
-        if not isinstance(cfg, Config):
-            raise TypeError("kernel[...] takes a config(...) object")
-        return _Bound(self, cfg)
+    def __getitem__(self, sel) -> "_Bound":
+        return _bind(self, None, None, sel)
 
-    def _invoke(self, cfg: Config, args):
+    def artifact(self, *args) -> "_Artifact":
+        """The public artifact door (211 §4/H2): compile — through both
+        cache tiers — WITHOUT launching. The artifact is what a device
+        executor compiles against (``pdum.rt.executor_for``) and what
+        ``art.on(pair)``-era chains build on; nothing here touches the
+        arguments' buffers."""
+        return self._artifact(Config(), args)
+
+    def _artifact(self, cfg: Config, args) -> "_Artifact":
         if cfg.shared_mem is not None:
             raise NotImplementedError(
                 "shared memory arrives with the tile tier (L4) — the config "
@@ -203,8 +209,24 @@ class ComputeKernel:
                 f"sizing is launcher data, validated here; launch with the geometry the entry "
                 f"was built under"
             )
+        return art
+
+    def _invoke(self, cfg: Config, args, pair=None):
+        art = self._artifact(cfg, args)
+        geom = (cfg.blocks, cfg.threads) if cfg.blocks is not None or cfg.threads is not None else None
         if geom is not None and _norm_geom(geom) is None:  # an explicit one-block launch
             _check_coverage(geom, art, args)
+        if pair is not None:
+            # The selection door (283 §3): the executor comes from pdum.rt
+            # THROUGH the content door; launch() then runs staging/rebind/
+            # overlap identically and lands on the device. The threads half
+            # of the geometry rides into the key — it SPECIALIZES.
+            from dataclasses import replace as _replace
+
+            from pdum.rt import executor_for
+
+            threads = art.geometry[1] if art.geometry is not None else None
+            art = _replace(art, executor=executor_for(art, pair, thread_size=threads))
         return art.launch(args, dict(cfg.taps))
 
     def taps(self, *args) -> dict:
@@ -221,13 +243,49 @@ class ComputeKernel:
         return out
 
 
+def _as_pair(obj):
+    """A pdum.rt Pair, duck-recognized WITHOUT a hard tl->rt import: the
+    lazy import keeps rt optional here — anyone HOLDING a Pair imported
+    rt to get it."""
+    try:
+        from pdum.rt.select import Pair
+    except ImportError:
+        return None
+    return obj if isinstance(obj, Pair) else None
+
+
+def _bind(kernel: "ComputeKernel", cfg, pair, sel) -> "_Bound":
+    """One bracket, two selector kinds, any order: ``kernel[config(...)]``
+    binds launch policy, ``kernel[on(metal)]`` (or a bare Pair) selects
+    the device column; ``kernel[cfg][pair]`` and ``kernel[pair][cfg]``
+    compose. A second selector of the same kind refuses — one bracket
+    binds one of each. ``cfg`` is None until explicitly bound."""
+    if isinstance(sel, Config):
+        if cfg is not None:
+            raise TypeError("kernel[...][...]: a config(...) is already bound — one bracket binds one config")
+        return _Bound(kernel, sel, pair)
+    p = _as_pair(sel)
+    if p is not None:
+        if pair is not None:
+            raise TypeError("kernel[...][...]: a device pair is already bound — one bracket binds one pair")
+        return _Bound(kernel, cfg, p)
+    raise TypeError("kernel[...] takes a config(...) object or a device pair (pdum.rt: webgpu, metal, cuda)")
+
+
 @dataclass(frozen=True)
 class _Bound:
     kernel: ComputeKernel
-    cfg: Config
+    cfg: Config | None = None  # None = no config bound yet (the bind sentinel)
+    pair: object = None
 
     def __call__(self, *args):
-        return self.kernel._invoke(self.cfg, args)
+        return self.kernel._invoke(self.cfg or Config(), args, pair=self.pair)
+
+    def __getitem__(self, sel) -> "_Bound":
+        return _bind(self.kernel, self.cfg, self.pair, sel)
+
+    def artifact(self, *args) -> "_Artifact":
+        return self.kernel._artifact(self.cfg or Config(), args)
 
 
 def compute(fn) -> ComputeKernel:

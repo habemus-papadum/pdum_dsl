@@ -19,7 +19,6 @@ import pytest
 
 from pdum.rt import acquire, executor_for, metal, webgpu
 from pdum.tl import Tensor, compute, f32, global_idx, i32  # noqa: F401 — bare in kernel bodies
-from pdum.tl.kernel import _compile  # the private artifact route (see test_emit)
 from pdum.tl.markers import maximum, tanh  # noqa: F401 — bare in kernel bodies
 
 PAIRS = [pytest.param(webgpu, id="webgpu"), pytest.param(metal, id="metal")]
@@ -44,7 +43,7 @@ def run_on(pair, kernel, args):
     is swapped, so the launcher runs staging, rebind and the overlap
     refusal identically — the kernel-tier ``kernel[on(pair)]`` bracket is
     the next increment and folds these two lines away."""
-    art = _compile(kernel.fn, args)
+    art = kernel.artifact(*args)  # the PUBLIC door (H2, landed)
     ex = executor_for(art, pair)
     assert executor_for(art, pair) is ex, "the content door must return the SAME executor"
     dataclasses.replace(art, executor=ex).launch(args)
@@ -168,7 +167,7 @@ def test_the_contract_reaches_the_compiled_executor(pair):
 def test_thread_sizing_specializes_through_the_door(pair):
     _require(pair)
     args = SUBJECTS["where_select"][1]()
-    art = _compile(masked.fn, args)
+    art = masked.artifact(*args)
     a = executor_for(art, pair)
     b = executor_for(art, pair, thread_size=(16, 4, 1))
     assert a is not b and b.contract.thread_size == (16, 4, 1)
