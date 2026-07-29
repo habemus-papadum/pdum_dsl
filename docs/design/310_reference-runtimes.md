@@ -1,0 +1,87 @@
+# 310 — Reference runtimes: third-party columns before tiling
+
+**Status: owner-ratified direction (2026-07-28); the torch column is
+LANDED.** Before the tiling era opens, the stack grows reference points
+it intends to exceed: framework-served runtime columns (torch, then
+JAX), a benchmarking discipline over them, and a cuda.tile
+reconnaissance probe. 270's arc is unchanged — whole-program analysis
+and our own CUDA remain the destination; these are the measuring sticks
+carried along, never foundations built upon.
+
+## The two-column law
+
+Every framework contributes TWO artifacts, and conflating them voids
+both:
+
+- **The CHECK column** (`conformance/torch_evaluator.py`): a
+  graph-level interpreter over dialect regions — the SAME region the
+  numpy reference serves, evaluated on the framework's substrate. Its
+  assertion is the zoo's own denotation at the interpreter tolerance
+  (rtol 1e-9 / atol 1e-12, f64), whole-chain on the device column
+  (PR #8's rule). It exists for correctness assurance of compilation
+  stages against an independent implementation.
+- **The BASELINE column** (`conformance/torch_zoo.py`): what a fluent
+  framework author writes today — sdpa, F.layer_norm, index_add —
+  independently authored from the entry's math, never a port of the
+  interpreter. It is the performance bar the compiled stack must meet,
+  and a third authorship angle on the denotation (asserted under its
+  own stated tolerance).
+
+## The evaluator's mechanism (why it is small)
+
+The type rules already ran at region construction, so every node's type
+carries its result dims — name, start, stop, in presentation order. The
+evaluator therefore computes DATA only: each node evaluates to a dense
+tensor whose axes are exactly its type dims. Layout ops that move
+coordinates but never values (shift, rename, with_charts, ...) are data
+no-ops whose entire effect lives in the type. Composite markers and
+reducers are marker-DSL trees, so `zoo.gelu` or `zoo.flashsm` evaluate
+through the same declarations the reference reads — one primitive table
+per substrate is the whole porting surface. Uncovered ops raise
+`Untranslatable` naming the op (wgsl_executor's law); the zoo's full
+vocabulary (19 tl ops + 4 core) is covered.
+
+## Placement: conformance now, rt Pair at the seam
+
+The columns live under `conformance/` today — the conformance-executor
+doctrine's home. When the graphics team's `pdum.rt` skeleton lands
+(283), they mount as a Pair behind the selection door, and THAT step is
+the recorded, conscious supersession of the translation-only,
+conformance-only placement (owner's ruling, 2026-07-28). The Pair must
+stay interpreter-open (the PR #9 comment): these generators return
+callables over arrays, not source text, and every LaunchContract clause
+degenerates honestly — no thread_size, guard moot, bindings are
+parameter order, math rows are the framework's libm. `TORCH_FP` already
+carries the torch version so the content door keys artifacts correctly
+on arrival.
+
+Dependencies are OPT-IN groups (`--group torch`), never default: the
+core stays numpy+wgpu, the 21-second gate is untouched (torch tests
+importorskip), and CI never downloads a framework.
+
+## The benchmark discipline (`benchmarks/`)
+
+Outside the default pytest gate on purpose — benchmarks run
+deliberately, never as a suite side effect. Two laws are load-bearing:
+**never benchmark a wrong program** (every column asserts against the
+entry's denotation before its timed loop) and **never benchmark a
+recompile** (timed loops run under `events.forbid` on every cache-miss
+event — trivially green while the columns are cacheless interpreters,
+doing real work the day they mount as Pairs with artifact caches).
+
+Two measurement levels, matching the campaign's two questions: the
+assemblage/fusion level (this rig — e.g. the flash entry's composite
+reducer runs ~50x behind fused sdpa on CUDA, which is precisely the
+fusion gap made visible) and the tiling level (arrives with the tiling
+era; the gemm/heat2d entries are its subjects).
+
+## Sequence
+
+1. **torch** — landed: evaluator, 12-entry zoo differential (CPU+CUDA),
+   9 idiomatic baselines, the rig.
+2. **jax** — same two columns behind a `jax` group; the evaluator's
+   dims-from-types mechanism transfers wholesale.
+3. **graph-level compile wrap** — `torch.compile` / `jax.jit` around
+   the translated callable: the level-1 fusion bar for free.
+4. **cuda.tile probe** — reconnaissance for our own tiling design
+   (283 §5's bend-point), not a commitment.
