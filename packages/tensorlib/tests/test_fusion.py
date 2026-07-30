@@ -159,3 +159,15 @@ def test_unrecognized_work_refuses_loudly():
     assert isinstance(plan, Plan)
     assert (g.template, g.confidence, g.kernel) == ("uncompiled", "red", None)
     assert "tl.argtopk" in g.reason and "no recognized schedule" in g.reason
+
+
+def test_certification_caps_at_the_program_scale():
+    """§7.7: a T=4096 flash region — the size whose differential
+    certification ran T^2 softmax through the python reference and
+    killed sessions — certifies through a SHRUNK TWIN: same match, same
+    generator, clamped extents. The certificate is about the program,
+    not the size."""
+    f = flash_tile(T=4096, E=16, OD=16, SI=2)
+    (g,) = plan_region(f.naive).groups
+    assert g.template == "flash" and g.confidence == "yellow"
+    assert g.certificate is not None

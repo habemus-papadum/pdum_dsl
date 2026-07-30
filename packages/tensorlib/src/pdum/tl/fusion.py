@@ -628,6 +628,49 @@ def _prune_flash(region: Region, *, tile: int, si: int):
 _PRUNE_FLASH = defanalysis("fusion.prune-flash", 1)(_prune_flash)
 
 
+_CERT_CAP = 128  # §7.7: a plan-level constant, not a machine fact
+
+
+def _shrink(region: Region, cap: int) -> Region | None:
+    """The §7.7 twin: the SAME program over clamped extents. Rebuilds the
+    region with every dim stop at most ``cap`` — param types re-derived,
+    extent-carrying attrs (tl.const dims, tl.repeat) clamped, everything
+    else re-typed by rule. None when a dim's start is nonzero (nothing
+    to clamp against; the caller certifies full size, honestly)."""
+    from .dialect import tensor_type_of_layout
+
+    if any(d.start != 0 for p in region.params for d in _dims(p.type)):
+        return None
+    b = Builder(OPS)
+    memo: dict[int, object] = {}
+    for i, p in enumerate(region.params):
+        dims = _dims(p.type)
+        shape = tuple(min(d.stop, cap) for d in dims)
+        t = tensor_type_of_layout(Tensor.from_numpy(np.zeros(shape), tuple(d.name for d in dims)).layout)
+        memo[id(p)] = b.param(i, t)
+
+    def rebuild(n):
+        if id(n) in memo:
+            return memo[id(n)]
+        args = tuple(rebuild(x) for x in n.args)
+        attrs = dict(n.attrs)
+        if n.op == "tl.const" and "dims" in attrs:
+            attrs["dims"] = tuple((nm, min(int(ext), cap)) for nm, ext in tuple(attrs["dims"]))
+        if n.op == "tl.repeat" and "extent" in attrs:
+            attrs["extent"] = min(int(attrs["extent"]), cap)
+        explicit = {} if OPS[n.op].type_rule is not None else {"type": n.type}  # scalars: size-free
+        out = b.emit(n.op, *args, loc=n.loc, **explicit, **attrs)
+        memo[id(n)] = out
+        return out
+
+    yld = rebuild(region.body[-1].args[0])
+    return Region(params=tuple(memo[id(p)] for p in region.params), body=(b.emit("core.yield", yld),))
+
+
+def _oversized(region: Region, cap: int) -> bool:
+    return any(d.stop - d.start > cap for p in region.params for d in _dims(p.type))
+
+
 def plan_region(region: Region, machine=None, floor: int = 1024) -> Plan:
     """The v1 pass: recognize the whole region against the registry, most
     specific template first; certify what matched; refuse the rest LOUDLY.
@@ -659,15 +702,29 @@ def _recognize(region: Region) -> Plan:
     if fm is not None:
         si = _pick_ki(fm["extent"])
         kernel = _generate_flash(region, fm, si)
-        cert = certify(kernel, region, licenses=FLASH_ONLINE_SOFTMAX, families=_score_families(region))
+        csrc, ckern = region, kernel
+        if _oversized(region, _CERT_CAP):  # §7.7: certify the shrunk twin —
+            shr = _shrink(region, _CERT_CAP)  # the program, never the size
+            fm2 = _match_flash(shr) if shr is not None else None
+            if fm2 is not None:
+                csrc = shr
+                ckern = _generate_flash(shr, fm2, _pick_ki(fm2["extent"]))
+        cert = certify(ckern, csrc, licenses=FLASH_ONLINE_SOFTMAX, families=_score_families(csrc))
         return Plan((Group("flash", kernel, cert, "yellow", params=(("si", si),)),))
     m = _match_contraction_epilogue(region)
     if m is not None:
         ki = _pick_ki(m["extent"])
         kernel = _generate_contraction(region, m, ki)
+        csrc, ckern = region, kernel
+        if _oversized(region, _CERT_CAP):  # §7.7 again: the differential sites
+            shr = _shrink(region, _CERT_CAP)  # are the OOM class, and only they
+            m2 = _match_contraction_epilogue(shr) if shr is not None else None
+            if m2 is not None:
+                csrc = shr
+                ckern = _generate_contraction(shr, m2, _pick_ki(m2["extent"]))
         # families are the differential fallback: computed-operand kernels the
         # normalizer cannot walk back to the twin's key still certify (§7.6)
-        cert = certify(kernel, region, licenses=_REASSOC, families=_score_families(region))
+        cert = certify(ckern, csrc, licenses=_REASSOC, families=_score_families(csrc))
         return Plan((Group("contraction-epilogue", kernel, cert, "yellow", params=(("ki", ki),)),))
     sm = _match_softmax(region.body[-1].args[0])
     if sm is not None:
