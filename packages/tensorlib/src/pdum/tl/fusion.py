@@ -142,16 +142,22 @@ def _match_contraction_epilogue(region: Region):
     if ra.op != "tl.repeat_like" or rb.op != "tl.repeat_like":
         return None
     pa, pb = ra.args[0], rb.args[0]
-    if (pa, pb) != (rb.args[1], ra.args[1]) or pa.op != "core.param" or pb.op != "core.param":
-        return None
-    core = {id(red), id(prod), id(ra), id(rb), id(pa), id(pb)}
+    core = {id(red), id(prod), id(ra), id(rb), id(pa), id(pb), id(ra.args[1]), id(rb.args[1])}
+    for v in (pa, pb):  # free views ride the operand (renamed activations);
+        while v.op == "tl.rename":  # the LIKES are dims-only credentials — any
+            core.add(id(v))  # broadcast pair contracts, adjoints included
+            v = v.args[0]
+            core.add(id(v))
+        if v.op != "core.param":
+            return None
     for n in walk_region(region):  # the whole region is core + epilogue, or we decline
         if id(n) in core or n.op == "core.yield":
             continue
         if n.op not in _EPILOGUE_OPS:
             return None
     kdim = next((d for d in _dims(pa.type) if d.name == k), None)
-    if kdim is None or kdim.start != 0 or any(d.start != 0 for d in _dims(red.type)):
+    kb = next((d for d in _dims(pb.type) if d.name == k), None)
+    if kdim is None or kb is None or kdim.start != 0 or any(d.start != 0 for d in _dims(red.type)):
         return None
     return {"reduce": red, "k": k, "extent": kdim.stop, "a": pa, "b": pb}
 
@@ -177,8 +183,14 @@ def _generate_contraction(region: Region, m: dict, ki: int) -> Region:
     ko = extent // ki
     b = Builder(OPS)
     newp = {id(p): b.param(i, p.type) for i, p in enumerate(region.params)}
-    at = b.emit("tl.split", newp[id(m["a"])], name=k, parts=(("ko", ko), ("ki", ki)))
-    bt = b.emit("tl.split", newp[id(m["b"])], name=k, parts=(("ko", ko), ("ki", ki)))
+
+    def operand(x):  # free-view chains ride into the kernel
+        if x.op == "core.param":
+            return newp[id(x)]
+        return b.emit(x.op, operand(x.args[0]), **dict(x.attrs))
+
+    at = b.emit("tl.split", operand(m["a"]), name=k, parts=(("ko", ko), ("ki", ki)))
+    bt = b.emit("tl.split", operand(m["b"]), name=k, parts=(("ko", ko), ("ki", ki)))
     acc0 = b.emit("tl.const", value=0.0, dims=tuple((d.name, d.stop) for d in _dims(red.type)))
 
     sb = Builder(OPS)

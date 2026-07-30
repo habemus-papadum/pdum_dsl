@@ -155,3 +155,33 @@ needs canonicalization beyond certify's normalizer.
    confidence colors.
 5. The planner loop against the zoo; the tile-level perf rig grows the
    fused columns.
+
+### §7.5 The partitioner — LANDED, with the backward census
+
+pdum/tl/partition.py: anchor-and-absorb over whole-model regions.
+Claims run most-specific-first over the anchors; absorption walks
+epilogues downstream while the root has one consumer; interior members
+may not leak (one output per group — the translator's law); residue
+splits per externally-consumed root, promoted to a fixpoint. Free
+views (consts, renames, repeat_like broadcasts, discovered the hard
+way: the adjoint SHARES the forward's broadcast nodes) belong to no
+group — they ride every claim that references them, duplicated at
+rebuild, and boundaries punch through them to real values. Every
+carve rebuilds CANONICALLY (params renumbered by first use), so
+repeated layers collapse onto one content key: gpt2 at 12 layers
+plans 234 carves onto 16 distinct kernels, and certification is paid
+per kernel, never per layer. The carved plan executes BIT-equal to
+the whole model (pinned).
+
+Measured (this box): partition 2.9 ms and mapping 49 ms cold / 27 ms
+warm for the 1166-node 12-layer gpt2; forward coverage 72.9% by
+interior node count (15 contraction+epilogue shapes, the attention
+softmax as row-normalization — riders ride, strict flash declines).
+
+The backward census IS the roadmap, priced by frequency (toy joint,
+682 interior): 48× reduce-of-computed-product (chart-wrapped adjoint
+chains — needs the contract-over-computed-operands row, not a matcher
+tweak), 9× mean-reducer chains (layernorm fwd+bwd — the row-statistics
+row), 8× multi-dim contractions (wo and its grads), the softmax
+adjoint composition, and scatter_add (embedding grad). Joint coverage
+16.1% until those rows exist — refused loudly, named exactly.
