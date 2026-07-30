@@ -107,6 +107,42 @@ Closed forms, capacity-relative, one per template (v1):
 Candidates = the closed form ± pow2 neighbors, measured through the
 ledger; the pick is a fact, the color turns green by measurement.
 
+## §4b Mask-derived bounds (landed with the prune commit)
+
+A closed mask does more than cost nothing to evaluate: it PROVES tiles
+inert. Three separable pieces, so causal is one instance and not the
+design:
+
+1. **The emptiness engine** (launch.py `tri_eval`): three-valued
+   interval evaluation of any closed forest over coordinate boxes —
+   T/F where the algebra decides, M anywhere unspelled. Sound by
+   construction: unproven means unpruned, never wrong.
+2. **Template-declared inertness** (the template knows its step, as it
+   knows its adversarial families): flash declares mask-false tiles
+   inert — fill enters max as a no-op and exp underflows to exact
+   zero, so the skip is BIT-exact (pinned). The legality edge is the
+   m-chain law: a row with NO live tile has uniform-softmax
+   semantics and refuses pruning outright (strict-causal's row 0,
+   pinned).
+3. **The bounds artifact**: per-program [lo, hi) as floor-affine
+   coefficients — clamp((a + d·pid)//c) — fitted EXACTLY from the
+   emptiness table (clamps and tile-ratio ceil patterns land on one
+   line; a failed fit means no prune). Emitted as scalar clamps on
+   the fold's range: causal at BT=SI becomes
+   `range(0, tl.minimum(SO, 1 + pid))` — the bound a hand author
+   writes, computed from the mask the user wrote. The analysis is a
+   cached fact (`fusion.prune-flash` through the 330 §4 seam).
+
+**The wave law (measured, 76-SM 4090).** Pruning converts FLOPs to
+wall-clock only past ONE WAVE of programs: below ~1 wave every program
+owns an SM and the longest (unprunable) program sets the clock —
+measured neutral at 64 programs. At 1.7 waves: 1.40×; at 3.4 waves:
+1.92× — approaching causal's 2× asymptote. Real workloads carry
+batch/heads grid dims, so waves come free at scale. Re-entries: a
+skip BITMAP for non-contiguous inert sets (stripes); balanced pairing
+(program g also takes G−1−g) to fix one-wave imbalance; both enter
+only on a measured gap.
+
 ## §5 The machine stays a table (ruling 2)
 
 No SM counts. The quantities the theory consumes are per-level

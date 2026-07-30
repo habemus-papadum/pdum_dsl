@@ -53,6 +53,7 @@ import numpy as np
 from pdum.dsl.ir import Builder, Region
 from pdum.dsl.ops import CORE_OPS
 
+from .analysis import defanalysis
 from .certify import Certificate, certify
 from .dialect import TL_OPS, _minus_dim, check_tier, walk_region
 from .licenses import FLASH_ONLINE_SOFTMAX, GEMM_F16_TILES
@@ -98,6 +99,7 @@ class Group:
     params: tuple = ()  # plan parameters, e.g. (("ki", 4),)
     reason: str = ""
     launch: tuple = ()  # (output dim, tile) pairs — the 340 §2 plan artifact
+    prune: tuple = ()  # (scan dim, (lo0, dlo), (hi0, dhi)) — mask-derived bounds (340 §4b)
 
 
 @dataclass(frozen=True)
@@ -468,6 +470,40 @@ def _score_families(region: Region, seed: int = 11):
     )
 
 
+def _prune_flash(region: Region, *, tile: int, si: int):
+    """Mask-derived fold bounds (340 §4b): the flash template DECLARES its
+    step inert on mask-false tiles (fill enters max as a no-op, exp
+    underflows to exact zero), so the general emptiness engine turns the
+    closed mask into per-program [lo, hi) over s-tiles — affine in the
+    program id, or no prune at all. Legality edge: a row with NO live
+    tile has uniform-softmax semantics and refuses pruning outright."""
+    from .launch import fit_affine, tri_eval
+
+    fm = _match_flash(region)
+    if fm is None:
+        return None
+    t, s, mask, S = fm["t"], fm["s"], fm["mask"], fm["extent"]
+    so = S // si
+    td = next(d for d in _dims(fm["q"].type) if d.name == t)
+    sbox = [(q * si, (q + 1) * si - 1) for q in range(so)]
+    los, his = [], []
+    for g in range(-((td.start - td.stop) // tile)):
+        tb = (td.start + g * tile, min(td.start + (g + 1) * tile, td.stop) - 1)
+        act = [q for q in range(so) if tri_eval(mask, {t: tb, s: sbox[q]})[1] != "F"]
+        if not act:
+            return None  # a fully-masked program: uniform-softmax semantics
+        los.append(act[0])
+        his.append(act[-1] + 1)
+    for r in range(td.start, td.stop):  # every ROW keeps a live tile (the m-chain law)
+        if all(tri_eval(mask, {t: (r, r), s: sb})[1] == "F" for sb in sbox):
+            return None
+    flo, fhi = fit_affine(los, 0, so), fit_affine(his, 0, so)
+    return (flo, fhi) if flo is not None and fhi is not None else None
+
+
+_PRUNE_FLASH = defanalysis("fusion.prune-flash", 1)(_prune_flash)
+
+
 def plan_region(region: Region, machine=None, floor: int = 1024) -> Plan:
     """The v1 pass: recognize the whole region against the registry, most
     specific template first; certify what matched; refuse the rest LOUDLY.
@@ -484,7 +520,13 @@ def plan_region(region: Region, machine=None, floor: int = 1024) -> Plan:
     groups = []
     for g in plan.groups:
         cands = propose(g.kernel, machine, floor) if g.kernel is not None else ()
-        groups.append(replace(g, launch=cands[0]) if cands else g)
+        if cands:
+            g = replace(g, launch=cands[0])
+        if g.template == "flash" and len(g.launch) == 1:
+            pr = _PRUNE_FLASH(region, tile=g.launch[0][1], si=dict(g.params)["si"]).value
+            if pr is not None:
+                g = replace(g, prune=(("so", *pr),))
+        groups.append(g)
     return Plan(tuple(groups))
 
 

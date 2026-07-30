@@ -96,9 +96,10 @@ def _all_nodes(region):
 
 
 class _Gen:
-    def __init__(self, region: Region, launch: tuple = ()):
+    def __init__(self, region: Region, launch: tuple = (), prune: tuple = ()):
         self.region = region
         self.launch = dict(launch)  # output dim name -> tile extent (340 §2)
+        self.prune = {e[0]: (e[1], e[2]) for e in prune}  # scan dim -> affine [lo, hi) in pid
         self.pidv: dict[str, str] = {}  # launched dim name -> pid coordinate var
         self.lines: list[str] = []
         self.indent = 1
@@ -356,6 +357,28 @@ class _Gen:
         self.ln(f'{var} = tl.dot({va}, {vb}, input_precision="ieee")')
         return var, out
 
+    def _fold_bounds(self, dim, lo, hi) -> tuple[str, str]:
+        """Mask-derived bounds (340 §4b): the plan's per-program affine
+        [lo, hi) clamps the sweep — a scalar tl.maximum/minimum on the pid,
+        skipping tiles the template proved inert. No prune, no change."""
+        pr = self.prune.get(dim)
+        if pr is None:
+            return str(lo), str(hi)
+        (l0, dl, cl), (h0, dh, ch) = pr
+        if len(self.pidv) == 1:
+            pv = next(iter(self.pidv.values()))
+
+            def form(a, d, c):
+                e = f"{a} + {d} * {pv}"
+                return f"({e}) // {c}" if c != 1 else f"{e}"
+
+            lo_e = f"tl.maximum({lo}, {form(l0, dl, cl)})" if dl else str(max(lo, l0 // cl))
+            hi_e = f"tl.minimum({hi}, {form(h0, dh, ch)})" if dh else str(min(hi, h0 // ch))
+            return lo_e, hi_e
+        if not self.pidv and dl == 0 and dh == 0:  # ungridded: constants only
+            return str(max(lo, l0 // cl)), str(min(hi, h0 // ch))
+        return str(lo), str(hi)
+
     def _block_fold(self, n, a):
         k = len(tuple(a["state"]))
         dim, out = a["dim"], tuple(a["out"])
@@ -372,6 +395,7 @@ class _Gen:
         if hit is not None:
             return hit[out[1]]
         lo, hi = next((d.start, d.stop) for d in _dims(srcs[0].type) if d.name == dim)
+        lo_e, hi_e = self._fold_bounds(dim, lo, hi)
         carried = [self.emit_block(x) for x in inits]
         cvars = []
         for var, dims in carried:  # loop-carried variables need their own names
@@ -379,7 +403,7 @@ class _Gen:
             self.ln(f"{cv} = {var}")
             cvars.append((cv, dims))
         q = self.v()
-        self.ln(f"for {q} in range({lo}, {hi}):")
+        self.ln(f"for {q} in range({lo_e}, {hi_e}):")
         self.indent += 1
         outer_memo, outer_bind = self.blockmemo, dict(self.bind)
         self.blockmemo = {}
@@ -466,12 +490,13 @@ class _Gen:
         return "\n".join(head + self.lines) + "\n", sizes, grid
 
 
-def compile_tile(region: Region, launch: tuple = ()):
+def compile_tile(region: Region, launch: tuple = (), prune: tuple = ()):
     """Region -> a runner: run(values) -> np.ndarray (f32, CUDA). ``values``
     are numpy arrays positional per param, in the param's type-dim order.
     ``launch`` is the plan artifact (340 §2): ordered (output dim, tile)
-    pairs; the program count is derived, never chosen."""
-    src, out_sizes, grid = _Gen(region, launch).render()
+    pairs; the program count is derived, never chosen. ``prune`` carries
+    mask-derived fold bounds (340 §4b), affine in the program id."""
+    src, out_sizes, grid = _Gen(region, launch, prune).render()
     tmp = Path(tempfile.mkdtemp(prefix="pdum_triton_")) / "tile_kernel.py"
     tmp.write_text(src)
     spec = importlib.util.spec_from_file_location(f"pdum_triton_{tmp.parent.name}", tmp)

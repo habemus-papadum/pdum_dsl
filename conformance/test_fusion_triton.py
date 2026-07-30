@@ -135,3 +135,25 @@ def test_the_planned_launch_runs_gridded_on_silicon():
     assert run.grid > 1
     got = run([v.to_numpy() for v in f.inputs.values()])
     np.testing.assert_allclose(got, f.oracle(f.numpy_inputs()), rtol=1e-4, atol=1e-5)
+
+
+def test_mask_derived_bounds_prune_the_sweep_bit_exactly():
+    """340 §4b on silicon: the plan carries mask-derived fold bounds
+    (causal: hi = pid+1 — the bound a hand author writes, computed from
+    the mask), and the pruned sweep is BIT-equal to the full one — the
+    template proved the skipped tiles inert."""
+    _require_cuda()
+    from triton_tile import compile_tile
+
+    from pdum.tl.launch import TileLevel, TileMachine
+    from pdum.tl.zoo.tiles import flash_tile
+
+    machine = TileMachine((TileLevel("shared", 128, 101376),))
+    f = flash_tile(T=128, E=32, OD=32, SI=2)
+    (g,) = plan_region(f.naive, machine=machine).groups
+    assert g.prune == (("so", (0, 0, 1), (1, 1, 1)),)
+    vals = [v.to_numpy() for v in f.inputs.values()]
+    full = compile_tile(g.kernel, g.launch)
+    pruned = compile_tile(g.kernel, g.launch, g.prune)
+    assert "tl.minimum(4, 1 + 1 * pid_t)" in pruned.source
+    np.testing.assert_array_equal(full(vals), pruned(vals))
