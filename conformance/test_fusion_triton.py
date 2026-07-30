@@ -69,7 +69,7 @@ def test_fused_contraction_epilogue_runs_on_triton():
 def test_the_fused_flash_composition_runs_on_triton():
     """Template 3b on silicon: the pass recognizes the materialized-softmax
     attention region, emits the online-softmax fold, and the fused kernel
-    runs on the device — two loops (o and den finals), no barrier."""
+    runs on the device — the o and den finals share one sweep, no barrier."""
     _require_cuda()
     from triton_tile import compile_tile
 
@@ -81,7 +81,7 @@ def test_the_fused_flash_composition_runs_on_triton():
     run = compile_tile(g.kernel)
     got = run([v.to_numpy() for v in f.inputs.values()])
     np.testing.assert_allclose(got, f.oracle(f.numpy_inputs()), rtol=1e-4, atol=1e-6)
-    assert run.source.count("for ") == 2 and "barrier" not in run.source
+    assert run.source.count("for ") == 1 and "barrier" not in run.source  # shared sweep
 
 
 def test_the_first_measurement_greens_the_group():
@@ -115,3 +115,23 @@ def test_the_first_measurement_greens_the_group():
     assert again.key == fact.key
     green = replace(g, confidence="green")
     assert (green.template, green.confidence) == ("contraction-epilogue", "green")
+
+
+def test_the_planned_launch_runs_gridded_on_silicon():
+    """340 §7.3 end to end: plan_region with a machine attaches the
+    analytic-default launch; the translator grids it; T=512 — the size
+    that crashed OutOfResources ungridded — now runs and verifies."""
+    _require_cuda()
+    from triton_tile import compile_tile
+
+    from pdum.tl.launch import TileLevel, TileMachine
+    from pdum.tl.zoo.tiles import flash_tile
+
+    machine = TileMachine((TileLevel("shared", 128, 101376),))
+    f = flash_tile(T=512, E=64, OD=64, SI=2)
+    (g,) = plan_region(f.naive, machine=machine).groups
+    assert g.template == "flash" and g.launch
+    run = compile_tile(g.kernel, g.launch)
+    assert run.grid > 1
+    got = run([v.to_numpy() for v in f.inputs.values()])
+    np.testing.assert_allclose(got, f.oracle(f.numpy_inputs()), rtol=1e-4, atol=1e-5)

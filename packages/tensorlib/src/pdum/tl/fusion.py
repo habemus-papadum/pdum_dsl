@@ -97,6 +97,7 @@ class Group:
     confidence: str  # "green" | "yellow" | "red"
     params: tuple = ()  # plan parameters, e.g. (("ki", 4),)
     reason: str = ""
+    launch: tuple = ()  # (output dim, tile) pairs — the 340 §2 plan artifact
 
 
 @dataclass(frozen=True)
@@ -467,9 +468,27 @@ def _score_families(region: Region, seed: int = 11):
     )
 
 
-def plan_region(region: Region) -> Plan:
+def plan_region(region: Region, machine=None, floor: int = 1024) -> Plan:
     """The v1 pass: recognize the whole region against the registry, most
-    specific template first; certify what matched; refuse the rest LOUDLY."""
+    specific template first; certify what matched; refuse the rest LOUDLY.
+    With a ``machine`` (340): each compiled group carries the analytic
+    default launch — smallest feasible tile above the floor; no feasible
+    launch keeps grid (1,) and the translator's tripwire owns the rest."""
+    plan = _recognize(region)
+    if machine is None:
+        return plan
+    from dataclasses import replace
+
+    from .launch import propose
+
+    groups = []
+    for g in plan.groups:
+        cands = propose(g.kernel, machine, floor) if g.kernel is not None else ()
+        groups.append(replace(g, launch=cands[0]) if cands else g)
+    return Plan(tuple(groups))
+
+
+def _recognize(region: Region) -> Plan:
     fm = _match_flash(region)
     if fm is not None:
         si = _pick_ki(fm["extent"])

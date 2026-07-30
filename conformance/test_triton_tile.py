@@ -46,7 +46,7 @@ def test_the_tile_fold_becomes_an_in_kernel_loop():
     gemm_src = compile_tile(FLAGSHIPS["gemm"]().region).source
     assert gemm_src.count("for ") == 1
     flash_src = compile_tile(FLAGSHIPS["flash"]().region).source
-    assert flash_src.count("for ") == 2
+    assert flash_src.count("for ") == 1  # the o and den finals share ONE sweep
     assert "barrier" not in gemm_src and "barrier" not in flash_src
 
 
@@ -101,3 +101,47 @@ def test_contractions_emit_ieee_dot_never_tf32():
     assert 'input_precision="ieee"' in run.source
     got = run([v.to_numpy() for v in f.inputs.values()])
     np.testing.assert_allclose(got, f.oracle(f.numpy_inputs()), rtol=1e-4, atol=1e-5)
+
+
+def test_the_grid_partition_is_bit_exact_without_reductions():
+    """340 §3: a reduce-free body gridded vs ungridded is BIT-equal —
+    the partition is denotationally invisible. 2D grid, ragged tails."""
+    _require_cuda()
+    from triton_tile import compile_tile
+
+    s = stencil_tile(MI=30, NI=46)
+    u = [s.inputs["u"].to_numpy()]
+    one = compile_tile(s.region)(u)
+    g = compile_tile(s.region, launch=(("x", 16), ("y", 16)))
+    assert g.grid == 6  # cdiv(30,16) * cdiv(46,16) — derived, never chosen
+    assert "tl.program_id" in g.source
+    np.testing.assert_array_equal(one, g(u))
+
+
+def test_gridded_flash_stays_within_the_certificate():
+    """340 §3's machine caveat: triton lays out reductions by block
+    shape, so a reducing body reassociates at the ulp level when BT
+    changes (measured 4.8e-7). No NEW license — the agreement must sit
+    inside the tolerances the certificate already prices."""
+    _require_cuda()
+    from triton_tile import compile_tile
+
+    f = flash_tile(T=128, E=32, OD=32, SI=32)
+    vals = [v.to_numpy() for v in f.inputs.values()]
+    one = compile_tile(f.region)(vals)
+    g = compile_tile(f.region, launch=(("t", 32),))
+    assert g.grid == 4
+    got = g(vals)
+    assert np.abs(one - got).max() < 1e-6  # the license scale, not bit-equal
+    np.testing.assert_allclose(got, f.oracle(f.numpy_inputs()), rtol=1e-4, atol=1e-5)
+
+
+def test_launching_a_carried_dim_refuses():
+    """Legality is syntactic (340 §1): a fold's scan dim is not griddable,
+    and the refusal names it."""
+    _require_cuda()
+    from triton_tile import Untranslatable, compile_tile
+
+    f = flash_tile()
+    with pytest.raises(Untranslatable, match="'so'"):
+        compile_tile(f.region, launch=(("so", 1),))

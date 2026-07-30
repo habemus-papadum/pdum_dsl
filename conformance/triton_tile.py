@@ -81,28 +81,31 @@ def _suffix(rank: int, axis: int) -> str:
     return "[" + ", ".join(":" if i == axis else "None" for i in range(rank)) + "]"
 
 
-def _canonical_space(axes) -> dict:
-    """Coordinate/validity grids for an ordered dim tuple: absolute coords
-    (start + arange), broadcast to full rank by None-indexing."""
-    rank = len(axes)
-    space = {}
-    for i, d in enumerate(axes):
-        size, p = d.stop - d.start, _pow2(d.stop - d.start)
-        sfx = _suffix(rank, i) if rank > 1 else ""
-        expr = f"({d.start} + tl.arange(0, {p})){sfx}"
-        valid = f"(tl.arange(0, {p}) < {size}){sfx}" if p != size else None
-        space[d.name] = _Coord(expr, valid, True)
-    return space
+def _all_nodes(region):
+    seen = set()
+    stack = list(region.body)
+    while stack:
+        n = stack.pop()
+        if id(n) in seen:
+            continue
+        seen.add(id(n))
+        yield n
+        stack.extend(n.args)
+        for r in n.regions:
+            stack.extend(r.body)
 
 
 class _Gen:
-    def __init__(self, region: Region):
+    def __init__(self, region: Region, launch: tuple = ()):
         self.region = region
+        self.launch = dict(launch)  # output dim name -> tile extent (340 §2)
+        self.pidv: dict[str, str] = {}  # launched dim name -> pid coordinate var
         self.lines: list[str] = []
         self.indent = 1
         self.n = 0
         self.bind: dict[int, tuple[str, tuple]] = {}  # id(step param) -> (var, dims)
         self.blockmemo: dict[int, tuple[str, tuple]] = {}
+        self.foldmemo: dict[tuple, list] = {}  # (step, args, dim) -> carried vars
         self.pstrides: dict[int, tuple] = {}  # id(region param) -> element strides
         for i, p in enumerate(region.params):
             sizes = tuple(d.stop - d.start for d in _dims(p.type))
@@ -112,6 +115,35 @@ class _Gen:
                 strides.append(acc)
                 acc *= s
             self.pstrides[id(p)] = tuple(reversed(strides))
+
+    def psize(self, d) -> int:
+        """A dim's block extent: its launch tile when gridded, else its size."""
+        return _pow2(self.launch.get(d.name, d.stop - d.start))
+
+    def space(self, axes) -> dict:
+        """Coordinate/validity grids for an ordered dim tuple: absolute coords
+        (start + arange), broadcast to full rank by None-indexing. Launched
+        dims shift their start by the program's tile coordinate — the one
+        place tile coordinates become addresses (340 §2) — and guard the
+        ragged tail absolutely."""
+        rank = len(axes)
+        space = {}
+        for i, d in enumerate(axes):
+            size = d.stop - d.start
+            sfx = _suffix(rank, i) if rank > 1 else ""
+            tile = self.launch.get(d.name)
+            if tile is None:
+                p = _pow2(size)
+                expr = f"({d.start} + tl.arange(0, {p})){sfx}"
+                valid = f"(tl.arange(0, {p}) < {size}){sfx}" if p != size else None
+            else:
+                p = _pow2(tile)
+                base = f"{self.pidv[d.name]} * {tile}"
+                expr = f"({d.start} + {base} + tl.arange(0, {p})){sfx}"
+                covered = p == tile and size % tile == 0
+                valid = None if covered else f"(({base} + tl.arange(0, {p})) < {size}){sfx}"
+            space[d.name] = _Coord(expr, valid, True)
+        return space
 
     def v(self) -> str:
         self.n += 1
@@ -234,7 +266,7 @@ class _Gen:
             out = self.bind[id(n)]
         elif n.op == "tl.const":
             dims = _dims(n.type)
-            shape = ", ".join(str(_pow2(d.stop - d.start)) for d in dims)
+            shape = ", ".join(str(self.psize(d)) for d in dims)
             var = self.v()
             self.ln(f"{var} = tl.full(({shape},), {float(a['value'])!r}, tl.float32)")
             out = (var, dims)
@@ -244,7 +276,7 @@ class _Gen:
             out = self._block_fold(n, a)
         else:
             dims = _dims(n.type)
-            space = _canonical_space(dims)
+            space = self.space(dims)
             var = self.v()
             self.ln(f"{var} = {self.emit_at(n, dims, space)}")
             out = (var, dims)
@@ -260,7 +292,7 @@ class _Gen:
         dot = self._contraction_dot(n, f, rdims)
         if dot is not None:
             return dot
-        space = _canonical_space(src)
+        space = self.space(src)
         var = self.v()
         self.ln(f"{var} = {self.emit_at(n.args[0], src, space)}")
         for d in src:  # identity-fill the padded lanes before folding them in
@@ -301,7 +333,7 @@ class _Gen:
         rb = next(x for x in db if x.name == r)
         if (ra.start, ra.stop) != (rb.start, rb.stop):
             return None
-        if min(_pow2(d.stop - d.start) for d in (out[0], out[1], ra)) < 16:
+        if min(self.psize(d) for d in (out[0], out[1], ra)) < 16:
             return None
         va, da2 = self.emit_block(ca)
         vb, db2 = self.emit_block(cb)
@@ -331,6 +363,14 @@ class _Gen:
             raise Untranslatable("tl.fold out=('emit',)")
         step = n.regions[0]
         inits, srcs = n.args[:k], n.args[k:]
+        # sibling folds sharing (step, args, dim) differ only in WHICH final
+        # they surface — one loop carries all states, the sibling reads its
+        # carry from the same sweep (flash's o and den finals: 340 §7.4
+        # measured the second sweep as ~2x on the s-axis)
+        key = (id(step), tuple(map(id, n.args)), dim)
+        hit = self.foldmemo.get(key)
+        if hit is not None:
+            return hit[out[1]]
         lo, hi = next((d.start, d.stop) for d in _dims(srcs[0].type) if d.name == dim)
         carried = [self.emit_block(x) for x in inits]
         cvars = []
@@ -346,7 +386,7 @@ class _Gen:
         elems = []
         for src in srcs:
             edims = tuple(d for d in _dims(src.type) if d.name != dim)
-            space = _canonical_space(edims)
+            space = self.space(edims)
             space[dim] = _Coord(q, None, False)
             ev = self.v()
             self.ln(f"{ev} = {self.emit_at(src, edims, space)}")
@@ -362,14 +402,52 @@ class _Gen:
             self.ln(f"{cv} = {nv}")
         self.indent -= 1
         self.blockmemo, self.bind = outer_memo, outer_bind
+        self.foldmemo[key] = cvars
         return cvars[out[1]]
 
     # --- the kernel ------------------------------------------------------------
 
-    def render(self) -> tuple[str, tuple]:
+    def _prelude(self, out_dims) -> int:
+        """The pid decomposition (340 §2): launch dims in output order,
+        row-major, program count DERIVED as a product of cdivs. Legality is
+        checked here — a launched dim carried by a fold or consumed by a
+        reduce is refused loudly (the partition law's precondition)."""
+        names = {d.name for d in out_dims}
+        carried = set()
+
+        def scan(r):
+            for n in _all_nodes(r):
+                a = _thaw_params(dict(n.attrs))
+                if n.op == "tl.fold":
+                    carried.add(a["dim"])
+                if n.op == "tl.reduce":
+                    rd = a["dims"]
+                    carried.update((rd,) if isinstance(rd, str) else rd)
+
+        scan(self.region)
+        gdims = [d for d in out_dims if d.name in self.launch]
+        for name in self.launch:
+            if name not in names:
+                raise Untranslatable(f"launch dim {name!r} is not an output dim")
+            if name in carried:
+                raise Untranslatable(f"launch dim {name!r} is carried/reduced — not griddable")
+        counts = [-((d.start - d.stop) // self.launch[d.name]) for d in gdims]
+        self.ln("pid = tl.program_id(0)")
+        rest = "pid"
+        for d, cnt in zip(reversed(gdims), reversed(counts)):
+            self.pidv[d.name] = f"pid_{d.name}"
+            self.ln(f"pid_{d.name} = {rest} % {cnt}" if d is not gdims[0] else f"pid_{d.name} = {rest}")
+            rest = f"({rest} // {cnt})"
+        grid = 1
+        for cnt in counts:
+            grid *= cnt
+        return grid
+
+    def render(self) -> tuple[str, tuple, int]:
         yld = self.region.body[-1].args[0]
         if yld.op == "core.tuple":
             raise Untranslatable("multi-output tile kernels")
+        grid = self._prelude(_dims(yld.type)) if self.launch else 1
         var, dims = self.emit_block(yld)
         sizes = tuple(d.stop - d.start for d in dims)
         strides = []
@@ -378,21 +456,22 @@ class _Gen:
             strides.append(acc)
             acc *= s
         strides = tuple(reversed(strides))
-        space = _canonical_space(dims)
+        space = self.space(dims)
         off = " + ".join(f"(({space[d.name].expr}) - {d.start}) * {s}" for d, s in zip(dims, strides))
         mask = " & ".join(c.valid for c in (space[d.name] for d in dims) if c.valid)
         store = f"tl.store(out + {off}, {var}" + (f", mask={mask})" if mask else ")")
         self.ln(store)
         args = ", ".join([f"p{i}" for i in range(len(self.region.params))] + ["out"])
         head = ["import triton", "import triton.language as tl", "", "@triton.jit", f"def tile_kernel({args}):"]
-        return "\n".join(head + self.lines) + "\n", sizes
+        return "\n".join(head + self.lines) + "\n", sizes, grid
 
 
-def compile_tile(region: Region):
+def compile_tile(region: Region, launch: tuple = ()):
     """Region -> a runner: run(values) -> np.ndarray (f32, CUDA). ``values``
-    are numpy arrays positional per param, in the param's type-dim order."""
-    src, out_sizes = _Gen(region).render(), None
-    src, out_sizes = src[0], src[1]
+    are numpy arrays positional per param, in the param's type-dim order.
+    ``launch`` is the plan artifact (340 §2): ordered (output dim, tile)
+    pairs; the program count is derived, never chosen."""
+    src, out_sizes, grid = _Gen(region, launch).render()
     tmp = Path(tempfile.mkdtemp(prefix="pdum_triton_")) / "tile_kernel.py"
     tmp.write_text(src)
     spec = importlib.util.spec_from_file_location(f"pdum_triton_{tmp.parent.name}", tmp)
@@ -405,7 +484,7 @@ def compile_tile(region: Region):
 
         ins = [torch.as_tensor(np.ascontiguousarray(v), dtype=torch.float32).cuda() for v in values]
         out = torch.empty(out_sizes, dtype=torch.float32, device="cuda")
-        mod.tile_kernel[(1,)](*ins, out)
+        mod.tile_kernel[(grid,)](*ins, out)
         torch.cuda.synchronize()
         if not run.checked:  # the docstring's precision law: refuse demoted PTX
             run.checked = True
@@ -418,4 +497,5 @@ def compile_tile(region: Region):
 
     run.checked = False
     run.source = src
+    run.grid = grid
     return run
