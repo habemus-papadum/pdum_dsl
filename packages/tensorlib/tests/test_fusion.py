@@ -9,7 +9,7 @@ from pdum.dsl.types import f64
 from pdum.tl.dialect import TL_OPS, run_region, tensor_type_of_layout
 from pdum.tl.fusion import Plan, plan_region
 from pdum.tl.tensor import Tensor
-from pdum.tl.zoo.tiles import stencil_tile
+from pdum.tl.zoo.tiles import flash_tile, stencil_tile
 
 OPS = {**CORE_OPS, **TL_OPS}
 
@@ -70,14 +70,80 @@ def test_bare_contraction_is_recognized_too():
     assert g.certificate.verdict == "proved-licensed"
 
 
-def test_map_chains_are_recognized_and_proved_exact():
-    """Template 1: the stencil twin is a pure map chain — no staging pays,
-    the group IS a tile kernel, and the certificate is exact by key."""
+def test_stencils_are_recognized_and_staged():
+    """Template 4: the stencil twin carries neighborhood reuse (five
+    shifted reads of one halo), so the pass STAGES the halo — and the
+    certificate stays exact by key, because erasure strips the stage."""
     region = stencil_tile().naive
+    (g,) = plan_region(region).groups
+    assert g.template == "stencil"
+    assert g.certificate.verdict == "proved-exact"
+    assert dict(g.params)["staged"] == (0,)  # the halo param
+    assert any(n.op == "tl.stage" for n in _walk(g.kernel))
+    got = run_region(g.kernel, [stencil_tile().inputs["u"]]).to_numpy()
+    want = run_region(region, [stencil_tile().inputs["u"]]).to_numpy()
+    np.testing.assert_array_equal(got, want)
+
+
+def test_reuse_free_chains_stay_map_chains():
+    """Template 1 still claims chains with NO neighborhood overlap — a
+    single shifted read has nothing to reuse, so nothing stages."""
+    b = Builder(OPS)
+    x = b.param(0, tensor_type_of_layout(_t(np.zeros((4, 6)), ("x", "y")).layout))
+    sh = b.emit("tl.shift", x, deltas=(("x", 1),))
+    sl = b.emit("tl.slice", sh, ranges=(("x", (1, 5)),))
+    y = b.emit("tl.pointwise", sl, f="exp")
+    region = Region(params=(x,), body=(b.emit("core.yield", y),))
     (g,) = plan_region(region).groups
     assert g.template == "map-chain"
     assert g.certificate.verdict == "proved-exact"
-    assert g.confidence == "yellow"
+
+
+def test_bare_row_normalization_stages_its_rows():
+    """Template 3a: softmax over a parameter — the row inputs stage once
+    (three passes, one load), proved-exact by erasure."""
+    rng = np.random.default_rng(9)
+    X = _t(rng.standard_normal((4, 6)), ("t", "s"))
+    b = Builder(OPS)
+    p = b.param(0, tensor_type_of_layout(X.layout))
+    mx = b.emit("tl.reduce", p, dims=("s",), f="max")
+    e = b.emit("tl.pointwise", b.emit("tl.pointwise", p, b.emit("tl.repeat_like", mx, p), f="sub"), f="exp")
+    sm = b.emit("tl.reduce", e, dims=("s",), f="sum")
+    pr = b.emit("tl.pointwise", e, b.emit("tl.repeat_like", sm, p), f="div")
+    region = Region(params=(p,), body=(b.emit("core.yield", pr),))
+    (g,) = plan_region(region).groups
+    assert g.template == "row-normalization"
+    assert g.certificate.verdict == "proved-exact"
+    assert any(n.op == "tl.stage" for n in _walk(g.kernel))
+    got = run_region(g.kernel, [X]).to_numpy(order=("t", "s"))
+    want = run_region(region, [X]).to_numpy(order=("t", "s"))
+    np.testing.assert_array_equal(got, want)
+
+
+def test_the_flash_composition_is_recognized_and_licensed():
+    """Template 3b: contraction -> closed-form mask -> softmax ->
+    contraction becomes the online-softmax fold, certified under the
+    declared license with the template's own adversarial families."""
+    f = flash_tile()
+    (g,) = plan_region(f.naive).groups
+    assert g.template == "flash"
+    assert g.certificate.verdict == "licensed-differential"
+    assert g.certificate.licenses == ("flash.online-softmax",)
+    assert g.certificate.families == ("gaussian", "wide-scores", "dominant-key")
+    assert sum(1 for n in _walk(g.kernel) if n.op == "tl.fold") == 2  # o and den finals
+    vals = list(f.inputs.values())
+    got = run_region(g.kernel, vals).to_numpy(order=("t", "o"))
+    want = run_region(f.naive, vals).to_numpy(order=("t", "o"))
+    np.testing.assert_allclose(got, want, rtol=1e-6, atol=1e-7)
+
+
+def _walk(region):
+    from pdum.tl.dialect import walk_region
+
+    for n in walk_region(region):
+        yield n
+        for r in n.regions:
+            yield from _walk(r)
 
 
 def test_unrecognized_work_refuses_loudly():

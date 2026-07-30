@@ -66,6 +66,24 @@ def test_fused_contraction_epilogue_runs_on_triton():
     assert "tl.maximum" in run.source  # the relu rode the accumulator out
 
 
+def test_the_fused_flash_composition_runs_on_triton():
+    """Template 3b on silicon: the pass recognizes the materialized-softmax
+    attention region, emits the online-softmax fold, and the fused kernel
+    runs on the device — two loops (o and den finals), no barrier."""
+    _require_cuda()
+    from triton_tile import compile_tile
+
+    from pdum.tl.zoo.tiles import flash_tile
+
+    f = flash_tile()
+    (g,) = plan_region(f.naive).groups
+    assert g.template == "flash"
+    run = compile_tile(g.kernel)
+    got = run([v.to_numpy() for v in f.inputs.values()])
+    np.testing.assert_allclose(got, f.oracle(f.numpy_inputs()), rtol=1e-4, atol=1e-6)
+    assert run.source.count("for ") == 2 and "barrier" not in run.source
+
+
 def test_the_first_measurement_greens_the_group():
     """A measurement is an analysis whose evaluator is the machine: it lands
     in the ledger keyed by (kernel content, machine), never re-runs warm,
