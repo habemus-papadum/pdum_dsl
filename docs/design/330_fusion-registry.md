@@ -262,3 +262,22 @@ template declares (the mask still masks, the rescale still rescales);
 what they no longer exercise is size itself, which the certificate
 never priced anyway. The cap is a plan-level constant, not a machine
 fact.
+
+### §7.6–§7.7 LANDED (2026-07-30, three commits), measured
+
+The census classes closed as ratified. Toy forward: 72.9% -> 98.2%
+coverage (only the embedding gather red). Toy joint: 16.1% -> 97.9%.
+The 12-layer joint (4367 nodes, 2365 interior): partition 13.3 ms,
+mapping 6.3 s cold / 192 ms warm, 897 carves onto 59 distinct
+kernels, 98.4% coverage. Red, named: the softmax max-orphans (the
+adjoint shares the forward softmax's interior, so the row-norm claim
+leaks and its pieces claim separately — sum and div claim, max has no
+row), the scans, and scatter_add (E's refusal). Landed along the way:
+the PLAIN shape (bias gradients — a sum with no product, the
+degenerate rowsum); certificates as FACTS (certify.certificate rides
+the cache keyed by the twin pair — 12-layer warm mapping 202 ms ->
+30 ms); the epilogue walk no longer crosses into a repeat_like of its
+root (broadcast-into-elsewhere is another anchor's product). On
+silicon, four §7.6 proofs: prologue-inside-the-sweep (ieee dot),
+softmax adjoint as rowsum+epilogue, layernorm with the '/ N' finalize,
+and the (nh,hk) two-dim contraction — tripwire silent throughout.

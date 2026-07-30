@@ -631,6 +631,28 @@ _PRUNE_FLASH = defanalysis("fusion.prune-flash", 1)(_prune_flash)
 _CERT_CAP = 128  # §7.7: a plan-level constant, not a machine fact
 
 
+@defanalysis("certify.certificate", 1)
+def _CERT_FACT(tile: Region, naive: Region, *, kind: str):
+    """Certificates are FACTS (330 §4): keyed by the twin pair's content,
+    never re-derived warm — the differential run (the expensive half of
+    the §7.6 rows) rides the cache like every other analysis."""
+    if kind == "flash":
+        c = certify(tile, naive, licenses=FLASH_ONLINE_SOFTMAX, families=_score_families(naive))
+    else:
+        c = certify(tile, naive, licenses=_REASSOC, families=_score_families(naive))
+    return {
+        "verdict": c.verdict,
+        "licenses": list(c.licenses),
+        "families": list(c.families),
+        "key_reached": c.key_reached,
+    }
+
+
+def _cert_fact(tile: Region, naive: Region, kind: str) -> Certificate:
+    d = _CERT_FACT(tile, naive, kind=kind).value
+    return Certificate(d["verdict"], tuple(d["licenses"]), tuple(d["families"]), d["key_reached"])
+
+
 def _shrink(region: Region, cap: int) -> Region | None:
     """The §7.7 twin: the SAME program over clamped extents. Rebuilds the
     region with every dim stop at most ``cap`` — param types re-derived,
@@ -655,9 +677,13 @@ def _shrink(region: Region, cap: int) -> Region | None:
         args = tuple(rebuild(x) for x in n.args)
         attrs = dict(n.attrs)
         if n.op == "tl.const" and "dims" in attrs:
-            attrs["dims"] = tuple((nm, min(int(ext), cap)) for nm, ext in tuple(attrs["dims"]))
+            attrs["dims"] = tuple(  # widths, or (start, stop) pairs — both forms clamp
+                (nm, (e[0], min(int(e[1]), cap)) if isinstance(e, tuple) else min(int(e), cap))
+                for nm, e in tuple(attrs["dims"])
+            )
         if n.op == "tl.repeat" and "extent" in attrs:
-            attrs["extent"] = min(int(attrs["extent"]), cap)
+            e = attrs["extent"]  # a bare width, or the adjoint's (start, stop) pair
+            attrs["extent"] = (e[0], min(int(e[1]), cap)) if isinstance(e, tuple) else min(int(e), cap)
         explicit = {} if OPS[n.op].type_rule is not None else {"type": n.type}  # scalars: size-free
         out = b.emit(n.op, *args, loc=n.loc, **explicit, **attrs)
         memo[id(n)] = out
@@ -709,7 +735,7 @@ def _recognize(region: Region) -> Plan:
             if fm2 is not None:
                 csrc = shr
                 ckern = _generate_flash(shr, fm2, _pick_ki(fm2["extent"]))
-        cert = certify(ckern, csrc, licenses=FLASH_ONLINE_SOFTMAX, families=_score_families(csrc))
+        cert = _cert_fact(ckern, csrc, "flash")
         return Plan((Group("flash", kernel, cert, "yellow", params=(("si", si),)),))
     m = _match_contraction_epilogue(region)
     if m is not None:
@@ -724,7 +750,7 @@ def _recognize(region: Region) -> Plan:
                 ckern = _generate_contraction(shr, m2, _pick_ki(m2["extent"]))
         # families are the differential fallback: computed-operand kernels the
         # normalizer cannot walk back to the twin's key still certify (§7.6)
-        cert = certify(ckern, csrc, licenses=_REASSOC, families=_score_families(csrc))
+        cert = _cert_fact(ckern, csrc, "contraction")
         return Plan((Group("contraction-epilogue", kernel, cert, "yellow", params=(("ki", ki),)),))
     sm = _match_softmax(region.body[-1].args[0])
     if sm is not None:
