@@ -40,6 +40,7 @@ import numpy as np
 from pdum.dsl.ir import Builder, Region
 from pdum.dsl.ops import CORE_OPS
 
+from .analysis import defanalysis
 from .dialect import TL_OPS, run_region, walk_region
 from .transforms import erase_stages
 
@@ -229,15 +230,22 @@ class Certificate:
     key_reached: bool
 
 
+# certification's expensive halves ride the analysis cache (330 §4): the
+# erasure fact FEEDS the normalization query — the DAG in production. A
+# repeated certify is all hits; `no_reanalysis()` can pin it.
+_ERASED = defanalysis("certify.erase", 1)(erase_stages)
+_NORMALIZED = defanalysis("certify.normalize", 1)(lambda region, *, kinds: normalize(region, frozenset(kinds)))
+
+
 def certify(tile: Region, naive: Region, *, licenses=(), families=()) -> Certificate:
     """Certify that ``tile`` and ``naive`` are one denotation (320 §6).
     ``families`` is a tuple of (name, factory) where factory() returns the
     flagship's inputs — dict name -> Tensor, in param order — for one
     adversarial draw. Raises on an unlicensed deviation or a failed
     differential; the error quotes what was missing."""
-    kinds = frozenset(lic.kind for lic in licenses)
-    norm_t, used = normalize(erase_stages(tile), kinds)
-    norm_n, _ = normalize(naive, kinds)
+    kt = tuple(sorted(lic.kind for lic in licenses))
+    norm_t, used = _NORMALIZED(_ERASED(tile), kinds=kt).value
+    norm_n, _ = _NORMALIZED(naive, kinds=kt).value
     if norm_t.key == norm_n.key:
         if used:
             names = tuple(sorted(lic.name for lic in licenses if lic.kind in used))
