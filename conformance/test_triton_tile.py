@@ -86,3 +86,18 @@ def test_stencil_baseline_matches_numpy():
     lap = u[:-2, 1:-1] + u[2:, 1:-1] + u[1:-1, :-2] + u[1:-1, 2:] - 4 * u[1:-1, 1:-1]
     want = u[1:-1, 1:-1] + 0.1 * lap
     np.testing.assert_allclose(stencil_triton(u), want, rtol=1e-4, atol=1e-6)
+
+
+def test_contractions_emit_ieee_dot_never_tf32():
+    """At block dims >= 16 triton's combine pass rewrites raw mul+sum into
+    TF32 tensor-core MMA — a silent 2^-11 demotion (measured 5.7e-3 on
+    flash scores at T=128). The translator emits the dot itself, ieee,
+    and the runner refuses outright if tf32 ever reaches the PTX."""
+    _require_cuda()
+    from triton_tile import compile_tile
+
+    f = flash_tile(T=128, E=32, OD=32, SI=32)
+    run = compile_tile(f.region)
+    assert 'input_precision="ieee"' in run.source
+    got = run([v.to_numpy() for v in f.inputs.values()])
+    np.testing.assert_allclose(got, f.oracle(f.numpy_inputs()), rtol=1e-4, atol=1e-5)

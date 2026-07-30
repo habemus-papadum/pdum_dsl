@@ -20,7 +20,13 @@ the addressing it always claimed to do:
   bound to the loop index (the absolute-coordinate law, verbatim);
 - non-power-of-two extents pad to the next power of two: loads carry
   masks with `other=0.0`, every reduction identity-fills its padded
-  lanes first, and the final store masks — padding is never observable.
+  lanes first, and the final store masks — padding is never observable;
+- a sum over one shared dim of a two-operand product emits
+  `tl.dot(..., input_precision="ieee")` when every block dim reaches 16:
+  triton's TTIR combine pass otherwise rewrites the raw mul+sum into
+  TF32 tensor-core MMA — a silent 2^-11 demotion (measured 5.7e-3 on
+  flash scores). Below 16 neither fires, so both paths stay ieee, and
+  the runner refuses outright if `.tf32` ever reaches the PTX.
 
 We take Triton's block semantics and refuse its pointer STYLE: no
 program computes a base offset; params arrive as tiles through the
@@ -251,6 +257,9 @@ class _Gen:
             raise Untranslatable(f"tl.reduce f={f}")
         src = _dims(n.args[0].type)
         rdims = (a["dims"],) if isinstance(a["dims"], str) else tuple(a["dims"])
+        dot = self._contraction_dot(n, f, rdims)
+        if dot is not None:
+            return dot
         space = _canonical_space(src)
         var = self.v()
         self.ln(f"{var} = {self.emit_at(n.args[0], src, space)}")
@@ -261,6 +270,59 @@ class _Gen:
         for i in sorted((i for i, d in enumerate(src) if d.name in rdims), reverse=True):
             self.ln(f"{var} = {call}({var}, axis={i})")
         return var, _dims(n.type)
+
+    def _contraction_dot(self, n, f, rdims):
+        """Sum over one shared dim of a two-operand product, as an ieee dot
+        (the docstring's precision law); anything stricter falls back."""
+        if f != "sum" or len(rdims) != 1:
+            return None
+        r = rdims[0]
+        mul = n.args[0]
+        if mul.op != "tl.pointwise" or len(mul.args) != 2:
+            return None
+        if _thaw_params(dict(mul.attrs)).get("f") != "mul":
+            return None
+        out = _dims(n.type)
+        if len(out) != 2 or len(_dims(mul.type)) != 3:
+            return None
+        if {d.name for d in _dims(mul.type)} != {out[0].name, out[1].name, r}:
+            return None
+        named = {}
+        for c in (x.args[0] if x.op == "tl.repeat_like" else x for x in mul.args):
+            d = _dims(c.type)
+            keep = tuple(x for x in d if x.name != r)
+            if len(d) != 2 or len(keep) != 1:
+                return None
+            named[keep[0].name] = (c, d)
+        if set(named) != {out[0].name, out[1].name}:
+            return None
+        (ca, da), (cb, db) = named[out[0].name], named[out[1].name]
+        ra = next(x for x in da if x.name == r)
+        rb = next(x for x in db if x.name == r)
+        if (ra.start, ra.stop) != (rb.start, rb.stop):
+            return None
+        if min(_pow2(d.stop - d.start) for d in (out[0], out[1], ra)) < 16:
+            return None
+        va, da2 = self.emit_block(ca)
+        vb, db2 = self.emit_block(cb)
+        if da2[0].name == r:  # dot wants A as (kept, r), B as (r, kept)
+            ta = self.v()
+            self.ln(f"{ta} = tl.trans({va})")
+            va = ta
+        if db2[1].name == r:
+            tb = self.v()
+            self.ln(f"{tb} = tl.trans({vb})")
+            vb = tb
+        size, p = ra.stop - ra.start, _pow2(ra.stop - ra.start)
+        if p != size:  # zero BOTH operands' padded lanes: 0*0 contributes 0, nan-safe
+            ok = f"(tl.arange(0, {p}) < {size})"
+            fa, fb = self.v(), self.v()
+            self.ln(f"{fa} = tl.where({ok}[None, :], {va}, 0.0)")
+            self.ln(f"{fb} = tl.where({ok}[:, None], {vb}, 0.0)")
+            va, vb = fa, fb
+        var = self.v()
+        self.ln(f'{var} = tl.dot({va}, {vb}, input_precision="ieee")')
+        return var, out
 
     def _block_fold(self, n, a):
         k = len(tuple(a["state"]))
@@ -345,7 +407,15 @@ def compile_tile(region: Region):
         out = torch.empty(out_sizes, dtype=torch.float32, device="cuda")
         mod.tile_kernel[(1,)](*ins, out)
         torch.cuda.synchronize()
+        if not run.checked:  # the docstring's precision law: refuse demoted PTX
+            run.checked = True
+            for entry in mod.tile_kernel.device_caches.values():
+                cache = entry[0] if isinstance(entry, tuple) else entry
+                for ck in cache.values():
+                    if ".tf32" in getattr(ck, "asm", {}).get("ptx", ""):
+                        raise RuntimeError("tf32 reached the PTX — the translated column is ieee f32")
         return out.cpu().numpy()
 
+    run.checked = False
     run.source = src
     return run

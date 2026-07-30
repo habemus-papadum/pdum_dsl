@@ -196,6 +196,19 @@ base pointers. The pair mounts behind pdum.rt's door like every column
 (283), and the rig's f32 board (310) is where the flagships' bars
 already stand.
 
+Ruling (measured, 2026-07): Triton's TTIR combine pass rewrites a raw
+mul+`tl.sum` contraction into TF32 tensor-core MMA whenever every block
+dim reaches 16 — hardcoded, no knob reaches it (`TRITON_F32_DEFAULT`
+only sets `tl.dot`'s Python-level default). That is a silent 2^-11
+demotion; on flash scores at T=128 it measured 5.7e-3 against the
+oracle, bit-identical across tile sizes ≥32 and vanishing at 8. §7's
+law applies: precision is a clause WE write. The translator therefore
+emits the contraction as `tl.dot(..., input_precision="ieee")` itself
+(below 16 neither we nor the combine pass convert, so both paths stay
+ieee), and the runner refuses outright if `.tf32` ever appears in the
+compiled PTX. A licensed tf32 clause remains available to a future
+schedule that declares it; it will never be applied silently.
+
 ## §9 Deferred, each with its re-entry condition
 
 - **Threads / warp cooperatives**: below the abstraction line (Triton
