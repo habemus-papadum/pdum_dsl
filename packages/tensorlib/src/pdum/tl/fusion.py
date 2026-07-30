@@ -187,7 +187,8 @@ def _generate_contraction(region: Region, m: dict, ki: int) -> Region:
         return out
 
     yld = rebuild(region.body[-1].args[0])
-    return check_tier(Region(params=tuple(newp[id(p)] for p in region.params), body=(b.emit("core.yield", yld),)), "tile")
+    fused = Region(params=tuple(newp[id(p)] for p in region.params), body=(b.emit("core.yield", yld),))
+    return check_tier(fused, "tile")
 
 
 def plan_region(region: Region) -> Plan:
@@ -212,7 +213,10 @@ def plan_region(region: Region) -> Plan:
                 None,
                 None,
                 "red",
-                reason=f"no recognized schedule: {offender} has no template row — the reference serves this group (330 §2)",
+                reason=(
+                    f"no recognized schedule: {offender} has no template row — "
+                    f"the reference serves this group (330 §2)"
+                ),
             ),
         )
     )
