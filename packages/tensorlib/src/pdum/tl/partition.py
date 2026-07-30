@@ -3,16 +3,20 @@ carve into template-shaped groups, and everything unclaimed refuses
 loudly with its offender named.
 
 Claims run most-specific-first over the anchors — every reduce must
-live somewhere: flash compositions, then single-dim contractions with
-their absorbed epilogues, then bare row normalizations. Absorption
-walks a claim's root downstream through the epilogue vocabulary while
-the root has exactly one consumer; a fork ends the group, and the
-boundary it leaves is a materialized tensor. Interior members may not
-leak (a member consumed outside the claim invalidates it — v1 groups
-have one output, the translator's law). Unclaimed residue becomes
-map-chain groups where it is pure map work and red groups where it is
-not. Constants are FREE — content-addressing shares them across the
-graph, so they never block a claim and every rebuild duplicates them.
+live somewhere: flash compositions (3 reduces), then bare row
+normalizations (2), then single-dim contractions (1) — the specificity
+ladder, so upstream absorption never steals a taller chain's root.
+Contraction claims absorb BOTH ways (§7.6): epilogues walk downstream
+while the root has exactly one consumer; operand prologues walk
+upstream through the recompute-exact vocabulary while every consumer
+lies inside the claim. A fork ends the walk in either direction, and
+the boundary it leaves is a materialized tensor. Interior members may
+not leak (a member consumed outside the claim invalidates it — v1
+groups have one output, the translator's law). Unclaimed residue
+becomes map-chain groups where it is pure map work and red groups
+where it is not. Constants and charts are FREE — content-addressing
+shares them across the graph, so they never block a claim and every
+rebuild duplicates them.
 
 Every carved group is REBUILT canonically — params renumbered in
 first-use order — so structurally identical groups from different
@@ -23,25 +27,29 @@ measurement are paid once per distinct kernel, not once per layer
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from pdum.dsl.ir import Builder, Region
 
 from .dialect import walk_region
 from .fusion import (
+    _CHART_OPS,
     OPS,
     Group,
     _contract_core,
     _dims,
     _forest_is_closed,
     _match_softmax,
-    _rebuild_into,
+    _unchart,
     plan_region,
 )
 
 _CONSTS = ("core.const", "tl.const")
-_FREE = _CONSTS + ("tl.rename", "tl.repeat_like")  # zero-cost views: shared by claims, duplicated at rebuild
-_EPILOGUE = ("tl.pointwise", "tl.repeat_like")
+# zero-cost views: shared by claims, duplicated at rebuild; charts are
+# metadata and never block a claim (§7.6's vocabulary ruling)
+_FREE = _CONSTS + ("tl.rename", "tl.repeat_like") + _CHART_OPS
+_EPILOGUE = ("tl.pointwise", "tl.repeat_like") + _CHART_OPS
+_COMPUTE = ("tl.pointwise", "tl.iota", "tl.repeat")  # upstream-absorbable compute (§7.6)
 
 
 @dataclass(frozen=True)
@@ -50,12 +58,12 @@ class Carve:
     plan the recognizer produced for it, and the claim's footprint in
     the model graph."""
 
-    kernel: Region
+    kernel: Region = field(repr=False)  # IR reprs recurse the DAG: keep failures printable
     group: Group
     nodes: int  # interior (non-const) model nodes this carve claims
     root_op: str
-    root: object = None  # the model node this carve computes
-    bounds: tuple = ()  # the model nodes its params bind to, in param order
+    root: object = field(default=None, repr=False)  # the model node this carve computes
+    bounds: tuple = field(default=(), repr=False)  # the model nodes its params bind to, in param order
 
 
 @dataclass(frozen=True)
@@ -131,6 +139,27 @@ def _leaks(root, members, consumers) -> bool:
     )
 
 
+def _absorb_up(members, consumers, claimed):
+    """Upstream absorption (330 §7.6), the mirror of the epilogue walk: a
+    compute node joins the claim while EVERY consumer already lies inside
+    it — a fork is a boundary, because someone else needs that value
+    materialized anyway. Free views attach each round so the walk sees
+    the compute above them; recompute never crosses a boundary."""
+    while True:
+        _attach_free_fringe(members)
+        added = False
+        for m in list(members.values()):
+            for a in m.args:
+                if id(a) in members or id(a) in claimed or a.op not in _COMPUTE:
+                    continue
+                if any(id(c) not in members for c in consumers.get(id(a), ())):
+                    continue
+                members[id(a)] = a
+                added = True
+        if not added:
+            return members
+
+
 def _absorb(root, members, consumers, claimed):
     """Walk downstream through the epilogue vocabulary while the root has
     exactly one consumer; side operands ride (a repeat_like joins, its
@@ -178,6 +207,23 @@ def _claim_flash(r):
     return q, k, v
 
 
+def _rebuild_dechart(b: Builder, memo: dict, n):
+    """_rebuild_into, with chart views ELIDED: charts are type-preserving
+    autodiff bookkeeping, and layer-specific chart attrs would split the
+    content keys the canonical carve exists to share (§7.6)."""
+    if id(n) in memo:
+        return memo[id(n)]
+    if n.op in _CHART_OPS:
+        out = _rebuild_dechart(b, memo, n.args[0])
+        memo[id(n)] = out
+        return out
+    args = tuple(_rebuild_dechart(b, memo, x) for x in n.args)
+    explicit = {} if OPS[n.op].type_rule is not None else {"type": n.type}
+    out = b.emit(n.op, *args, loc=n.loc, **explicit, **dict(n.attrs))
+    memo[id(n)] = out
+    return out
+
+
 def _extract(root, members) -> Region:
     """Rebuild a claim as a standalone canonical region: boundaries become
     params in first-use order — the content key layers share."""
@@ -193,7 +239,7 @@ def _extract(root, members) -> Region:
     b = Builder(OPS)
     memo = {id(x): b.param(i, x.type) for i, x in enumerate(bounds)}
     params = tuple(memo[id(x)] for x in bounds)
-    region = Region(params=params, body=(b.emit("core.yield", _rebuild_into(b, memo, root)),))
+    region = Region(params=params, body=(b.emit("core.yield", _rebuild_dechart(b, memo, root)),))
     return region, tuple(bounds)
 
 
@@ -250,33 +296,43 @@ def carve_model(region: Region):
             members = _cone(r, {id(x) for x in f})
             if not any(i in claimed for i in members):
                 take(r, members)
-    for r in interior:  # single-dim contractions, epilogues absorbed
-        if r.op != "tl.reduce" or id(r) in claimed:
-            continue
-        a = dict(r.attrs)
-        dims = (a["dims"],) if isinstance(a["dims"], str) else tuple(a["dims"])
-        if a.get("f") != "sum" or len(dims) != 1:
-            continue
-        mul = r.args[0]
-        if mul.op != "tl.pointwise" or dict(mul.attrs).get("f") != "mul" or len(mul.args) != 2:
-            continue
-        if not all(x.op == "tl.repeat_like" for x in mul.args):
-            continue
-        members = {id(r): r, id(mul): mul}
-        members.update({id(x): x for x in mul.args})
-        if any(i in claimed for i in members):
-            continue
-        root = _absorb(r, members, consumers, claimed)
-        take(root, members)
-    for n in interior:  # bare row normalizations
-        if id(n) in claimed:
-            continue
+    for n in interior:  # bare row normalizations BEFORE single-reduce claims: the
+        if id(n) in claimed:  # specificity ladder (3 reduces > 2 > 1) keeps upstream
+            continue  # absorption from stealing a two-reduce chain's root (§7.6)
         sm = _match_softmax(n)
         if sm is None:
             continue
         members = _cone(n, {id(sm["sm"])})
         if not any(i in claimed for i in members):
             take(n, members)
+    for r in interior:  # single-dim contractions: prologues absorbed upstream (§7.6),
+        if r.op != "tl.reduce" or id(r) in claimed:  # epilogues downstream
+            continue
+        a = dict(r.attrs)
+        dims = (a["dims"],) if isinstance(a["dims"], str) else tuple(a["dims"])
+        if a.get("f") != "sum" or len(dims) != 1 or a.get("zero") is not None:
+            continue
+        mul = _unchart(r.args[0])
+        if mul.op != "tl.pointwise" or dict(mul.attrs).get("f") != "mul" or len(mul.args) != 2:
+            continue
+        cores = []
+        for x in mul.args:
+            x = _unchart(x)
+            if x.op == "tl.repeat_like":
+                x = _unchart(x.args[0])
+            cores.append(x)
+        if any(dims[0] not in {d.name for d in _dims(c.type)} for c in cores):
+            continue  # both operands must CARRY the contracted dim (the dims credential)
+        keeps = [tuple(d.name for d in _dims(c.type) if d.name != dims[0]) for c in cores]
+        out = tuple(d.name for d in _dims(r.type))
+        if set(out) != set(keeps[0]) | set(keeps[1]):
+            continue
+        members = {id(r): r, id(mul): mul}
+        if any(i in claimed for i in members):
+            continue
+        _absorb_up(members, consumers, claimed)
+        root = _absorb(r, members, consumers, claimed)
+        take(root, members)
     residue = [n for n in interior if id(n) not in claimed]
     for comp, roots in _components(residue, consumers):
         comp_ids = {id(m) for m in comp}

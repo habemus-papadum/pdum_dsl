@@ -77,18 +77,19 @@ def test_repeated_layers_share_kernels_and_analysis():
 
 
 def test_the_backward_joint_partitions_and_reports_honestly():
-    """The adjoint's joint region carves without error; the forward's
-    contractions still claim inside it, and the refusal census prices
-    the next template rows (chart-wrapped products, mean reducers,
-    multi-dim contractions) by frequency."""
+    """The adjoint's joint region carves under the §7.6 rows: the
+    computed-operand contraction claims the chart-wrapped adjoint
+    products (upstream absorption, rowsum and broadcast shapes alike),
+    and what remains red is named — mean chains, multi-dim
+    contractions, the scatter_add embedding grad."""
     from pdum.tl.autodiff import grad
 
     m = gpt2()
     rg = grad(m.region, m.out, seed="dY", names=m.names)
     plan = plan_model(rg.region)
     by = Counter(c.group.template for c in plan.carves)
-    assert by["contraction-epilogue"] >= 15  # the forward's claims survive the joint
+    assert by["contraction-epilogue"] >= 50  # the adjoint products claim (§7.6)
     assert by["map-chain"] > 20  # adjoint broadcast/mask plumbing claims as maps
-    assert 0.05 < plan.coverage() < 0.5  # honest: the adjoint needs new template rows
+    assert plan.coverage() > 0.8  # approaching forward parity; the rest is priced red
     with no_reanalysis():  # and the joint's facts cache like everything else
         plan_model(rg.region)

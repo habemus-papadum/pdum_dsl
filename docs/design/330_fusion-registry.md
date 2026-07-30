@@ -185,3 +185,80 @@ tweak), 9× mean-reducer chains (layernorm fwd+bwd — the row-statistics
 row), 8× multi-dim contractions (wo and its grads), the softmax
 adjoint composition, and scatter_add (embedding grad). Joint coverage
 16.1% until those rows exist — refused loudly, named exactly.
+
+### §7.6 The backward rows — RATIFIED 2026-07-30 (owner conversation)
+
+The census classes collapse under one new POWER plus one new row, a
+relaxation, and one honest refusal. Profiled under the actual claiming
+law (not raw cone-walking), the five classes and their rulings:
+
+**A. Computed operands — upstream absorption (the ruling).** The
+mirror of epilogue absorption: a contraction's operand prologue joins
+the claim through the EXACT vocabulary (pointwise, views, charts,
+consts, iota) while every consumer lies inside the claim — a fork is
+a boundary, because someone else needs that value materialized anyway.
+Measured on the joint region: absorbed prologues are SHALLOW (1–2
+pointwise for 53 of 72 sum-of-mul sites, max 12); the scary deep cones
+were an artifact of the adjoint sharing forward nodes, and shared
+means forked, and forked means boundary. Prologue recompute per
+k-tile is BIT-exact — stronger than a license: pointwise per-element
+work has no order to reassociate. Epilogues needed licenses because
+they moved across reductions; prologues move into the staging of
+operands and touch nothing ordered. Cost is closed-form: rowsum-shaped
+sites recompute NOTHING (each element used once); gemm-shaped sites
+recompute an operand tile once per program on the other grid axis —
+traffic saved vs FLOPs added, both sides priced by the existing
+traffic model. Under v1's single-dim launches the multiplier is 1, so
+absorption is unconditionally sound today; the scorer inherits the
+decision when launches grow a second dim. The contraction row also
+accepts the ROWSUM shape (same-space operands, no broadcast pair —
+the softmax adjoint's rowsum(dP*P)), which lowers as mul+tl.sum and
+never touches the dot path.
+
+**B. Row statistics.** The zoo spells layernorm TWO-PASS (mu =
+mean(x); sd = sqrt(mean(xc*xc) + eps)) — the stable form, structurally
+softmax's two-sweep shape. The row generalizes row-normalization
+rather than duplicating it. The translator gains f=mean as fold-sum
+with a divide-by-N finalize — N static, one deterministic scalar op;
+numerics sit inside the EXISTING reassociation class every reducing
+certificate already prices. No new license category anywhere in §7.6.
+
+**C. Multi-dim contractions** (wo over (nh, hk) and its grads): fold
+over one contracted dim, reduce the rest inside the step — what a
+hand author writes. Reduction-order change is the already-priced
+class. Flatten-to-single-k is a measured upgrade, not v1.
+
+**D. The softmax adjoint composes** — rowsum(dP*P) is a computed-
+operand rowsum, the outer P*(dP - ...) is the epilogue rule that
+exists. No new template; verified by re-census after A lands.
+
+**E. scatter_add is REFUSED red** (take's adjoint, the embedding
+gradient): colliding writes across programs are the same act as
+split-K — cross-program reduction, 340 §6's family. Re-entry: a
+sort-and-segment spelling, or an atomics row with a measured
+collision model. One site; it costs almost no coverage.
+
+**Vocabulary ruling:** tl.with_charts / tl.strip_charts / tl.simplify
+are FREE views in the partitioner (metadata never blocks a claim,
+duplicated at rebuild) and legal anywhere in a carved kernel — the
+translator already passes them through.
+
+**The horizon, named and not smuggled in:** flash-backward proper
+(recomputing attention inside the backward kernel instead of
+materializing P) is cross-GROUP rematerialization — a memory-vs-FLOPs
+law v1 does not have. Until it exists the backward materializes the
+t×s attention matrix, and that is the honest cost.
+
+### §7.7 Size-capped certification — RATIFIED 2026-07-30
+
+The certificate is about the PROGRAM, not the size. Certification runs
+differential families through the python reference; at T>=4096 a
+flash region materializes T^2 softmax through that reference and the
+OOM kills the session (observed twice). Ruling: above a cap, certify a
+SHRUNK TWIN — the same match and the same generator over the region
+with extents clamped — and attach that certificate to the full-size
+kernel. The families still exercise every structural failure mode the
+template declares (the mask still masks, the rescale still rescales);
+what they no longer exercise is size itself, which the certificate
+never priced anyway. The cap is a plan-level constant, not a machine
+fact.

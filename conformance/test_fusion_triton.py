@@ -157,3 +157,64 @@ def test_mask_derived_bounds_prune_the_sweep_bit_exactly():
     pruned = compile_tile(g.kernel, g.launch, g.prune)
     assert "tl.minimum(4, 1 + 1 * pid_t)" in pruned.source
     np.testing.assert_array_equal(full(vals), pruned(vals))
+
+
+def test_a_computed_operand_contraction_fuses_the_prologue():
+    """The §7.6 row on silicon: an operand that is a COMPUTED chain
+    (exp(x), the trivial adjoint stand-in) rides as a fold element
+    source and is computed per k-tile inside the sweep — no separate
+    materialization, the dot still ieee. Recompute-exact: the prologue
+    is per-element work with nothing ordered to reassociate."""
+    _require_cuda()
+    from triton_tile import compile_tile
+
+    rng = np.random.default_rng(9)
+    X = np.asarray(rng.standard_normal((32, 32)))
+    dY = np.asarray(rng.standard_normal((32, 16)))
+    b = Builder(OPS)
+    px = b.param(0, tensor_type_of_layout(Tensor.from_numpy(X, ("t", "m")).layout))
+    pd = b.param(1, tensor_type_of_layout(Tensor.from_numpy(dY, ("t", "n")).layout))
+    a = b.emit("tl.pointwise", px, f="exp")  # the computed operand
+    prod = b.emit("tl.pointwise", b.emit("tl.repeat_like", a, pd), b.emit("tl.repeat_like", pd, a), f="mul")
+    y = b.emit("tl.reduce", prod, dims=("t",), f="sum")
+    region = Region(params=(px, pd), body=(b.emit("core.yield", y),))
+
+    (g,) = plan_region(region).groups
+    assert g.template == "contraction-epilogue"
+    run = compile_tile(g.kernel)
+    want = np.exp(X).T @ dY
+    # the translated column is f32 and exp amplifies before the sum: the
+    # flash tests' tolerance, not the small-K gemm's
+    np.testing.assert_allclose(run([X, dY]), want, rtol=1e-4, atol=1e-6)
+    assert run.source.count("for ") == 1  # the k-fold is the only loop
+    body = run.source[run.source.index("for ") :]
+    assert "tl.exp" in body  # the prologue lives INSIDE the sweep
+    assert 'input_precision="ieee"' in run.source  # the dot stayed honest
+
+
+def test_the_softmax_adjoint_composes_on_silicon():
+    """The D-class (§7.6): dS = P * (dP - rowsum(dP * P)) is a ROWSUM-
+    shaped contraction (same-space operands, no broadcast pair) with the
+    outer product-and-subtract as its epilogue — one kernel, one loop,
+    no new template."""
+    _require_cuda()
+    from triton_tile import compile_tile
+
+    rng = np.random.default_rng(11)
+    P = np.asarray(rng.random((32, 32)))
+    dP = np.asarray(rng.standard_normal((32, 32)))
+    b = Builder(OPS)
+    pp = b.param(0, tensor_type_of_layout(Tensor.from_numpy(P, ("t", "s")).layout))
+    pd = b.param(1, tensor_type_of_layout(Tensor.from_numpy(dP, ("t", "s")).layout))
+    rs = b.emit("tl.reduce", b.emit("tl.pointwise", pd, pp, f="mul"), dims=("s",), f="sum")
+    y = b.emit(
+        "tl.pointwise", pp, b.emit("tl.pointwise", pd, b.emit("tl.repeat_like", rs, pd), f="sub"), f="mul"
+    )
+    region = Region(params=(pp, pd), body=(b.emit("core.yield", y),))
+
+    (g,) = plan_region(region).groups
+    assert g.template == "contraction-epilogue"
+    run = compile_tile(g.kernel)
+    want = P * (dP - (dP * P).sum(axis=1, keepdims=True))
+    np.testing.assert_allclose(run([P, dP]), want, rtol=1e-5, atol=1e-6)
+    assert run.source.count("for ") == 1 and run.source.count("tl.store") == 1

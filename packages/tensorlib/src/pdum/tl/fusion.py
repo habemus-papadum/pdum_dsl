@@ -46,7 +46,7 @@ the templates it would assign.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -82,8 +82,18 @@ _MAP_OPS = frozenset({"core.param", "core.const", "core.yield", "tl.pointwise", 
         "repeat_like",
     )
 )
-_EPILOGUE_OPS = frozenset({"tl.pointwise", "tl.repeat_like", "core.const", "tl.const", "core.param"})
+_CHART_OPS = ("tl.with_charts", "tl.strip_charts", "tl.simplify")
+_EXACT_OPS = frozenset(
+    {"tl.pointwise", "tl.repeat_like", "tl.rename", "tl.repeat", "tl.iota", "core.const", "tl.const"}
+) | frozenset(_CHART_OPS)  # recompute-exact vocabulary: prologues and epilogues both draw from it (§7.6)
 _REASSOC = tuple(lic for lic in GEMM_F16_TILES if lic.kind == "reassociation")
+
+
+def _unchart(n):
+    """Charts are metadata views — matchers look through them (§7.6)."""
+    while n.op in _CHART_OPS:
+        n = n.args[0]
+    return n
 
 
 @dataclass(frozen=True)
@@ -93,7 +103,7 @@ class Group:
     the refusal reason and no kernel — the reference serves them."""
 
     template: str  # "map-chain" | "contraction-epilogue" | "uncompiled"
-    kernel: Region | None
+    kernel: Region | None = field(repr=False)  # IR reprs recurse the DAG: keep failures printable
     certificate: Certificate | None
     confidence: str  # "green" | "yellow" | "red"
     params: tuple = ()  # plan parameters, e.g. (("ki", 4),)
@@ -118,11 +128,14 @@ def _is_map_chain(region: Region) -> str | None:
 
 
 def _match_contraction_epilogue(region: Region):
-    """The strict v1 shape: exactly one reduce — sum over ONE dim, over
-    ``mul(rl(a, b), rl(b, a))`` with a and b params — and everything
-    between it and the yield drawn from the epilogue vocabulary
-    (pointwise/repeat_like/consts, broadcasts riding). Anything else
-    declines: a matcher never guesses (330 §2)."""
+    """The contraction row, §7.6 shape: exactly one reduce — sum over ONE
+    dim of a two-operand product whose operands both CARRY the contracted
+    dim — and every other node drawn from the recompute-exact vocabulary
+    (prologues absorbed upstream, epilogues downstream, charts looked
+    through). Operands may be computed chains — params are the trivial
+    case. A broadcast pair with disjoint kept dims is the GEMM shape;
+    same-space operands are the ROWSUM shape (the softmax adjoint's
+    rowsum(dP*P)). Anything else declines: a matcher never guesses."""
     yld = region.body[-1].args[0]
     if yld.op == "core.tuple":
         return None
@@ -135,31 +148,42 @@ def _match_contraction_epilogue(region: Region):
     if a["f"] != "sum" or len(dims) != 1 or a.get("zero") is not None:
         return None
     (k,) = dims
-    prod = red.args[0]
+    prod = _unchart(red.args[0])
     if prod.op != "tl.pointwise" or dict(prod.attrs).get("f") != "mul" or len(prod.args) != 2:
         return None
-    ra, rb = prod.args
-    if ra.op != "tl.repeat_like" or rb.op != "tl.repeat_like":
+    cores = []
+    for x in prod.args:
+        x = _unchart(x)
+        if x.op == "tl.repeat_like":  # a broadcast rides; its LIKE is a dims-only credential
+            x = _unchart(x.args[0])
+        cores.append(x)
+    ca, cb = cores
+    if any(k not in {d.name for d in _dims(c.type)} for c in cores):
         return None
-    pa, pb = ra.args[0], rb.args[0]
-    core = {id(red), id(prod), id(ra), id(rb), id(pa), id(pb), id(ra.args[1]), id(rb.args[1])}
-    for v in (pa, pb):  # free views ride the operand (renamed activations);
-        while v.op == "tl.rename":  # the LIKES are dims-only credentials — any
-            core.add(id(v))  # broadcast pair contracts, adjoints included
-            v = v.args[0]
-            core.add(id(v))
-        if v.op != "core.param":
-            return None
-    for n in walk_region(region):  # the whole region is core + epilogue, or we decline
-        if id(n) in core or n.op == "core.yield":
+    keep_a = tuple(d.name for d in _dims(ca.type) if d.name != k)
+    keep_b = tuple(d.name for d in _dims(cb.type) if d.name != k)
+    out = tuple(d.name for d in _dims(red.type))
+    if set(out) != set(keep_a) | set(keep_b):
+        return None
+    full_a = tuple(d.name for d in _dims(ca.type))
+    full_b = tuple(d.name for d in _dims(cb.type))
+    # same-space operands are the ROWSUM shape (plain mul); different spaces
+    # take the broadcast pair, which joins riders and disjoint kepts alike —
+    # operand order stays the original spelling's (the step mirrors it)
+    shape = "rowsum" if full_a == full_b else "gemm"
+    core = {id(red), id(prod)}
+    for n in walk_region(region):  # the whole region is exact vocabulary, or we decline
+        if id(n) in core or n.op in ("core.yield", "core.param"):
             continue
-        if n.op not in _EPILOGUE_OPS:
+        if n.op not in _EXACT_OPS:
             return None
-    kdim = next((d for d in _dims(pa.type) if d.name == k), None)
-    kb = next((d for d in _dims(pb.type) if d.name == k), None)
-    if kdim is None or kb is None or kdim.start != 0 or any(d.start != 0 for d in _dims(red.type)):
+    kdim = next(d for d in _dims(ca.type) if d.name == k)
+    kb = next(d for d in _dims(cb.type) if d.name == k)
+    if (kdim.start, kdim.stop) != (kb.start, kb.stop) or kdim.start != 0:
         return None
-    return {"reduce": red, "k": k, "extent": kdim.stop, "a": pa, "b": pb}
+    if any(d.start != 0 for d in _dims(red.type)):
+        return None
+    return {"reduce": red, "k": k, "extent": kdim.stop, "a": ca, "b": cb, "shape": shape}
 
 
 def _dims(t):
@@ -178,19 +202,18 @@ def _pick_ki(extent: int) -> int:
 def _generate_contraction(region: Region, m: dict, ki: int) -> Region:
     """Emit the fused tile kernel: split k, fold over ko with staged operand
     slices (gemm_tile's shape), then the epilogue REBUILT over the
-    accumulator — fused values never touch memory."""
+    accumulator — fused values never touch memory. Operands may be computed
+    prologue chains (§7.6): they rebuild ahead of the split and ride as
+    fold element sources, computed per k-tile by request-driven emission —
+    the flash mask's pattern, recompute-exact by per-element identity."""
     k, extent, red = m["k"], m["extent"], m["reduce"]
     ko = extent // ki
     b = Builder(OPS)
     newp = {id(p): b.param(i, p.type) for i, p in enumerate(region.params)}
+    memo: dict[int, object] = dict(newp)  # shared by prologue and epilogue rebuilds
 
-    def operand(x):  # free-view chains ride into the kernel
-        if x.op == "core.param":
-            return newp[id(x)]
-        return b.emit(x.op, operand(x.args[0]), **dict(x.attrs))
-
-    at = b.emit("tl.split", operand(m["a"]), name=k, parts=(("ko", ko), ("ki", ki)))
-    bt = b.emit("tl.split", operand(m["b"]), name=k, parts=(("ko", ko), ("ki", ki)))
+    at = b.emit("tl.split", _rebuild_into(b, memo, m["a"]), name=k, parts=(("ko", ko), ("ki", ki)))
+    bt = b.emit("tl.split", _rebuild_into(b, memo, m["b"]), name=k, parts=(("ko", ko), ("ki", ki)))
     acc0 = b.emit("tl.const", value=0.0, dims=tuple((d.name, d.stop) for d in _dims(red.type)))
 
     sb = Builder(OPS)
@@ -199,7 +222,12 @@ def _generate_contraction(region: Region, m: dict, ki: int) -> Region:
     p_b = sb.param(2, _minus_dim(bt.type, "ko"))
     a_s = sb.emit("tl.stage", p_a, level="shared")
     b_s = sb.emit("tl.stage", p_b, level="shared")
-    prod = sb.emit("tl.pointwise", sb.emit("tl.repeat_like", a_s, b_s), sb.emit("tl.repeat_like", b_s, a_s), f="mul")
+    if m.get("shape", "gemm") == "rowsum":  # same-space operands: no broadcast pair
+        prod = sb.emit("tl.pointwise", a_s, b_s, f="mul")
+    else:
+        prod = sb.emit(
+            "tl.pointwise", sb.emit("tl.repeat_like", a_s, b_s), sb.emit("tl.repeat_like", b_s, a_s), f="mul"
+        )
     part = sb.emit("tl.reduce", prod, dims=("ki",), f="sum")
     nxt = sb.emit("tl.pointwise", p_acc, part, f="add")
     step = Region(params=(p_acc, p_a, p_b), body=(sb.emit("core.yield", nxt),))
@@ -209,18 +237,8 @@ def _generate_contraction(region: Region, m: dict, ki: int) -> Region:
     )
 
     # the epilogue, rebuilt over the accumulator: reduce -> fold, params -> new params
-    memo: dict[int, object] = {id(red): fold, **newp}
-
-    def rebuild(n):
-        if id(n) in memo:
-            return memo[id(n)]
-        args = tuple(rebuild(x) for x in n.args)
-        explicit = {} if OPS[n.op].type_rule is not None else {"type": n.type}
-        out = b.emit(n.op, *args, loc=n.loc, **explicit, **dict(n.attrs))
-        memo[id(n)] = out
-        return out
-
-    yld = rebuild(region.body[-1].args[0])
+    memo[id(red)] = fold
+    yld = _rebuild_into(b, memo, region.body[-1].args[0])
     fused = Region(params=tuple(newp[id(p)] for p in region.params), body=(b.emit("core.yield", yld),))
     return check_tier(fused, "tile")
 
@@ -457,9 +475,20 @@ def _generate_flash(region: Region, m: dict, si: int) -> Region:
 
 
 def _score_families(region: Region, seed: int = 11):
-    """Template 3's own adversarial families (the template knows its
+    """Adversarial families for the reducing rows (the template knows its
     failure modes): unit gaussians, wide scores (exp near saturation,
-    max-shifted), and a dominant key (the rescale at its extreme)."""
+    max-shifted; for contractions, cancellation at magnitude), and a
+    dominant row (flash's rescale at its extreme; magnitude disparity
+    for a contraction's reassociation)."""
+
+    masks = set()  # params consumed (through views) as where-conditions draw as MASKS
+    for n in walk_region(region):  # derivative markers too: where.d1 keeps the carrier discipline
+        if n.op == "tl.pointwise" and dict(n.attrs).get("f", "").startswith("where"):
+            r = n.args[0]
+            while r.op in ("tl.rename", "tl.repeat_like", "tl.repeat", "tl.slice", "tl.shift") + _CHART_OPS:
+                r = r.args[0]
+            if r.op == "core.param":
+                masks.add(id(r))
 
     def draw(scale, subseed, spike=False):
         def factory():
@@ -467,7 +496,11 @@ def _score_families(region: Region, seed: int = 11):
             out = {}
             for i, p in enumerate(region.params):
                 dims = _dims(p.type)
-                arr = scale * rng.standard_normal(tuple(d.stop - d.start for d in dims))
+                shape = tuple(d.stop - d.start for d in dims)
+                if id(p) in masks:
+                    out[f"p{i}"] = Tensor.from_numpy(rng.random(shape) < 0.5, tuple(d.name for d in dims))
+                    continue
+                arr = scale * rng.standard_normal(shape)
                 if spike and i == 1:
                     arr[0] *= 40.0
                 out[f"p{i}"] = Tensor.from_numpy(arr, tuple(d.name for d in dims))
@@ -553,7 +586,9 @@ def _recognize(region: Region) -> Plan:
     if m is not None:
         ki = _pick_ki(m["extent"])
         kernel = _generate_contraction(region, m, ki)
-        cert = certify(kernel, region, licenses=_REASSOC)
+        # families are the differential fallback: computed-operand kernels the
+        # normalizer cannot walk back to the twin's key still certify (§7.6)
+        cert = certify(kernel, region, licenses=_REASSOC, families=_score_families(region))
         return Plan((Group("contraction-epilogue", kernel, cert, "yellow", params=(("ki", ki),)),))
     sm = _match_softmax(region.body[-1].args[0])
     if sm is not None:
