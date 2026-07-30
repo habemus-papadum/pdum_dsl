@@ -39,6 +39,7 @@ from .fusion import (
     _contract_core,
     _dims,
     _forest_is_closed,
+    _match_rowstat,
     _match_softmax,
     _unchart,
     plan_region,
@@ -171,6 +172,8 @@ def _absorb(root, members, consumers, claimed):
         c = cs[0]
         if c.op not in _EPILOGUE or id(c) in claimed or c.op == "core.yield":
             return root
+        if c.op == "tl.repeat_like" and c.args[0] is root:
+            return root  # broadcast-INTO-elsewhere is another anchor's product, not epilogue
         for side in c.args:
             if side is root or id(side) in members or side.op in _CONSTS:
                 continue
@@ -305,29 +308,42 @@ def carve_model(region: Region):
         members = _cone(n, {id(sm["sm"])})
         if not any(i in claimed for i in members):
             take(n, members)
+    for n in interior:  # row-statistics chains (layernorm): two means, one dim,
+        if id(n) in claimed:  # scale-shift absorbed as epilogue (§7.6)
+            continue
+        rs = _match_rowstat(n)
+        if rs is None:
+            continue
+        members = _cone(n, {id(rs["x"])})
+        if not any(i in claimed for i in members):
+            root = _absorb(n, members, consumers, claimed)
+            take(root, members)
     for r in interior:  # single-dim contractions: prologues absorbed upstream (§7.6),
         if r.op != "tl.reduce" or id(r) in claimed:  # epilogues downstream
             continue
         a = dict(r.attrs)
         dims = (a["dims"],) if isinstance(a["dims"], str) else tuple(a["dims"])
-        if a.get("f") != "sum" or len(dims) != 1 or a.get("zero") is not None:
+        if a.get("f") not in ("sum", "mean") or len(dims) not in (1, 2) or a.get("zero") is not None:
             continue
         mul = _unchart(r.args[0])
-        if mul.op != "tl.pointwise" or dict(mul.attrs).get("f") != "mul" or len(mul.args) != 2:
-            continue
-        cores = []
-        for x in mul.args:
-            x = _unchart(x)
-            if x.op == "tl.repeat_like":
-                x = _unchart(x.args[0])
-            cores.append(x)
-        if any(dims[0] not in {d.name for d in _dims(c.type)} for c in cores):
-            continue  # both operands must CARRY the contracted dim (the dims credential)
-        keeps = [tuple(d.name for d in _dims(c.type) if d.name != dims[0]) for c in cores]
+        if mul.op == "tl.pointwise" and dict(mul.attrs).get("f") == "mul" and len(mul.args) == 2:
+            cores = []
+            for x in mul.args:
+                x = _unchart(x)
+                if x.op == "tl.repeat_like":
+                    x = _unchart(x.args[0])
+                cores.append(x)
+        else:  # PLAIN: a sum with no product (bias gradients) — one operand
+            cores = [mul]
+        if any(k not in {d.name for d in _dims(c.type)} for c in cores for k in dims):
+            continue  # both operands must CARRY every contracted dim (the dims credential)
+        keeps = [tuple(d.name for d in _dims(c.type) if d.name not in dims) for c in cores]
         out = tuple(d.name for d in _dims(r.type))
-        if set(out) != set(keeps[0]) | set(keeps[1]):
+        if set(out) != set().union(*map(set, keeps)):
             continue
-        members = {id(r): r, id(mul): mul}
+        members = {id(r): r}
+        if len(cores) == 2:  # plain sums leave their operand to absorption:
+            members[id(mul)] = mul  # it may be another anchor's root
         if any(i in claimed for i in members):
             continue
         _absorb_up(members, consumers, claimed)

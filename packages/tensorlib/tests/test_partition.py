@@ -40,13 +40,13 @@ def _execute(plan, model):
 def test_gpt2_carves_into_recognized_groups():
     plan = plan_model(gpt2().region)
     by = Counter(c.group.template for c in plan.carves)
-    assert by["contraction-epilogue"] == 15  # q,k,v,sc,pv,w1,w2 per block + head
-    assert by["row-normalization"] == 2  # the attention softmax, riders and all
+    assert by["contraction-epilogue"] == 17  # q,k,v,sc,pv,w1,w2,wo per block + head:
+    assert by["row-normalization"] == 2  # the 2-dim wo contract claims too (§7.6)
+    assert by["row-statistics"] == 5  # every layernorm, two-pass, staged once
     assert by["map-chain"] >= 2  # the causal mask forests
-    assert plan.coverage() > 0.5
+    assert plan.coverage() > 0.9  # only the embedding gather remains red
     reasons = " ".join(c.group.reason for c in plan.carves if c.group.confidence == "red")
-    assert "tl.take" in reasons  # the embedding gather, named
-    assert "tl.reduce" in reasons  # the layernorm means and the 2-dim wo contract
+    assert "tl.take" in reasons  # the embedding gather, named — scatter_add's twin
 
 
 def test_the_carved_plan_executes_to_the_models_output():
@@ -93,3 +93,27 @@ def test_the_backward_joint_partitions_and_reports_honestly():
     assert plan.coverage() > 0.8  # approaching forward parity; the rest is priced red
     with no_reanalysis():  # and the joint's facts cache like everything else
         plan_model(rg.region)
+
+
+def test_the_rowstat_row_claims_every_layernorm_once():
+    """§7.6 B: all five layernorms (two per block + the final) carve as
+    row-statistics onto ONE canonical kernel, and the certificate is
+    proved-exact — staging erases, nothing reassociates."""
+    plan = plan_model(gpt2().region)
+    rs = [c for c in plan.carves if c.group.template == "row-statistics"]
+    assert len(rs) == 5
+    assert len({c.kernel.key for c in rs}) == 1  # one kernel, paid once
+    assert rs[0].group.certificate.verdict == "proved-exact"
+
+
+def test_the_scatter_add_refusal_is_named():
+    """§7.6 E: the embedding gradient is a genuine cross-program
+    reduction and refuses RED with its op named — 340 §6's family,
+    re-entry conditions recorded, never silent."""
+    from pdum.tl.autodiff import grad
+
+    m = gpt2()
+    rg = grad(m.region, m.out, seed="dY", names=m.names)
+    plan = plan_model(rg.region)
+    reasons = " ".join(c.group.reason for c in plan.carves if c.group.confidence == "red")
+    assert "tl.scatter_add" in reasons

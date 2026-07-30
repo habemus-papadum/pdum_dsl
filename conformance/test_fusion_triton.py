@@ -218,3 +218,55 @@ def test_the_softmax_adjoint_composes_on_silicon():
     want = P * (dP - (dP * P).sum(axis=1, keepdims=True))
     np.testing.assert_allclose(run([P, dP]), want, rtol=1e-5, atol=1e-6)
     assert run.source.count("for ") == 1 and run.source.count("tl.store") == 1
+
+
+def test_the_rowstat_layernorm_runs_on_triton():
+    """§7.6 B on silicon: the two-pass layernorm claims as row-statistics,
+    stages its rows once, and the translator lowers mean as sum with a
+    divide-by-N finalize — N static, one scalar op, no new license."""
+    _require_cuda()
+    from triton_tile import compile_tile
+
+    from pdum.tl.zoo.gpt2 import gpt2
+
+    plan_m = __import__("pdum.tl.partition", fromlist=["plan_model"]).plan_model(gpt2().region)
+    carve = next(c for c in plan_m.carves if c.group.template == "row-statistics")
+    # rebuild the oracle from the carve's own kernel via the reference
+    from pdum.tl.dialect import run_region
+
+    rng = np.random.default_rng(17)
+    vals = []
+    for p in carve.kernel.params:
+        dims = p.type.dims
+        arr = rng.standard_normal(tuple(d.stop - d.start for d in dims))
+        vals.append(Tensor.from_numpy(arr, tuple(d.name for d in dims)))
+    want = run_region(carve.kernel, list(vals))
+    run = compile_tile(carve.group.kernel)
+    got = run([v.to_numpy() for v in vals])
+    np.testing.assert_allclose(got, want.to_numpy(order=want.names), rtol=1e-5, atol=1e-6)
+    assert "/ 6" in run.source  # the mean's divide-by-N, spelled once
+
+
+def test_a_two_dim_contraction_runs_on_triton():
+    """§7.6 C on silicon: contract over (nh, hk) — the fold runs the
+    widest contracted dim, the rest reduce whole inside the step, and
+    the tf32 tripwire guards the raw mul+sum lowering."""
+    _require_cuda()
+    from triton_tile import compile_tile
+
+    rng = np.random.default_rng(23)
+    X = np.asarray(rng.standard_normal((32, 4, 16)))
+    W = np.asarray(rng.standard_normal((4, 16, 32)))
+    b = Builder(OPS)
+    px = b.param(0, tensor_type_of_layout(Tensor.from_numpy(X, ("t", "nh", "hk")).layout))
+    pw = b.param(1, tensor_type_of_layout(Tensor.from_numpy(W, ("nh", "hk", "d")).layout))
+    prod = b.emit("tl.pointwise", b.emit("tl.repeat_like", px, pw), b.emit("tl.repeat_like", pw, px), f="mul")
+    y = b.emit("tl.reduce", prod, dims=("nh", "hk"), f="sum")
+    region = Region(params=(px, pw), body=(b.emit("core.yield", y),))
+
+    (g,) = plan_region(region).groups
+    assert g.template == "contraction-epilogue"
+    run = compile_tile(g.kernel)
+    want = np.einsum("thk,hkd->td", X, W)
+    np.testing.assert_allclose(run([X, W]), want, rtol=1e-4, atol=1e-6)
+    assert run.source.count("for ") == 1  # ONE fold: the widest dim; nh reduces in-step

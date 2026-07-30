@@ -286,11 +286,14 @@ class _Gen:
 
     def _block_reduce(self, n, a):
         f = a["f"]
-        if f not in _IDENT or a.get("zero") is not None:
+        mean = f == "mean"
+        if mean:
+            f = "sum"  # mean lowers as sum with a divide-by-N finalize (330 §7.6):
+        if f not in _IDENT or a.get("zero") is not None:  # N static, one scalar op
             raise Untranslatable(f"tl.reduce f={f}")
         src = _dims(n.args[0].type)
         rdims = (a["dims"],) if isinstance(a["dims"], str) else tuple(a["dims"])
-        dot = self._contraction_dot(n, f, rdims)
+        dot = None if mean else self._contraction_dot(n, f, rdims)
         if dot is not None:
             return dot
         space = self.space(src)
@@ -302,6 +305,12 @@ class _Gen:
         call = {"sum": "tl.sum", "max": "tl.max", "min": "tl.min", "prod": "tl.prod"}[f]
         for i in sorted((i for i, d in enumerate(src) if d.name in rdims), reverse=True):
             self.ln(f"{var} = {call}({var}, axis={i})")
+        if mean:
+            count = 1
+            for d in src:
+                if d.name in rdims:
+                    count *= d.stop - d.start
+            self.ln(f"{var} = {var} / {count}")
         return var, _dims(n.type)
 
     def _contraction_dot(self, n, f, rdims):

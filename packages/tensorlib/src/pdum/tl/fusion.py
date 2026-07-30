@@ -145,45 +145,66 @@ def _match_contraction_epilogue(region: Region):
     red = reduces[0]
     a = dict(red.attrs)
     dims = (a["dims"],) if isinstance(a["dims"], str) else tuple(a["dims"])
-    if a["f"] != "sum" or len(dims) != 1 or a.get("zero") is not None:
-        return None
-    (k,) = dims
+    if a["f"] not in ("sum", "mean") or len(dims) not in (1, 2) or a.get("zero") is not None:
+        return None  # mean contracts too: the fold sums, a scale finalizes (§7.6)
     prod = _unchart(red.args[0])
-    if prod.op != "tl.pointwise" or dict(prod.attrs).get("f") != "mul" or len(prod.args) != 2:
+    if prod.op == "tl.pointwise" and dict(prod.attrs).get("f") == "mul" and len(prod.args) == 2:
+        cores = []
+        for x in prod.args:
+            x = _unchart(x)
+            if x.op == "tl.repeat_like":  # a broadcast rides; its LIKE is a dims-only credential
+                x = _unchart(x.args[0])
+            cores.append(x)
+    else:  # PLAIN shape: a sum with no product at all (bias gradients) —
+        cores = [prod]  # the degenerate rowsum, one operand riding the fold
+    if any(k not in {d.name for d in _dims(c.type)} for c in cores for k in dims):
         return None
-    cores = []
-    for x in prod.args:
-        x = _unchart(x)
-        if x.op == "tl.repeat_like":  # a broadcast rides; its LIKE is a dims-only credential
-            x = _unchart(x.args[0])
-        cores.append(x)
-    ca, cb = cores
-    if any(k not in {d.name for d in _dims(c.type)} for c in cores):
-        return None
-    keep_a = tuple(d.name for d in _dims(ca.type) if d.name != k)
-    keep_b = tuple(d.name for d in _dims(cb.type) if d.name != k)
+    keeps = [tuple(d.name for d in _dims(c.type) if d.name not in dims) for c in cores]
     out = tuple(d.name for d in _dims(red.type))
-    if set(out) != set(keep_a) | set(keep_b):
+    if set(out) != set().union(*map(set, keeps)):
         return None
-    full_a = tuple(d.name for d in _dims(ca.type))
-    full_b = tuple(d.name for d in _dims(cb.type))
-    # same-space operands are the ROWSUM shape (plain mul); different spaces
-    # take the broadcast pair, which joins riders and disjoint kepts alike —
-    # operand order stays the original spelling's (the step mirrors it)
-    shape = "rowsum" if full_a == full_b else "gemm"
+    ca = cores[0]
+    cb = cores[1] if len(cores) == 2 else None
+    if cb is None:
+        shape = "plain"
+    else:
+        full_a = tuple(d.name for d in _dims(ca.type))
+        full_b = tuple(d.name for d in _dims(cb.type))
+        # same-space operands are the ROWSUM shape (plain mul); different spaces
+        # take the broadcast pair, which joins riders and disjoint kepts alike —
+        # operand order stays the original spelling's (the step mirrors it)
+        shape = "rowsum" if full_a == full_b else "gemm"
     core = {id(red), id(prod)}
     for n in walk_region(region):  # the whole region is exact vocabulary, or we decline
         if id(n) in core or n.op in ("core.yield", "core.param"):
             continue
         if n.op not in _EXACT_OPS:
             return None
-    kdim = next(d for d in _dims(ca.type) if d.name == k)
-    kb = next(d for d in _dims(cb.type) if d.name == k)
-    if (kdim.start, kdim.stop) != (kb.start, kb.stop) or kdim.start != 0:
-        return None
+    total = 1
+    for k in dims:
+        kdim = next(d for d in _dims(ca.type) if d.name == k)
+        kb = kdim if cb is None else next(d for d in _dims(cb.type) if d.name == k)
+        if (kdim.start, kdim.stop) != (kb.start, kb.stop) or kdim.start != 0:
+            return None
+        total *= kdim.stop
     if any(d.start != 0 for d in _dims(red.type)):
         return None
-    return {"reduce": red, "k": k, "extent": kdim.stop, "a": ca, "b": cb, "shape": shape}
+    # the fold runs over the WIDEST contracted dim; the rest reduce inside
+    # the step whole (330 §7.6 C — what a hand author writes)
+    k = max(dims, key=lambda nm: next(d.stop for d in _dims(ca.type) if d.name == nm))
+    extent = next(d.stop for d in _dims(ca.type) if d.name == k)
+    rest = tuple(nm for nm in dims if nm != k)
+    return {
+        "reduce": red,
+        "k": k,
+        "extent": extent,
+        "rest": rest,
+        "total": total,
+        "a": ca,
+        "b": cb,
+        "shape": shape,
+        "f": a["f"],
+    }
 
 
 def _dims(t):
@@ -212,32 +233,47 @@ def _generate_contraction(region: Region, m: dict, ki: int) -> Region:
     newp = {id(p): b.param(i, p.type) for i, p in enumerate(region.params)}
     memo: dict[int, object] = dict(newp)  # shared by prologue and epilogue rebuilds
 
+    shape = m.get("shape", "gemm")
     at = b.emit("tl.split", _rebuild_into(b, memo, m["a"]), name=k, parts=(("ko", ko), ("ki", ki)))
-    bt = b.emit("tl.split", _rebuild_into(b, memo, m["b"]), name=k, parts=(("ko", ko), ("ki", ki)))
+    bt = None
+    if shape != "plain":
+        bt = b.emit("tl.split", _rebuild_into(b, memo, m["b"]), name=k, parts=(("ko", ko), ("ki", ki)))
     acc0 = b.emit("tl.const", value=0.0, dims=tuple((d.name, d.stop) for d in _dims(red.type)))
 
     sb = Builder(OPS)
     p_acc = sb.param(0, acc0.type)
     p_a = sb.param(1, _minus_dim(at.type, "ko"))
-    p_b = sb.param(2, _minus_dim(bt.type, "ko"))
     a_s = sb.emit("tl.stage", p_a, level="shared")
-    b_s = sb.emit("tl.stage", p_b, level="shared")
-    if m.get("shape", "gemm") == "rowsum":  # same-space operands: no broadcast pair
-        prod = sb.emit("tl.pointwise", a_s, b_s, f="mul")
+    if shape == "plain":  # one operand, no product: the degenerate rowsum
+        prod, params = a_s, (p_acc, p_a)
     else:
-        prod = sb.emit(
-            "tl.pointwise", sb.emit("tl.repeat_like", a_s, b_s), sb.emit("tl.repeat_like", b_s, a_s), f="mul"
-        )
-    part = sb.emit("tl.reduce", prod, dims=("ki",), f="sum")
+        p_b = sb.param(2, _minus_dim(bt.type, "ko"))
+        b_s = sb.emit("tl.stage", p_b, level="shared")
+        params = (p_acc, p_a, p_b)
+        if shape == "rowsum":  # same-space operands: no broadcast pair
+            prod = sb.emit("tl.pointwise", a_s, b_s, f="mul")
+        else:
+            prod = sb.emit(
+                "tl.pointwise", sb.emit("tl.repeat_like", a_s, b_s), sb.emit("tl.repeat_like", b_s, a_s), f="mul"
+            )
+    part = sb.emit("tl.reduce", prod, dims=("ki", *m.get("rest", ())), f="sum")
     nxt = sb.emit("tl.pointwise", p_acc, part, f="add")
-    step = Region(params=(p_acc, p_a, p_b), body=(sb.emit("core.yield", nxt),))
+    step = Region(params=params, body=(sb.emit("core.yield", nxt),))
 
+    srcs = (at,) if shape == "plain" else (at, bt)
+    names = ("a",) if shape == "plain" else ("a", "b")
     fold = b.emit(
-        "tl.fold", acc0, at, bt, regions=(step,), dim="ko", state=("acc",), element=("a", "b"), out=("final", 0)
+        "tl.fold", acc0, *srcs, regions=(step,), dim="ko", state=("acc",), element=names, out=("final", 0)
     )
 
     # the epilogue, rebuilt over the accumulator: reduce -> fold, params -> new params
     memo[id(red)] = fold
+    if m.get("f") == "mean":  # the divide-by-N finalize: N static, one scalar op
+        from pdum.dsl.types import f64
+
+        memo[id(red)] = b.emit(
+            "tl.pointwise", fold, b.emit("core.const", type=f64, value=1.0 / m.get("total", extent)), f="mul"
+        )
     yld = _rebuild_into(b, memo, region.body[-1].args[0])
     fused = Region(params=tuple(newp[id(p)] for p in region.params), body=(b.emit("core.yield", yld),))
     return check_tier(fused, "tile")
@@ -317,6 +353,49 @@ def _match_softmax(pr):
     if sd != md or len(sd) != 1:
         return None
     return {"sm": sm, "s": sd[0]}
+
+
+def _match_rowstat(pr):
+    """The row-statistics core (330 §7.6), as the zoo spells layernorm —
+    TWO-PASS, the stable form: ``div(xc, rl(sqrt(mean(xc*xc) + eps)))``
+    with ``xc = x - rl(mean(x))``, both means over the SAME single dim.
+    Structurally softmax's two-sweep shape; scale-shift is epilogue.
+    Returns {x, feat} or None."""
+    if pr.op != "tl.pointwise" or dict(pr.attrs).get("f") != "div" or len(pr.args) != 2:
+        return None
+    xc, rld = pr.args
+    if rld.op != "tl.repeat_like":
+        return None
+    sd = rld.args[0]
+    if sd.op != "tl.pointwise" or dict(sd.attrs).get("f") != "sqrt":
+        return None
+    add = sd.args[0]
+    if add.op != "tl.pointwise" or dict(add.attrs).get("f") != "add" or len(add.args) != 2:
+        return None
+    var, eps = add.args
+    if eps.op not in ("core.const", "tl.const"):
+        return None
+    if var.op != "tl.reduce" or dict(var.attrs)["f"] != "mean":
+        return None
+    sq = var.args[0]
+    if sq.op != "tl.pointwise" or dict(sq.attrs).get("f") != "mul" or sq.args[0] is not sq.args[1]:
+        return None
+    if sq.args[0] is not xc:
+        return None
+    if xc.op != "tl.pointwise" or dict(xc.attrs).get("f") != "sub" or len(xc.args) != 2:
+        return None
+    x, rlm = xc.args
+    if rlm.op != "tl.repeat_like":
+        return None
+    mu = rlm.args[0]
+    if mu.op != "tl.reduce" or dict(mu.attrs)["f"] != "mean" or mu.args[0] is not x:
+        return None
+    vd, md = (dict(r.attrs)["dims"] for r in (var, mu))
+    vt = (vd,) if isinstance(vd, str) else tuple(vd)
+    mt = (md,) if isinstance(md, str) else tuple(md)
+    if vt != mt or len(vt) != 1:
+        return None
+    return {"x": x, "feat": vt[0]}
 
 
 def _contract_core(red, kname=None):
@@ -598,6 +677,24 @@ def _recognize(region: Region) -> Plan:
         kernel = _stage_params(region, rows)
         cert = certify(kernel, region)
         return Plan((Group("row-normalization", kernel, cert, "yellow"),))
+    rs = next((m for n in walk_region(region) if (m := _match_rowstat(n)) is not None), None)
+    if rs is not None:
+        reduces = [n for n in walk_region(region) if n.op == "tl.reduce"]
+        feat_ok = all(
+            dict(r.attrs)["f"] == "mean"
+            and (lambda d: ((d,) if isinstance(d, str) else tuple(d)) == (rs["feat"],))(dict(r.attrs)["dims"])
+            for r in reduces
+        )
+        vocab_ok = all(
+            n.op in _EXACT_OPS or n.op in ("core.yield", "core.param", "tl.reduce") for n in walk_region(region)
+        )
+        if len(reduces) == 2 and feat_ok and vocab_ok:
+            rows = frozenset(
+                id(p) for p in region.params if any(d.name == rs["feat"] for d in _dims(p.type))
+            )
+            kernel = _stage_params(region, rows)
+            cert = certify(kernel, region)
+            return Plan((Group("row-statistics", kernel, cert, "yellow"),))
     offender = _is_map_chain(region)
     if offender is None:
         halos = _neighborhood_params(region)
