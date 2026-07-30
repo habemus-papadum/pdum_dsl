@@ -31,10 +31,11 @@
 | packages/dsl/src/pdum/dsl/value.py                 |      269 |       55 |     80% |41-43, 48, 51-58, 60, 67-74, 79, 86, 92, 99, 106, 110, 117-125, 129-132, 142, 159, 169, 210, 259, 289, 297, 312-313, 332, 340, 385, 393, 395, 411, 419, 421 |
 | packages/dsl/src/pdum/dsl/valuekind.py             |       80 |        1 |     99% |        85 |
 | packages/tensorlib/src/pdum/tl/\_\_init\_\_.py     |       19 |        0 |    100% |           |
+| packages/tensorlib/src/pdum/tl/analysis.py         |       77 |        3 |     96% |65, 69, 73 |
 | packages/tensorlib/src/pdum/tl/assemblage.py       |      172 |       15 |     91% |83-84, 96, 98, 113, 163, 169, 211, 216, 224, 230, 233-234, 237, 258 |
 | packages/tensorlib/src/pdum/tl/autodiff.py         |      664 |       35 |     95% |166, 241, 294, 317, 438, 488-498, 584, 590, 604, 616-618, 641, 667, 675, 708, 717, 741, 762, 824, 837, 878, 917, 919, 921 |
 | packages/tensorlib/src/pdum/tl/buffer.py           |       67 |       13 |     81% |40, 42, 55, 60, 67, 73, 82-83, 102, 107, 112, 117, 122 |
-| packages/tensorlib/src/pdum/tl/certify.py          |      151 |       16 |     89% |91-98, 109, 124, 145, 148, 152, 155-158, 160, 168, 183, 187 |
+| packages/tensorlib/src/pdum/tl/certify.py          |      154 |       16 |     90% |92-99, 110, 125, 146, 149, 153, 156-159, 161, 169, 184, 188 |
 | packages/tensorlib/src/pdum/tl/chart.py            |       74 |        4 |     95% |72, 100, 138, 145 |
 | packages/tensorlib/src/pdum/tl/compute.py          |      221 |       17 |     92% |92, 102, 104, 106, 178, 189, 192, 196, 202, 220, 247, 295, 331, 333, 336, 338, 361 |
 | packages/tensorlib/src/pdum/tl/coords.py           |      280 |       14 |     95% |171, 248, 251, 406, 410, 415, 417, 419, 424-427, 437, 447 |
@@ -76,7 +77,7 @@
 | packages/tensorlib/src/pdum/tl/zoo/tiles.py        |      144 |        0 |    100% |           |
 | packages/tensorlib/src/pdum/tl/zoo/trainer.py      |      112 |       41 |     63% |61-63, 66, 70-92, 96-115 |
 | packages/tensorlib/src/pdum/tl/zoo/zoo\_common.py  |       53 |        7 |     87% |64-66, 80-81, 85-86 |
-| **TOTAL**                                          | **10326** | **1035** | **90%** |           |
+| **TOTAL**                                          | **10406** | **1038** | **90%** |           |
 
 
 ## Setup coverage badge
