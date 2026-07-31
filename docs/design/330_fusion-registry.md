@@ -321,3 +321,33 @@ CONSTRUCTION). The rulings:
 Flagship: the bare flash_tile joint (riders are the queued, orthogonal
 matcher extension). Bounds transfer (340 §4b, roles swapped) rides
 behind.
+
+### §7.8 LANDED (2026-07-31), with three laws the flagship forced
+
+The flagship (bare flash_tile joint, T=8 toy): the partitioner
+DISCOVERS the FlashAttention-backward structure — flash-with-artifacts
+(o, m, den from ONE sweep; 3 stores, pinned on silicon) plus nine
+contraction carves, four of which re-derive P per tile (dV, D, and
+the dS pair), one red scan. Every carve certifies; the carved plan
+executes on the reference to the naive joint at 1e-9; dV runs on the
+4090 with exp and the score-sum INSIDE its sweep — P never touches
+memory. Implementation surfaced three laws, all in the partitioner's
+docstrings: the PUNCH-THROUGH law (free views forward values — the
+fork and leak checks follow consumers through shared frees; a chart's
+membership in two claims proves nothing); the ROOT EXEMPTION
+(consumption through a claim's own root is the export, never a leak);
+tl.repeat is FREE (repeat_like's literal-extent twin — classing it as
+compute materialized a (t,o,s) broadcast). Translator additions:
+multi-store tuple yields, _reduce_at (a reduce re-emitted at ambient
+composed coordinates — how tile-local reductions travel), and lazy
+composite-marker expansion (autodiff's f.dN slopes; eager operand
+emission left dead loads in the kernel).
+
+**The measured board WAITS on one emission capability, named:**
+_reduce_at currently lowers as mul+tl.sum, whose 3-D intermediate
+outgrows the register budget past toy tiles — the dot-at-ambient
+emission (tl.dot at composed coordinates, the tensor-core form every
+hand FA kernel uses) is the priced next step, and the remat-vs-
+materialize tie-break rig lands with it. Bounds transfer (340 §4b,
+roles swapped) rides behind. Both are follow-ups, not blockers: the
+LAW is landed, certified, and pinned end to end.
