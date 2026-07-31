@@ -270,3 +270,77 @@ def test_a_two_dim_contraction_runs_on_triton():
     want = np.einsum("thk,hkd->td", X, W)
     np.testing.assert_allclose(run([X, W]), want, rtol=1e-4, atol=1e-6)
     assert run.source.count("for ") == 1  # ONE fold: the widest dim; nh reduces in-step
+
+
+def _flash_joint_plan(T=8, E=4, OD=4, SI=2):
+    from pdum.tl.autodiff import grad
+    from pdum.tl.partition import plan_model
+    from pdum.tl.zoo.tiles import flash_tile
+
+    f = flash_tile(T=T, E=E, OD=OD, SI=SI)
+    out = f.naive.body[-1].args[0]
+    names = {id(p): f"p{i}" for i, p in enumerate(f.naive.params)}
+    names[id(out)] = "out"
+    rg = grad(f.naive, "out", seed="dO", names=names)
+    return rg, plan_model(rg.region)
+
+
+def test_the_flash_artifacts_store_from_one_sweep():
+    """§7.8 on silicon: the artifact variant surfaces (o, m, den) as
+    THREE stores from ONE sweep — the finals were already carried; the
+    relaxation costs stores, never FLOPs."""
+    _require_cuda()
+    from triton_tile import compile_tile
+
+    from pdum.tl.dialect import run_region
+    from pdum.tl.tensor import Tensor
+
+    rg, plan = _flash_joint_plan()
+    fl = next(c for c in plan.carves if c.group.template == "flash")
+    run = compile_tile(fl.group.kernel)
+    assert run.source.count("tl.store") == 3  # the output and its two artifacts
+    assert run.source.count("for ") == 1  # from the ONE shared sweep
+
+    rng = np.random.default_rng(31)
+    vals = []
+    for p in fl.kernel.params:
+        arr = rng.standard_normal(tuple(d.stop - d.start for d in p.type.dims))
+        vals.append(Tensor.from_numpy(arr, tuple(d.name for d in p.type.dims)))
+    want = run_region(fl.kernel, list(vals))  # (out, m, den) via the reference
+    got = run([v.to_numpy() for v in vals])
+    assert isinstance(got, tuple) and len(got) == 3
+    for g, w in zip(got, want):
+        np.testing.assert_allclose(g, w.to_numpy(order=w.names), rtol=1e-4, atol=1e-6)
+
+
+def test_a_backward_kernel_rederives_p_inside_the_sweep():
+    """§7.8's workhorse on silicon: a backward contraction whose operand
+    is the TRAVELED P-cone — the score contraction re-emitted AT the
+    sweep's composed coordinates (_reduce_at), exp and mask inside the
+    loop, statistics read as tiny bound params. P never touches memory."""
+    _require_cuda()
+    from triton_tile import compile_tile
+
+    from pdum.tl.dialect import run_region, walk_region
+    from pdum.tl.tensor import Tensor
+
+    rg, plan = _flash_joint_plan()
+    remat = next(  # dV: P multiplies dO, so the traveled P-cone is LIVE work
+        c
+        for c in plan.carves
+        if c.group.template == "contraction-epilogue"
+        and tuple(d.name for d in c.root.type.dims) == ("o", "s")
+    )
+    assert sum(1 for n in walk_region(remat.kernel) if n.op == "tl.reduce") >= 2
+    run = compile_tile(remat.group.kernel)
+    body = run.source[run.source.index("for ") :]
+    assert "tl.exp" in body and "tl.sum" in body  # P re-derived per tile, in-loop
+
+    rng = np.random.default_rng(37)
+    vals = []
+    for p in remat.kernel.params:
+        arr = rng.standard_normal(tuple(d.stop - d.start for d in p.type.dims))
+        vals.append(Tensor.from_numpy(arr, tuple(d.name for d in p.type.dims)))
+    want = run_region(remat.kernel, list(vals))
+    got = run([v.to_numpy() for v in vals])
+    np.testing.assert_allclose(got, want.to_numpy(order=want.names), rtol=1e-4, atol=1e-5)

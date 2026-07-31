@@ -47,10 +47,11 @@ from .fusion import (
 
 _CONSTS = ("core.const", "tl.const")
 # zero-cost views: shared by claims, duplicated at rebuild; charts are
-# metadata and never block a claim (§7.6's vocabulary ruling)
-_FREE = _CONSTS + ("tl.rename", "tl.repeat_like") + _CHART_OPS
+# metadata and never block a claim (§7.6's ruling); tl.repeat is
+# repeat_like's literal-extent twin — a stride-0 broadcast, never work
+_FREE = _CONSTS + ("tl.rename", "tl.repeat_like", "tl.repeat") + _CHART_OPS
 _EPILOGUE = ("tl.pointwise", "tl.repeat_like") + _CHART_OPS
-_COMPUTE = ("tl.pointwise", "tl.iota", "tl.repeat")  # upstream-absorbable compute (§7.6)
+_COMPUTE = ("tl.pointwise", "tl.iota")  # upstream-absorbable compute (§7.6)
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,7 @@ class Carve:
     root_op: str
     root: object = field(default=None, repr=False)  # the model node this carve computes
     bounds: tuple = field(default=(), repr=False)  # the model nodes its params bind to, in param order
+    artifacts: tuple = field(default=(), repr=False)  # surfaced statistics nodes, tuple-yield order (§7.8)
 
 
 @dataclass(frozen=True)
@@ -129,34 +131,74 @@ def _attach_free_fringe(members):
     return members
 
 
-def _leaks(root, members, consumers) -> bool:
+def _outside(a, members, consumers, root=None) -> bool:
+    """Is a's VALUE consumed outside ``members``? Free views forward the
+    value, they do not consume it — the check punches THROUGH free
+    members to their consumers (charts and broadcasts are SHARED across
+    claims by design, so membership of the view proves nothing). A path
+    that reaches the claim's ROOT is the export itself, never a leak."""
+    for c in consumers.get(id(a), ()):
+        if c is root:
+            continue
+        if id(c) not in members:
+            return True
+        if c.op in _FREE and _outside(c, members, consumers, root):
+            return True
+    return False
+
+
+def _leaks(root, members, consumers, travel=()) -> bool:
     """An interior member consumed outside the claim would need a second
-    output — v1 refuses the claim instead (the translator's law)."""
+    output — v1 refuses the claim instead (the translator's law). Travel
+    members are exempt (§7.8): they are COPIES, duplicable by law."""
     return any(
-        id(c) not in members
+        _outside(m, members, consumers, root)
         for m in members.values()
-        if m is not root and m.op not in _FREE
-        for c in consumers.get(id(m), ())
+        if m is not root and m.op not in _FREE and id(m) not in travel
     )
 
 
-def _absorb_up(members, consumers, claimed):
+def _absorb_up(members, consumers, claimed, travel=()):
     """Upstream absorption (330 §7.6), the mirror of the epilogue walk: a
     compute node joins the claim while EVERY consumer already lies inside
     it — a fork is a boundary, because someone else needs that value
     materialized anyway. Free views attach each round so the walk sees
-    the compute above them; recompute never crosses a boundary."""
+    the compute above them; recompute never crosses a boundary — EXCEPT
+    along the §7.8 travel set, whose cones copy in unconditionally (they
+    are duplicable by classification; forks do not matter for copies)."""
     while True:
         _attach_free_fringe(members)
         added = False
         for m in list(members.values()):
             for a in m.args:
-                if id(a) in members or id(a) in claimed or a.op not in _COMPUTE:
+                if id(a) in members:
                     continue
-                if any(id(c) not in members for c in consumers.get(id(a), ())):
+                if id(a) in travel:
+                    members[id(a)] = a
+                    added = True
                     continue
+                if id(a) in claimed or a.op not in _COMPUTE:
+                    continue
+                if _outside(a, members, consumers):
+                    continue  # the fork law, punched through shared free views
                 members[id(a)] = a
                 added = True
+        if not added:
+            return members
+
+
+def _absorb_travel(members, travel):
+    """Travel-only absorption (§7.8): free views attach, travel copies
+    join unconditionally, to fixpoint — the §7.6 consumer law untouched
+    (row and residue claims never absorb ordinary compute upstream)."""
+    while True:
+        _attach_free_fringe(members)
+        added = False
+        for m in list(members.values()):
+            for a in m.args:
+                if id(a) not in members and id(a) in travel:
+                    members[id(a)] = a
+                    added = True
         if not added:
             return members
 
@@ -207,7 +249,30 @@ def _claim_flash(r):
     qd, kd, vd = [tuple(d.name for d in _dims(x.type)) for x in (q, k, v)]
     if len(qd) != 2 or kd != (s, e) or len(vd) != 2 or vd[0] != s:
         return None
-    return q, k, v
+    t = next(n for n in qd if n != e)
+    return {"q": q, "k": k, "v": v, "m": sm["max"], "den": sm["den"], "t": t, "s": s}
+
+
+def _duplicable_cone(x, members, stats, sweep):
+    """The §7.8 classification: x's cone within the claim, stopped at
+    params and artifacts — map work and tile-local reductions travel; a
+    SWEPT-dim reduction refuses (artifacts exist for it). Returns the
+    cone (id -> node) or None."""
+    cone, stack = {}, [x]
+    while stack:
+        n = stack.pop()
+        if id(n) in cone or id(n) in stats or id(n) not in members:
+            continue  # artifact or boundary: already materialized
+        if n.op == "tl.reduce":
+            d = dict(n.attrs)["dims"]
+            dt = {d} if isinstance(d, str) else set(d)
+            if dt & sweep:
+                return None
+        elif n.op not in _FREE and n.op not in _COMPUTE:
+            return None
+        cone[id(n)] = n
+        stack.extend(n.args)
+    return cone
 
 
 def _rebuild_dechart(b: Builder, memo: dict, n):
@@ -227,22 +292,32 @@ def _rebuild_dechart(b: Builder, memo: dict, n):
     return out
 
 
-def _extract(root, members) -> Region:
+def _extract(root, members, artifacts=()) -> Region:
     """Rebuild a claim as a standalone canonical region: boundaries become
-    params in first-use order — the content key layers share."""
-    bounds, seen, stack = [], set(), [root]
-    while stack:  # deterministic: DFS mirrors the rebuild's arg order
-        n = stack.pop()
-        for a in reversed(n.args):
-            if id(a) in members:
-                stack.append(a)
-            elif id(a) not in seen and a.op not in _CONSTS:
-                seen.add(id(a))
-                bounds.append(a)
+    params in first-use order — the content key layers share. With
+    artifacts (§7.8) the region yields a TUPLE (output, *artifacts):
+    the surfaced statistics, in declared order."""
+    roots = (root, *artifacts)
+    bounds, seen, stack = [], set(), []
+    for r in roots:
+        stack = [r]
+        while stack:  # deterministic: DFS mirrors the rebuild's arg order
+            n = stack.pop()
+            if id(n) in seen:
+                continue
+            seen.add(id(n))
+            for a in reversed(n.args):
+                if id(a) in members:
+                    stack.append(a)
+                elif id(a) not in seen and a.op not in _CONSTS:
+                    seen.add(id(a))
+                    bounds.append(a)
     b = Builder(OPS)
     memo = {id(x): b.param(i, x.type) for i, x in enumerate(bounds)}
     params = tuple(memo[id(x)] for x in bounds)
-    region = Region(params=params, body=(b.emit("core.yield", _rebuild_dechart(b, memo, root)),))
+    built = tuple(_rebuild_dechart(b, memo, r) for r in roots)
+    yld = built[0] if len(built) == 1 else b.emit("core.tuple", *built)
+    region = Region(params=params, body=(b.emit("core.yield", yld),))
     return region, tuple(bounds)
 
 
@@ -277,17 +352,45 @@ def _components(nodes, consumers):
 
 def carve_model(region: Region):
     """The partition alone — claims + residue, no per-group planning.
-    Returns (claims, interior_count): claims are (root, members) with
-    members keyed by id."""
+    Returns (claims, interior_count, travel): claims are (root, members,
+    artifacts) with members keyed by id; travel is the §7.8 set — nodes
+    whose re-derivation cones COPY into consuming claims."""
     interior, consumers = _graph(region)
     claimed: set[int] = set()
+    travel: dict[int, object] = {}
     claims = []
 
-    def take(root, members):
+    def take(root, members, arts=()):
         _attach_free_fringe(members)
-        if _leaks(root, members, consumers):
+        if _leaks(root, members, consumers, travel):
             return False
-        claims.append((root, members))
+        claims.append((root, members, arts))
+        claimed.update(i for i, m in members.items() if m.op not in _FREE)
+        return True
+
+    def take_flash_artifacts(r, f, members):
+        """The §7.8 path: a leaking flash claim survives by surfacing its
+        row statistics as ARTIFACTS and marking every other leaked
+        interior's cone as TRAVEL — consumers re-derive, never reload."""
+        _attach_free_fringe(members)
+        stats = {id(f["m"]), id(f["den"])}
+        sweep = {f["t"], f["s"]}
+        new_travel: dict[int, object] = {}
+        for m in members.values():
+            if m is r or id(m) in stats:
+                continue
+            if not _outside(m, members, consumers, r):
+                continue
+            while m.op in _FREE and m.args:  # a leaked free view punches through
+                m = m.args[0]  # to the VALUE it reads — classify that
+            if m is r or id(m) in stats or id(m) not in members:
+                continue
+            cone = _duplicable_cone(m, members, stats, sweep)
+            if cone is None:
+                return False
+            new_travel.update(cone)
+        claims.append((r, members, (f["m"], f["den"])))
+        travel.update(new_travel)
         claimed.update(i for i, m in members.items() if m.op not in _FREE)
         return True
 
@@ -296,9 +399,10 @@ def carve_model(region: Region):
             continue
         f = _claim_flash(r)
         if f is not None:
-            members = _cone(r, {id(x) for x in f})
-            if not any(i in claimed for i in members):
-                take(r, members)
+            members = _cone(r, {id(f["q"]), id(f["k"]), id(f["v"])})
+            if not any(i in claimed and i not in travel for i in members):
+                if not take(r, dict(members)):  # leaking? the §7.8 artifact path
+                    take_flash_artifacts(r, f, members)
     for n in interior:  # bare row normalizations BEFORE single-reduce claims: the
         if id(n) in claimed:  # specificity ladder (3 reduces > 2 > 1) keeps upstream
             continue  # absorption from stealing a two-reduce chain's root (§7.6)
@@ -306,7 +410,8 @@ def carve_model(region: Region):
         if sm is None:
             continue
         members = _cone(n, {id(sm["sm"])})
-        if not any(i in claimed for i in members):
+        _absorb_travel(members, travel)
+        if not any(i in claimed and i not in travel for i in members):
             take(n, members)
     for n in interior:  # row-statistics chains (layernorm): two means, one dim,
         if id(n) in claimed:  # scale-shift absorbed as epilogue (§7.6)
@@ -315,7 +420,8 @@ def carve_model(region: Region):
         if rs is None:
             continue
         members = _cone(n, {id(rs["x"])})
-        if not any(i in claimed for i in members):
+        _absorb_travel(members, travel)
+        if not any(i in claimed and i not in travel for i in members):
             root = _absorb(n, members, consumers, claimed)
             take(root, members)
     for r in interior:  # single-dim contractions: prologues absorbed upstream (§7.6),
@@ -346,19 +452,20 @@ def carve_model(region: Region):
             members[id(mul)] = mul  # it may be another anchor's root
         if any(i in claimed for i in members):
             continue
-        _absorb_up(members, consumers, claimed)
+        _absorb_up(members, consumers, claimed, travel)
         root = _absorb(r, members, consumers, claimed)
         take(root, members)
     residue = [n for n in interior if id(n) not in claimed]
     for comp, roots in _components(residue, consumers):
         comp_ids = {id(m) for m in comp}
-        pool = {id(m): m for m in comp}
+        allow = comp_ids | set(travel)  # travel copies rejoin cones (§7.8) but
+        pool = {id(m): m for m in comp}  # never promote: nobody materializes them
         rootset = [id(x) for x in roots]
         while True:  # split per root; promote internally-bound nodes until the
             parts, used = [], set()  # split tiles the component (fixpoint)
             for ri in rootset:
                 stops = (set(rootset) - {ri}) | used
-                mem = _attach_free_fringe(_cone(pool[ri], stops, allow=comp_ids))
+                mem = _absorb_travel(_cone(pool[ri], stops, allow=allow), travel)
                 parts.append((pool[ri], mem))
                 used |= {i for i in mem if i in comp_ids}
             promote = []
@@ -369,29 +476,31 @@ def carve_model(region: Region):
                             if id(a) not in promote:
                                 promote.append(id(a))
             if not promote:
-                claims.extend(parts)
+                claims.extend((rt, mem, ()) for rt, mem in parts)
                 break
             rootset.extend(promote)
-    return claims, len(interior)
+    return claims, len(interior), travel
 
 
 def plan_model(region: Region, machine=None, floor: int = 1024) -> ModelPlan:
     """Carve, then map each carve through the ONE recognizer — deduped by
     canonical kernel key, so repeated layers plan once."""
-    claims, interior = carve_model(region)
+    claims, interior, _travel = carve_model(region)
     seen: dict[str, Group] = {}
     carves = []
-    for root, members in claims:
-        n_interior = sum(1 for m in members.values() if m.op not in _FREE)
+    counted: set[int] = set()  # travel copies count ONCE, in their first claim (§7.8)
+    for root, members, arts in claims:
+        n_interior = sum(1 for i, m in members.items() if m.op not in _FREE and i not in counted)
+        counted.update(i for i, m in members.items() if m.op not in _FREE)
         if root is None:
             ops = sorted({m.op for m in members.values() if m.op not in _FREE})
             g = Group("uncompiled", None, None, "red", reason=f"multi-output residue over {ops}")
             carves.append(Carve(region, g, n_interior, "residue"))
             continue
-        kernel, bounds = _extract(root, members)
+        kernel, bounds = _extract(root, members, arts)
         g = seen.get(kernel.key)
         if g is None:
             g = plan_region(kernel, machine=machine, floor=floor).groups[0]
             seen[kernel.key] = g
-        carves.append(Carve(kernel, g, n_interior, root.op, root, bounds))
+        carves.append(Carve(kernel, g, n_interior, root.op, root, bounds, arts))
     return ModelPlan(tuple(carves), interior)

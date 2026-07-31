@@ -7,7 +7,7 @@ from collections import Counter
 import numpy as np
 
 from pdum.tl.analysis import no_reanalysis
-from pdum.tl.dialect import run_region
+from pdum.tl.dialect import run_region, walk_region
 from pdum.tl.partition import plan_model
 from pdum.tl.zoo.gpt2 import gpt2
 
@@ -117,3 +117,75 @@ def test_the_scatter_add_refusal_is_named():
     plan = plan_model(rg.region)
     reasons = " ".join(c.group.reason for c in plan.carves if c.group.confidence == "red")
     assert "tl.scatter_add" in reasons
+
+
+def test_the_flash_joint_rematerializes_and_executes():
+    """§7.8 end to end on the reference: the joint flash region claims
+    WITH artifacts (m and den surfaced — the fold already carried both),
+    the backward contractions re-derive P through traveled cones, and
+    the carved plan executes to the naive joint's outputs within the
+    flash license's tolerance (the saved statistics are the ONLINE
+    ones — the already-priced deviation). Red groups run through the
+    reference, the doctrine in action."""
+    from pdum.tl.autodiff import grad
+    from pdum.tl.tensor import Tensor
+    from pdum.tl.zoo.tiles import flash_tile
+
+    f = flash_tile(T=8, E=4, OD=4, SI=2)
+    out = f.naive.body[-1].args[0]
+    names = {id(p): f"p{i}" for i, p in enumerate(f.naive.params)}
+    names[id(out)] = "out"
+    rg = grad(f.naive, "out", seed="dO", names=names)
+    plan = plan_model(rg.region)
+
+    fl = next(c for c in plan.carves if c.group.template == "flash")
+    assert fl.group.artifacts == ("m", "den") and len(fl.artifacts) == 2
+    by = Counter(c.group.template for c in plan.carves)
+    assert by["contraction-epilogue"] >= 5  # the adjoint claims through travel
+    assert 0.8 < plan.coverage() <= 1.0  # copies count once; the scan stays red
+    remat = [
+        c
+        for c in plan.carves
+        if c.group.template == "contraction-epilogue"
+        and sum(1 for n in walk_region(c.kernel) if n.op == "tl.reduce") >= 2
+    ]
+    assert remat  # at least one consumer re-derives P: sc travels as a prologue reduce
+
+    rng = np.random.default_rng(5)
+    ins = []
+    for p in rg.region.params:
+        dims = p.type.dims
+        arr = rng.standard_normal(tuple(d.stop - d.start for d in dims))
+        ins.append(Tensor.from_numpy(arr, tuple(d.name for d in dims)))
+    want = run_region(rg.region, list(ins))
+
+    vals = {id(p): v for p, v in zip(rg.region.params, ins)}
+    def rv(b):  # bounds may be the bare node under a producer's chart root
+        while id(b) not in vals and b.op in ("tl.with_charts", "tl.strip_charts", "tl.simplify"):
+            b = b.args[0]
+        return b
+
+    pending = [c for c in plan.carves if c.root is not None]
+    progressed = True
+    while pending and progressed:
+        progressed = False
+        for c in list(pending):
+            c_bounds = [rv(b) for b in c.bounds]
+            if all(id(b) in vals for b in c_bounds):
+                kernel = c.group.kernel if c.group.kernel is not None else c.kernel
+                got = run_region(kernel, [vals[id(b)] for b in c_bounds])
+                outs = got if isinstance(got, (tuple, list)) else (got,)
+                for node, val in zip((c.root, *c.artifacts), outs):
+                    vals[id(node)] = val
+                    while node.op in ("tl.with_charts", "tl.strip_charts", "tl.simplify"):
+                        node = node.args[0]  # chart roots alias their bare value
+                        vals[id(node)] = val
+                pending.remove(c)
+                progressed = True
+    assert not pending, "plan stalled: unresolvable boundary"
+    for target, w in zip(rg.region.body[-1].args[0].args, want):
+        x = target
+        while id(x) not in vals and x.op in ("tl.with_charts", "tl.strip_charts", "tl.simplify"):
+            x = x.args[0]
+        arr = vals[id(x)].to_numpy(order=w.names)
+        np.testing.assert_allclose(arr, w.to_numpy(order=w.names), rtol=1e-9, atol=1e-12)

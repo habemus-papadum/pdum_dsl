@@ -264,15 +264,18 @@ def certify(tile: Region, naive: Region, *, licenses=(), families=()) -> Certifi
     for fname, factory in families:
         vals = list(factory().values())
         got_n = run_region(naive, vals)
-        order = got_n.names
         got_t = run_region(tile, list(vals))
-        np.testing.assert_allclose(
-            got_t.to_numpy(order=order),
-            got_n.to_numpy(order=order),
-            rtol=rtol,
-            atol=atol,
-            err_msg=f"family {fname!r} exceeded the declared license bound ({', '.join(names)})",
-        )
+        outs_n = got_n if isinstance(got_n, (tuple, list)) else (got_n,)
+        outs_t = got_t if isinstance(got_t, (tuple, list)) else (got_t,)
+        for gt, gn in zip(outs_t, outs_n):  # §7.8: artifact outputs verify too
+            order = gn.names
+            np.testing.assert_allclose(
+                gt.to_numpy(order=order),
+                gn.to_numpy(order=order),
+                rtol=rtol,
+                atol=atol,
+                err_msg=f"family {fname!r} exceeded the declared license bound ({', '.join(names)})",
+            )
         ran.append(fname)
     if not ran:
         raise ValueError("licensed-differential certification needs adversarial families (260's law)")

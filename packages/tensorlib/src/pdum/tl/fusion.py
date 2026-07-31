@@ -110,6 +110,7 @@ class Group:
     reason: str = ""
     launch: tuple = ()  # (output dim, tile) pairs — the 340 §2 plan artifact
     prune: tuple = ()  # (scan dim, (lo0, dlo), (hi0, dhi)) — mask-derived bounds (340 §4b)
+    artifacts: tuple = ()  # surfaced fold-carried finals, in tuple-yield order after the output (§7.8)
 
 
 @dataclass(frozen=True)
@@ -140,13 +141,34 @@ def _match_contraction_epilogue(region: Region):
     if yld.op == "core.tuple":
         return None
     reduces = [n for n in walk_region(region) if n.op == "tl.reduce"]
-    if len(reduces) != 1:
+    red = None
+    if len(reduces) == 1:
+        red = reduces[0]
+    else:  # §7.8: tile-local reduces may live in operand prologues — the
+        for r in reduces:  # OUTER reduce is the one whose cone holds the rest
+            cone, stack = set(), list(r.args)
+            while stack:
+                x = stack.pop()
+                if id(x) in cone:
+                    continue
+                cone.add(id(x))
+                stack.extend(x.args)
+            if all(o is r or id(o) in cone for o in reduces):
+                red = r
+                break
+    if red is None:
         return None
-    red = reduces[0]
     a = dict(red.attrs)
     dims = (a["dims"],) if isinstance(a["dims"], str) else tuple(a["dims"])
     if a["f"] not in ("sum", "mean") or len(dims) not in (1, 2) or a.get("zero") is not None:
         return None  # mean contracts too: the fold sums, a scale finalizes (§7.6)
+    for r in reduces:  # a prologue reduce must be TILE-LOCAL: disjoint from the
+        if r is red:  # swept dims — a swept reduction cannot travel (§7.8)
+            continue
+        rd = dict(r.attrs)["dims"]
+        rdt = {rd} if isinstance(rd, str) else set(rd)
+        if rdt & set(dims) or dict(r.attrs).get("zero") is not None:
+            return None
     prod = _unchart(red.args[0])
     if prod.op == "tl.pointwise" and dict(prod.attrs).get("f") == "mul" and len(prod.args) == 2:
         cores = []
@@ -174,7 +196,7 @@ def _match_contraction_epilogue(region: Region):
         # take the broadcast pair, which joins riders and disjoint kepts alike —
         # operand order stays the original spelling's (the step mirrors it)
         shape = "rowsum" if full_a == full_b else "gemm"
-    core = {id(red), id(prod)}
+    core = {id(red), id(prod)} | {id(r) for r in reduces}  # prologue reduces validated above
     for n in walk_region(region):  # the whole region is exact vocabulary, or we decline
         if id(n) in core or n.op in ("core.yield", "core.param"):
             continue
@@ -352,7 +374,7 @@ def _match_softmax(pr):
     md = (mdims,) if isinstance(mdims, str) else tuple(mdims)
     if sd != md or len(sd) != 1:
         return None
-    return {"sm": sm, "s": sd[0]}
+    return {"sm": sm, "s": sd[0], "max": maxm, "den": sume}
 
 
 def _match_rowstat(pr):
@@ -435,12 +457,25 @@ def _forest_is_closed(n, stop) -> bool:
 def _match_flash(region: Region):
     """The flash composition (330 §2): contraction -> closed-form mask ->
     row normalization -> contraction over the same dim. Strict v1 shapes:
-    q:(t,e), k:(s,e), v:(s,o) params; riders arrive with the partitioner."""
+    q:(t,e), k:(s,e), v:(s,o) params; riders arrive with the partitioner.
+    The ARTIFACT variant (§7.8): a tuple yield (out, m, den) surfacing
+    the composition's own row statistics — the fold already carries
+    both, so surfacing costs stores, never FLOPs."""
     yld = region.body[-1].args[0]
+    artifacts = False
+    if yld.op == "core.tuple":
+        if len(yld.args) != 3:
+            return None
+        yld, m_out, den_out = yld.args
+        artifacts = True
     out = _contract_core(yld)
     if out is None:
         return None
     pr, v, s = out
+    if artifacts:  # the surfaced statistics must BE this composition's own
+        sm0 = _match_softmax(pr)
+        if sm0 is None or m_out is not sm0["max"] or den_out is not sm0["den"]:
+            return None
     if v.op != "core.param":
         return None
     sm_m = _match_softmax(pr)
@@ -477,6 +512,7 @@ def _match_flash(region: Region):
         "e": e,
         "o": vd[1],
         "extent": sdim.stop,
+        "artifacts": artifacts,
     }
 
 
@@ -549,6 +585,9 @@ def _generate_flash(region: Region, m: dict, si: int) -> Region:
     f_o = b.emit("tl.fold", *fold_args, regions=(step,), out=("final", 2), **fold_kw)
     f_den = b.emit("tl.fold", *fold_args, regions=(step,), out=("final", 1), **fold_kw)
     out = b.emit("tl.pointwise", f_o, b.emit("tl.repeat_like", f_den, f_o), f="div")
+    if m.get("artifacts"):  # §7.8: the carried finals surface — stores, never FLOPs
+        f_m = b.emit("tl.fold", *fold_args, regions=(step,), out=("final", 0), **fold_kw)
+        out = b.emit("core.tuple", out, f_m, f_den)
     fused = Region(params=tuple(newp[id(p)] for p in region.params), body=(b.emit("core.yield", out),))
     return check_tier(fused, "tile")
 
@@ -736,7 +775,8 @@ def _recognize(region: Region) -> Plan:
                 csrc = shr
                 ckern = _generate_flash(shr, fm2, _pick_ki(fm2["extent"]))
         cert = _cert_fact(ckern, csrc, "flash")
-        return Plan((Group("flash", kernel, cert, "yellow", params=(("si", si),)),))
+        arts = ("m", "den") if fm.get("artifacts") else ()
+        return Plan((Group("flash", kernel, cert, "yellow", params=(("si", si),), artifacts=arts),))
     m = _match_contraction_epilogue(region)
     if m is not None:
         ki = _pick_ki(m["extent"])

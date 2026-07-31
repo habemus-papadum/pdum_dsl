@@ -193,27 +193,118 @@ class _Gen:
             sub[a["name"]] = _Coord(f"(({co.expr}) * {ei} + ({ci.expr}))", valid, False)
             return self.emit_at(n.args[0], axes, sub)
         if n.op == "tl.pointwise":
-            args = [self.emit_at(x, axes, space) for x in n.args]
             f = a["f"]
-            if f in _INFIX:
-                return f"({args[0]} {_INFIX[f]} {args[1]})"
-            if f in _CALLS:
-                return f"{_CALLS[f]}({args[0]})"
-            if f == "maximum":
-                return f"tl.maximum({args[0]}, {args[1]})"
-            if f == "minimum":
-                return f"tl.minimum({args[0]}, {args[1]})"
-            if f == "where":
-                return f"tl.where({args[0]}, {args[1]}, {args[2]})"
-            if f == "neg":
-                return f"(-{args[0]})"
+            if self._apply_f(f, ["", "", ""]) is not None:
+                args = [self.emit_at(x, axes, space) for x in n.args]
+                return self._apply_f(f, args)
+            try:  # autodiff's f.dN slopes are composite markers: expression
+                from pdum.tl.markers import MARKERS  # trees over Arg leaves (§7.8);
+
+                cm = MARKERS[f]  # LAZY arg emission — a slope that drops an
+            except KeyError:  # operand must not emit its (dead) loads
+                cm = None
+            if cm is not None and hasattr(cm, "body"):
+                lazy = {}
+
+                def arg(i):
+                    if i not in lazy:
+                        lazy[i] = self.emit_at(n.args[i], axes, space)
+                    return lazy[i]
+
+                return self._marker_expr(cm.body, arg)
             raise Untranslatable(f"tl.pointwise f={f}")
         if n.op == "core.param":
             return self._load(n, space)
+        if n.op == "tl.reduce" and any(
+            d.name in space and not space[d.name].canonical for d in _dims(n.type)
+        ):
+            return self._reduce_at(n, axes, space)
         if n.op in ("tl.reduce", "tl.fold"):
             var, vdims = self.emit_block(n)
             return self._use(var, vdims, axes, space)
         raise Untranslatable(n.op)
+
+    def _apply_f(self, f: str, args) -> str | None:
+        if f in _INFIX:
+            return f"({args[0]} {_INFIX[f]} {args[1]})"
+        if f in _CALLS:
+            return f"{_CALLS[f]}({args[0]})"
+        if f == "maximum":
+            return f"tl.maximum({args[0]}, {args[1]})"
+        if f == "minimum":
+            return f"tl.minimum({args[0]}, {args[1]})"
+        if f == "where":
+            return f"tl.where({args[0]}, {args[1]}, {args[2]})"
+        if f == "neg":
+            return f"(-{args[0]})"
+        return None
+
+    def _marker_expr(self, x, arg) -> str:
+        """A composite marker's slope tree (autodiff's f.dN) as an
+        expression — Arg leaves emit the pointwise's operands on demand."""
+        if hasattr(x, "index"):  # Arg
+            return arg(x.index)
+        if hasattr(x, "op"):  # Prim
+            sub = [self._marker_expr(a, arg) for a in x.args]
+            e = self._apply_f(x.op, sub)
+            if e is None:
+                raise Untranslatable(f"marker prim {x.op!r}")
+            return e
+        if hasattr(x, "value"):  # Const
+            return repr(float(x.value))
+        raise Untranslatable(f"marker leaf {type(x).__name__}")
+
+    def _reduce_at(self, n, axes, space) -> str:
+        """A reduce evaluated AT ambient coordinates (330 §7.8): tile-local
+        reductions travel into consumers, so a prologue's contraction is
+        re-emitted inside the sweep — kept dims ride the ambient coords
+        (rank-extended one axis per reduced dim), reduced dims get fresh
+        trailing grids, identity-filled and folded flat."""
+        a = _thaw_params(dict(n.attrs))
+        f = a["f"]
+        mean = f == "mean"
+        if mean:
+            f = "sum"
+        if f not in _IDENT or a.get("zero") is not None:
+            raise Untranslatable(f"tl.reduce f={a['f']} at composed coordinates")
+        rdims = (a["dims"],) if isinstance(a["dims"], str) else tuple(a["dims"])
+        src = _dims(n.args[0].type)
+        R, E = len(axes), len(rdims)
+        ext = "[" + ", ".join([":"] * R + ["None"] * E) + "]"
+
+        def extend(c):
+            if c is None:
+                return c
+            e = f"({c.expr}){ext}" if "arange" in c.expr else c.expr  # scalars broadcast
+            v = f"({c.valid}){ext}" if c.valid and "arange" in c.valid else c.valid
+            return _Coord(e, v, c.canonical)
+
+        sub = {nm: extend(c) for nm, c in space.items()}
+        axes2, guards = list(axes), []
+        for j, nm in enumerate(rdims):
+            d = next(x for x in src if x.name == nm)
+            size = d.stop - d.start
+            p = _pow2(size)
+            sfx = _suffix(R + E, R + j)
+            valid = f"(tl.arange(0, {p}) < {size}){sfx}" if p != size else None
+            sub[nm] = _Coord(f"({d.start} + tl.arange(0, {p})){sfx}", valid, True)
+            axes2.append(d)
+            if valid:
+                guards.append(valid)
+        var = self.v()
+        self.ln(f"{var} = {self.emit_at(n.args[0], tuple(axes2), sub)}")
+        for g in guards:  # identity-fill the padded reduced lanes
+            self.ln(f"{var} = tl.where({g}, {var}, {_IDENT[f]})")
+        call = {"sum": "tl.sum", "max": "tl.max", "min": "tl.min", "prod": "tl.prod"}[f]
+        for j in range(E - 1, -1, -1):
+            self.ln(f"{var} = {call}({var}, axis={R + j})")
+        if mean:
+            count = 1
+            for nm in rdims:
+                d = next(x for x in src if x.name == nm)
+                count *= d.stop - d.start
+            self.ln(f"{var} = {var} / {count}")
+        return var
 
     def _use(self, var: str, vdims, axes, space) -> str:
         """A materialized block consumed inside a space: its dims must sit at
@@ -476,27 +567,32 @@ class _Gen:
             grid *= cnt
         return grid
 
-    def render(self) -> tuple[str, tuple, int]:
+    def render(self) -> tuple[str, list, int]:
         yld = self.region.body[-1].args[0]
-        if yld.op == "core.tuple":
-            raise Untranslatable("multi-output tile kernels")
-        grid = self._prelude(_dims(yld.type)) if self.launch else 1
-        var, dims = self.emit_block(yld)
-        sizes = tuple(d.stop - d.start for d in dims)
-        strides = []
-        acc = 1
-        for s in reversed(sizes):
-            strides.append(acc)
-            acc *= s
-        strides = tuple(reversed(strides))
-        space = self.space(dims)
-        off = " + ".join(f"(({space[d.name].expr}) - {d.start}) * {s}" for d, s in zip(dims, strides))
-        mask = " & ".join(c.valid for c in (space[d.name] for d in dims) if c.valid)
-        store = f"tl.store(out + {off}, {var}" + (f", mask={mask})" if mask else ")")
-        self.ln(store)
-        args = ", ".join([f"p{i}" for i in range(len(self.region.params))] + ["out"])
+        outs = tuple(yld.args) if yld.op == "core.tuple" else (yld,)
+        # multi-output = the output plus surfaced artifacts (§7.8): extra
+        # stores of finals the sweep already computed, nothing more
+        grid = self._prelude(_dims(outs[0].type)) if self.launch else 1
+        onames = ["out"] if len(outs) == 1 else [f"out{i}" for i in range(len(outs))]
+        all_sizes = []
+        for o, oname in zip(outs, onames):
+            var, dims = self.emit_block(o)
+            sizes = tuple(d.stop - d.start for d in dims)
+            strides = []
+            acc = 1
+            for s in reversed(sizes):
+                strides.append(acc)
+                acc *= s
+            strides = tuple(reversed(strides))
+            space = self.space(dims)
+            off = " + ".join(f"(({space[d.name].expr}) - {d.start}) * {s}" for d, s in zip(dims, strides))
+            mask = " & ".join(c.valid for c in (space[d.name] for d in dims) if c.valid)
+            store = f"tl.store({oname} + {off}, {var}" + (f", mask={mask})" if mask else ")")
+            self.ln(store)
+            all_sizes.append(sizes)
+        args = ", ".join([f"p{i}" for i in range(len(self.region.params))] + onames)
         head = ["import triton", "import triton.language as tl", "", "@triton.jit", f"def tile_kernel({args}):"]
-        return "\n".join(head + self.lines) + "\n", sizes, grid
+        return "\n".join(head + self.lines) + "\n", all_sizes, grid
 
 
 def compile_tile(region: Region, launch: tuple = (), prune: tuple = ()):
@@ -517,9 +613,10 @@ def compile_tile(region: Region, launch: tuple = (), prune: tuple = ()):
         import torch
 
         ins = [torch.as_tensor(np.ascontiguousarray(v), dtype=torch.float32).cuda() for v in values]
-        out = torch.empty(out_sizes, dtype=torch.float32, device="cuda")
-        mod.tile_kernel[(grid,)](*ins, out)
+        outs = [torch.empty(s, dtype=torch.float32, device="cuda") for s in out_sizes]
+        mod.tile_kernel[(grid,)](*ins, *outs)
         torch.cuda.synchronize()
+        out = outs[0]
         if not run.checked:  # the docstring's precision law: refuse demoted PTX
             run.checked = True
             for entry in mod.tile_kernel.device_caches.values():
@@ -527,6 +624,8 @@ def compile_tile(region: Region, launch: tuple = (), prune: tuple = ()):
                 for ck in cache.values():
                     if ".tf32" in getattr(ck, "asm", {}).get("ptx", ""):
                         raise RuntimeError("tf32 reached the PTX — the translated column is ieee f32")
+        if len(outs) > 1:  # the output plus its surfaced artifacts (§7.8)
+            return tuple(o.cpu().numpy() for o in outs)
         return out.cpu().numpy()
 
     run.checked = False
