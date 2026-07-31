@@ -40,10 +40,12 @@ def _execute(plan, model):
 def test_gpt2_carves_into_recognized_groups():
     plan = plan_model(gpt2().region)
     by = Counter(c.group.template for c in plan.carves)
-    assert by["contraction-epilogue"] == 17  # q,k,v,sc,pv,w1,w2,wo per block + head:
-    assert by["row-normalization"] == 2  # the 2-dim wo contract claims too (§7.6)
+    assert by["contraction-epilogue"] == 15  # q,k,v,pv,w1,w2,wo per block + head:
+    # the SCORE contractions dissolve INTO the softmax claims (§7.8's traffic
+    # gate — the flash direction, discovered not templated), and the mask
+    # forests travel with them, so no map-chain carves remain
+    assert by["row-normalization"] == 2
     assert by["row-statistics"] == 5  # every layernorm, two-pass, staged once
-    assert by["map-chain"] >= 2  # the causal mask forests
     assert plan.coverage() > 0.9  # only the embedding gather remains red
     reasons = " ".join(c.group.reason for c in plan.carves if c.group.confidence == "red")
     assert "tl.take" in reasons  # the embedding gather, named — scatter_add's twin

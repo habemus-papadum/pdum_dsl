@@ -39,6 +39,7 @@ triton's JIT reads source via inspect, so exec() strings cannot carry it
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -224,6 +225,65 @@ class _Gen:
             return self._use(var, vdims, axes, space)
         raise Untranslatable(n.op)
 
+    def _dot_at(self, n, axes, space, rdims, src, sub, axes2, guards) -> str | None:
+        """The dot fast path AT ambient coordinates (§7.8's board): a
+        two-operand product-sum whose cores are 2D re-emits per tile as
+        an ieee tl.dot — no rank-3 intermediate, the tensor-core form a
+        hand FA kernel writes. Kept tile widths are read off the ambient
+        coordinates' own arange; anything narrower than the MMA floor
+        (or shaped otherwise) falls back to mul+sum."""
+        kept = tuple(_dims(n.type))  # the reduce's OWN kept dims — the ambient
+        if len(rdims) != 1 or len(axes) != 2 or len(kept) != 2:  # space maps them
+            return None  # through splits (t rides as a composed ki coordinate)
+        r = rdims[0]
+        mul = n.args[0]
+        while mul.op in ("tl.with_charts", "tl.strip_charts", "tl.simplify"):
+            mul = mul.args[0]
+        if mul.op != "tl.pointwise" or len(mul.args) != 2:
+            return None
+        if _thaw_params(dict(mul.attrs)).get("f") != "mul":
+            return None
+        cores = []
+        for x in mul.args:
+            while x.op in ("tl.with_charts", "tl.strip_charts", "tl.simplify", "tl.repeat_like", "tl.repeat"):
+                x = x.args[0]
+            cores.append(x)
+        named = {}
+        for x, c in zip(mul.args, cores):
+            d = _dims(c.type)
+            keep = tuple(k for k in d if k.name != r)
+            if len(d) != 2 or len(keep) != 1 or keep[0].name in named:
+                return None
+            named[keep[0].name] = x  # emit the ORIGINAL arg: views ride for free
+        if set(named) != {kept[0].name, kept[1].name}:
+            return None
+        rdim = next(x for x in src if x.name == r)
+        rp = _pow2(rdim.stop - rdim.start)
+        if rp < 16:
+            return None
+        widths = []
+        for ax in kept:  # the tile width is literal in the ambient coordinate
+            c = space.get(ax.name)
+            ws = re.findall(r"tl\.arange\(0, (\d+)\)", c.expr) if c is not None else []
+            if len(ws) != 1 or int(ws[0]) < 16:
+                return None
+            widths.append(int(ws[0]))
+        halves = []
+        for pos, ax in enumerate(kept):
+            v = self.v()
+            self.ln(f"{v} = {self.emit_at(named[ax.name], tuple(axes2), sub)}")
+            for g in guards:  # zero the padded contraction lanes: 0*0 contributes 0
+                self.ln(f"{v} = tl.where({g}, {v}, 0.0)")
+            v2 = self.v()  # squeeze the broadcast axis: (W, 1, R) / (1, W, R) -> (W, R)
+            self.ln(f"{v2} = tl.reshape({v}, ({widths[pos]}, {rp}))")
+            halves.append(v2)
+        va, vb = halves
+        tb = self.v()
+        self.ln(f"{tb} = tl.trans({vb})")
+        out = self.v()
+        self.ln(f'{out} = tl.dot({va}, {tb}, input_precision="ieee")')
+        return out
+
     def _apply_f(self, f: str, args) -> str | None:
         if f in _INFIX:
             return f"({args[0]} {_INFIX[f]} {args[1]})"
@@ -291,6 +351,10 @@ class _Gen:
             axes2.append(d)
             if valid:
                 guards.append(valid)
+        if not mean:
+            dot = self._dot_at(n, axes, space, rdims, src, sub, axes2, guards)
+            if dot is not None:
+                return dot
         var = self.v()
         self.ln(f"{var} = {self.emit_at(n.args[0], tuple(axes2), sub)}")
         for g in guards:  # identity-fill the padded reduced lanes

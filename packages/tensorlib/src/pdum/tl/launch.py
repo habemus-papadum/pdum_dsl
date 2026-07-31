@@ -93,26 +93,34 @@ def feasible(region, launch, machine: TileMachine) -> tuple[bool, int]:
 
 
 def propose(region, machine: TileMachine, floor: int = 1024) -> tuple:
-    """Feasible launches over the leading output dim, smallest tile first
-    (the analytic default). Empty when nothing fits — the caller keeps
-    grid (1,) and the tripwire owns the crash."""
+    """Feasible launches, smallest tile first, laddering EACH output dim
+    in turn — the analytic default picks the dim by feasibility (a dV
+    kernel grids its big axis, not its leading one; 340 §4's closed
+    forms stay per-row). Leading-dim candidates come first, so every
+    pick that existed before still wins its tie. Empty when nothing
+    fits — the caller keeps grid (1,) and the tripwire owns the crash."""
     yld = region.body[-1].args[0]
+    if yld.op == "core.tuple":
+        yld = yld.args[0]  # artifacts ride the output's launch (§7.8)
     dims = yld.type.dims
-    lead = dims[0]
-    extent = lead.stop - lead.start
-    rest = 1
-    for d in dims[1:]:
-        rest *= d.stop - d.start
     launches = []
-    t = _pow2(extent)
-    while True:
-        ok, _ = feasible(region, ((lead.name, t),), machine)
-        if ok:
-            launches.append(((lead.name, t),))
-        if t == 1 or rest * t <= floor:  # never shrink below the floor's work
-            break
-        t //= 2
-    launches.reverse()
+    for i, lead in enumerate(dims):
+        extent = lead.stop - lead.start
+        rest = 1
+        for j, d in enumerate(dims):
+            if j != i:
+                rest *= d.stop - d.start
+        found = []
+        t = _pow2(extent)
+        while True:
+            ok, _ = feasible(region, ((lead.name, t),), machine)
+            if ok:
+                found.append(((lead.name, t),))
+            if t == 1 or rest * t <= floor:  # never shrink below the floor's work
+                break
+            t //= 2
+        found.reverse()
+        launches.extend(found)
     return tuple(launches)
 
 

@@ -26,7 +26,9 @@ def test_the_ladder_is_smallest_first_and_all_feasible():
     simply absent."""
     region = flash_tile(T=512, E=64, OD=64, SI=32).region
     cands = propose(region, _SHARED, floor=1024)
-    tiles = [dict(c)["t"] for c in cands]
+    # §7.8: the ladder now offers every output dim; the t-prefix keeps its
+    # old contract (smallest-first, all feasible, the cliff absent)
+    tiles = [dict(c)["t"] for c in cands if "t" in dict(c)]
     assert tiles == sorted(tiles) and tiles[0] == 16  # 16*64 elems = the floor
     assert all(feasible(region, c, _SHARED)[0] for c in cands)
     assert 512 not in tiles and 256 not in tiles  # the computed cliff

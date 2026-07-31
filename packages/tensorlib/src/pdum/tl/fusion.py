@@ -96,6 +96,34 @@ def _unchart(n):
     return n
 
 
+def _uncore(x):
+    """Peel a contraction operand down to its CORE: charts, broadcasts
+    (repeat_like/repeat — likes and extents are dims-only credentials),
+    and PROJECTION markers — autodiff's mul.d0/mul.d1 slopes are bare
+    Args, so the node IS one of its operands (§7.8), typed at the joint
+    space but never work."""
+    while True:
+        x0 = x
+        x = _unchart(x)
+        if x.op in ("tl.repeat_like", "tl.repeat"):
+            x = x.args[0]
+            continue
+        if x.op == "tl.pointwise":
+            f = dict(x.attrs).get("f", "")
+            if "." in f:
+                from .markers import MARKERS
+
+                try:
+                    body = getattr(MARKERS[f], "body", None)
+                except KeyError:
+                    body = None
+                if body is not None and hasattr(body, "index"):
+                    x = x.args[body.index]
+                    continue
+        if x is x0:
+            return x
+
+
 @dataclass(frozen=True)
 class Group:
     """One fusion group: the template that claimed it, the generated tile
@@ -171,12 +199,7 @@ def _match_contraction_epilogue(region: Region):
             return None
     prod = _unchart(red.args[0])
     if prod.op == "tl.pointwise" and dict(prod.attrs).get("f") == "mul" and len(prod.args) == 2:
-        cores = []
-        for x in prod.args:
-            x = _unchart(x)
-            if x.op == "tl.repeat_like":  # a broadcast rides; its LIKE is a dims-only credential
-                x = _unchart(x.args[0])
-            cores.append(x)
+        cores = [_uncore(x) for x in prod.args]
     else:  # PLAIN shape: a sum with no product at all (bias gradients) —
         cores = [prod]  # the degenerate rowsum, one operand riding the fold
     if any(k not in {d.name for d in _dims(c.type)} for c in cores for k in dims):

@@ -42,6 +42,7 @@ from .fusion import (
     _match_rowstat,
     _match_softmax,
     _unchart,
+    _uncore,
     plan_region,
 )
 
@@ -350,6 +351,110 @@ def _components(nodes, consumers):
     return comps
 
 
+def _dissolve(claims, consumers, travel, region):
+    """Root-travel (§7.8's completing amendment): a carve whose root
+    serves ONLY other claims, and whose every reduction is tile-local
+    for each consumer's sweep, need not materialize — its members join
+    the travel set and consumers re-derive per tile. Runs to fixpoint:
+    dissolving dP frees the dS pieces, which reshapes dQ/dK. A root the
+    region itself yields stays materialized; a reduction over a
+    consumer's swept dim holds its carve back automatically — D's
+    rowsum over s cannot travel into dQ's s-sweep, exactly FA's
+    precomputed-per-row D."""
+    yld = region.body[-1]
+    sinks = {id(yld)} | ({id(yld.args[0])} if yld.args[0].op == "core.tuple" else set())
+
+    def value_consumers(x, out, seen):
+        for c in consumers.get(id(x), ()):
+            if id(c) in seen:
+                continue
+            seen.add(id(c))
+            if c.op in _FREE:
+                out.append(c)
+                value_consumers(c, out, seen)
+            else:
+                out.append(c)
+        return out
+
+    while True:
+        owner: dict[int, set] = {}
+        for ci, (root, members, _arts) in enumerate(claims):
+            for i in members:
+                owner.setdefault(i, set()).add(ci)
+        sweeps = []
+        for _root, members, _arts in claims:
+            sw: set = set()
+            for m in members.values():
+                if m.op == "tl.reduce" and id(m) not in travel:
+                    d = dict(m.attrs)["dims"]
+                    sw |= {d} if isinstance(d, str) else set(d)
+            sweeps.append(sw)
+        dissolved = None
+        order = sorted(  # pure-map pieces first: a rowsum must not ride into
+            range(len(claims)),  # a piece that could otherwise dissolve whole
+            key=lambda ci: sum(1 for m in claims[ci][1].values() if m.op == "tl.reduce"),
+        )
+        for ci in order:
+            root, members, arts = claims[ci]
+            if root is None or arts:
+                continue  # rootless residue and artifact carves stay put
+            if any(
+                m.op not in _FREE and m.op not in _COMPUTE and m.op != "tl.reduce" and id(m) not in travel
+                for m in members.values()
+            ):
+                continue  # something unspelled (a scan): not duplicable
+            mine: set = set()
+            for m in members.values():
+                if m.op == "tl.reduce":  # travel copies included: the copy must
+                    d = dict(m.attrs)["dims"]  # be legal where it finally RESTS
+                    mine |= {d} if isinstance(d, str) else set(d)
+            cons = value_consumers(root, [], set())
+            ok = bool(cons)
+            eaters: set = set()
+            for c in cons:
+                if id(c) in sinks:
+                    ok = False  # the region yields it: an external output
+                    break
+                if c.op in _FREE:
+                    continue  # a view forwards; its consumers were followed
+                who = owner.get(id(c), set()) - {ci}
+                if not who:
+                    ok = False
+                    break
+                eaters |= who
+            if not ok:
+                continue
+            if any(mine & sweeps[cj] for cj in eaters):
+                continue  # a swept-dim reduction cannot travel (§7.8)
+            # the traffic gate (§7.8 ruling 3's analytic default): dissolving
+            # trades the root's round trip (write + read-back) for each eater
+            # re-reading the cone's boundaries — dissolve only when that wins;
+            # at toy sizes materialization IS cheaper and the carve stays
+            root_elems = 1
+            for d in _dims(root.type):
+                root_elems *= d.stop - d.start
+            binputs, seenb = 0, set()
+            for m in members.values():
+                for a in m.args:
+                    if id(a) not in members and id(a) not in seenb and a.op not in _CONSTS:
+                        seenb.add(id(a))
+                        e = 1
+                        for d in getattr(a.type, "dims", ()):
+                            e *= d.stop - d.start
+                        binputs += e
+            if 2 * root_elems <= len(eaters) * binputs:
+                continue
+            dissolved = ci
+            break
+        if dissolved is None:
+            return claims
+        root, members, _arts = claims.pop(dissolved)
+        travel.update(members)
+        travel[id(root)] = root
+        for _r, mem, _a in claims:
+            _absorb_travel(mem, travel)
+
+
 def carve_model(region: Region):
     """The partition alone — claims + residue, no per-group planning.
     Returns (claims, interior_count, travel): claims are (root, members,
@@ -433,12 +538,7 @@ def carve_model(region: Region):
             continue
         mul = _unchart(r.args[0])
         if mul.op == "tl.pointwise" and dict(mul.attrs).get("f") == "mul" and len(mul.args) == 2:
-            cores = []
-            for x in mul.args:
-                x = _unchart(x)
-                if x.op == "tl.repeat_like":
-                    x = _unchart(x.args[0])
-                cores.append(x)
+            cores = [_uncore(x) for x in mul.args]
         else:  # PLAIN: a sum with no product (bias gradients) — one operand
             cores = [mul]
         if any(k not in {d.name for d in _dims(c.type)} for c in cores for k in dims):
@@ -479,6 +579,7 @@ def carve_model(region: Region):
                 claims.extend((rt, mem, ()) for rt, mem in parts)
                 break
             rootset.extend(promote)
+    _dissolve(claims, consumers, travel, region)
     return claims, len(interior), travel
 
 

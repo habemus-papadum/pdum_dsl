@@ -351,3 +351,55 @@ hand FA kernel uses) is the priced next step, and the remat-vs-
 materialize tie-break rig lands with it. Bounds transfer (340 §4b,
 roles swapped) rides behind. Both are follow-ups, not blockers: the
 LAW is landed, certified, and pinned end to end.
+
+### §7.8 AMENDMENTS (2026-07-31, ratified as options 1–2 of the sequence)
+
+**Dot-at-ambient (the emission gap closes).** _reduce_at gains the dot
+fast path: a two-operand product-sum whose cores are 2D re-emits per
+tile as an ieee tl.dot at the ambient composed coordinates — kept tile
+widths read off the coordinates' own arange, sub-16 or odd shapes fall
+back to mul+sum (toys unchanged). With _uncore (operand cores peel
+charts, broadcasts, AND projection markers — autodiff's mul.d0/mul.d1
+slopes are bare Args, so the node IS one of its operands, typed at the
+joint space but never work), the backward kernels emit the FA inner
+loop: two ieee dots with the exp between them. propose() ladders
+EVERY output dim (dV grids its big axis; tuple yields use the output's
+dims; leading-dim candidates first so old picks keep winning).
+
+**Root-travel (the law completes).** A carve whose root serves ONLY
+other claims, and whose every reduction — travel copies included, the
+copy must be legal where it finally RESTS — is tile-local for each
+consumer's sweep, dissolves: members join the travel set, consumers
+re-derive per tile. Runs to fixpoint, pure-map pieces first (a rowsum
+must not ride into a piece that could otherwise dissolve whole). Two
+guards carry the ratified rulings: a region-yielded root stays
+materialized; and the TRAFFIC GATE (ruling 3's analytic default) —
+dissolve only when the root's round trip exceeds every eater
+re-reading the cone's boundaries, so at toy sizes materialization
+honestly wins and nothing dissolves. What the gate discovers at real
+sizes: dP and dS dissolve into dQ/dK/dV (full FA-2 structure — only
+the O(t) statistics and D cross memory), D's rowsum-over-s is held
+back from dQ's s-sweep AUTOMATICALLY (FA's precomputed per-row D,
+derived not designed), and in the FORWARD the score contractions
+dissolve INTO the softmax claims with their mask forests riding — the
+flash direction, discovered by arithmetic. The one refusal left in
+the flash joint: the max-adjoint's tl.scan (argmax tie-breaking),
+reference-served, erased only by softmax shift-invariance — an
+algebraic rewrite, future.
+
+**The first §7.8 board (T=512, E=64, OD=64, causal, f32, 4090 laptop,
+measured picks over the ladder, every candidate verified against the
+reference before timing).** The FA-shaped kernels: flash forward with
+artifact stores and causal prune 201 us (sdpa fwd: 128 — 1.6x); dV
+186, dQ 305, dK 310 — the three gemm-shaped backward kernels total
+~800 us against sdpa's whole backward ~390. The itemized remainder:
+the two row-statistics kernels (D and the den-grad rowsum) cost 591
+and 1888 us — their rank-1-output emission has no dot form yet and
+spills; and two (t,s) pieces stay off the GPU (the scan-tainted
+max-adjoint, reference-served red; the rowsum-blocked dS piece,
+launch-infeasible). GPU total 3.5 ms vs sdpa 0.52 ms — the 6.7x is
+carried almost entirely by the named gaps, not by the FA kernels.
+Learned along the way and fixed in the bench: prune affines are
+TILE-specific (a plan's prune must never ride another candidate's
+launch), and a measured pick must reject numerically-wrong candidates
+before comparing speed.
