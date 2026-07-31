@@ -281,3 +281,43 @@ root (broadcast-into-elsewhere is another anchor's product). On
 silicon, four §7.6 proofs: prologue-inside-the-sweep (ieee dot),
 softmax adjoint as rowsum+epilogue, layernorm with the '/ N' finalize,
 and the (nh,hk) two-dim contraction — tripwire silent throughout.
+
+### §7.8 Recompute-vs-materialize — RATIFIED 2026-07-31 (owner conversation)
+
+The flash-backward law, stated generally: **the statistics stay, the
+map travels.** Sort any re-derivation cone by three kinds — map work
+(recompute-exact, §7.6's class), TILE-LOCAL reductions (dims inside
+the tile, e.g. the e-contraction: recomputable, bit-exact at matched
+block shape, the priced reassociation class otherwise), and SWEPT-DIM
+reductions (m, den — row-global, unrecomputable tile-locally BY
+CONSTRUCTION). The rulings:
+
+1. **Artifacts** are fold-carried finals surfaced as extra stores —
+   the ONLY multi-output form. Zero extra FLOPs (the sweep already
+   computed them), O(rows) extra bytes. den is already surfaced for
+   the division; m is carried and merely never stored.
+2. **The remat law**: an outside consumer of a claim's interior X is
+   legal iff X re-derives from {params, artifacts} through map work
+   and tile-local reductions; the cone COPIES into the consumer
+   (content-addressing dedups); swept-dim reductions never travel —
+   they are what artifacts exist for. §7.6's fork law survives as the
+   special case where nothing travels (pure-map forks — gelu — travel
+   with no artifacts at all: activation checkpointing falls out).
+3. **Capacity forces, the ledger picks**: materializing t^2 above the
+   capacity wall is a COMPUTED refusal (forced remat — the T=512
+   shared-memory refusal's sibling); below the wall, remat-vs-
+   materialize is a measured tie-break. No new machine columns.
+4. **No new template, no atomics**: the backward kernels are §7.6
+   contractions whose prologues re-derive P per tile; dQ folds s and
+   grids t, dK/dV the transpose — separate carves, every output owned
+   by one program; cross-program reduction stays refused with its
+   §6 wording. v1 recomputes P per consumer (3–4x vs FA's 2x); the
+   D = rowsum(dO*O) identity and accumulator distribution are
+   ALGEBRAIC merges — re-entries, entered on a measured gap.
+5. **Certificates** run against the naive joint under the flash
+   license domain — the saved statistics are the ONLINE (m, den),
+   whose deviation from naive is already the priced class.
+
+Flagship: the bare flash_tile joint (riders are the queued, orthogonal
+matcher extension). Bounds transfer (340 §4b, roles swapped) rides
+behind.
