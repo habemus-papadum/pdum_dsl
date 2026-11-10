@@ -42,3 +42,11 @@ Prepared November 10, 2026. Manual workflow verification and any follow-ups are
 recorded after the shared action release and pilot have passed.
 
 The original frozen-lock baseline passed all 299 selected compiler/tensor tests. These checks used the existing lock before the shared Ship tooling upgrade; final workflow evidence follows below.
+
+## Manual verification, November 10
+
+[Run 42863822860](https://github.com/habemus-papadum/pdum_dsl/actions/runs/42863822860) completed successfully. The retained integration report records `unchanged` at phase `complete`, after the configured baseline installation, policy and maintenance checks.
+
+The first-party resolution was already current, so the job made no empty commit and created no repair PR. Future candidate failures still use the shared draft-PR/report path; this run exercised the no-change path.
+
+The shared action's failed-candidate draft-PR path was separately exercised in its [integration smoke](https://github.com/habemus-papadum/pdum_ship/actions/runs/42859986953). Repository-level Actions PR creation is enabled; the default token permission remains read unless a workflow explicitly requests more.
