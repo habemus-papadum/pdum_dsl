@@ -42,6 +42,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ship-release
+  cancel-in-progress: false
+
 jobs:
   # --- gate: require the commit's CI to be green -----------------------------
   gate:

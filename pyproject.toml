@@ -60,6 +60,7 @@ explicit = true
 
 [dependency-groups]
 dev = [
+    "habemus-papadum-ship>=0.12.0",
     "habemus-papadum-dsl",
     "habemus-papadum-tl",
     "hatch>=1.14.2",
@@ -139,3 +140,12 @@ omit = [
     "*/tests/*",
     "*/testing.py",
 ]
+
+# Dependency maintenance only: existing scripts retain release/version ownership.
+[tool.ship]
+refresh-test = ["uv run --locked pytest -q packages/dsl/tests packages/tensorlib/tests/test_axis.py packages/tensorlib/tests/test_layout.py packages/tensorlib/tests/test_indexing.py packages/tensorlib/tests/test_units.py packages/tensorlib/tests/test_transforms.py packages/tensorlib/tests/test_memory.py"]
+ours = ["habemus-papadum-*", "@habemus-papadum/*"]
+versioning = false
+
+[tool.ship.pins]
+"habemus-papadum-dsl" = "Existing lockstep workspace constraint is owned by scripts/_versioning.py; weekly maintenance does not alter release ownership."

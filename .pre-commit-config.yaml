@@ -32,3 +32,12 @@ repos:
       - id: ruff-format
         name: Format Python with ruff
 
+
+  - repo: local
+    hooks:
+      - id: ship-check
+        name: ship deps check (links, locks, skill copies)
+        entry: uv run --locked ship deps check --hook
+        language: system
+        pass_filenames: false
+        always_run: true

@@ -56,3 +56,12 @@ uv build --package habemus-papadum-dsl       # member build (never publishes)
 ```
 
 Use `uv sync --frozen` for reproducible envs; re-run setup when dependencies change.
+
+## Weekly dependency maintenance
+
+The scheduled/manual `deps-refresh.yml` workflow uses Ship's shared refresh action.
+`[tool.ship] refresh-test` owns its explicit maintenance checks; release tests keep
+their existing scope. See [dependency maintenance](docs/dependency-maintenance.md)
+for commands, outcomes and verification limits. No package release or deployment
+is part of a dependency refresh. Keep generated reports out of Git and preserve
+human/agent edits on an existing repair PR.

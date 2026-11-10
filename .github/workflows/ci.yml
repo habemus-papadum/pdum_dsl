@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -32,6 +33,9 @@ jobs:
 
       - name: Project Setup
         run: ./scripts/setup.sh
+
+      - name: Dependency policy
+        run: uv run --locked ship deps check
 
       - name: Run Linting
         run: uv run ruff check .

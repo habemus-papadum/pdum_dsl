@@ -1,0 +1,31 @@
+name: weekly-dependencies
+on:
+  schedule:
+    - cron: '47 8 * * 2'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ship-release
+  cancel-in-progress: false
+jobs:
+  refresh:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.12.17'
+          python-version: '3.14'
+          enable-cache: true
+      - uses: habemus-papadum/pdum_ship/.github/actions/refresh@132af447b7055d512049f38cab45ab0da1585705
+        with:
+          ci_workflow: ci.yml
