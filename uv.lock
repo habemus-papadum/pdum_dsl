@@ -626,7 +626,7 @@ torch-cpu = [
 dev = [
     { name = "egglog", specifier = ">=13.2.0" },
     { name = "habemus-papadum-dsl", editable = "packages/dsl" },
-    { name = "habemus-papadum-ship", specifier = ">=0.12.0" },
+    { name = "habemus-papadum-ship", specifier = ">=0.12.1" },
     { name = "habemus-papadum-tl", editable = "packages/tensorlib" },
     { name = "hatch", specifier = ">=1.14.2" },
     { name = "inquirerpy", specifier = ">=0.3.4" },
@@ -771,16 +771,16 @@ requires-dist = [{ name = "numpy", specifier = ">=2.5.0" }]
 
 [[package]]
 name = "habemus-papadum-ship"
-version = "0.12.0"
+version = "0.12.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "packaging" },
     { name = "pyyaml" },
     { name = "typer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e6/40/04b77bb2a1b47e152e11b42ec0069b377770d672354dbe7df76db91b0607/habemus_papadum_ship-0.12.0.tar.gz", hash = "sha256:d02c9021aed1d1f61910c43d48b644ed1fa15bffef5a96810e237b3e31ec1329", size = 162790, upload-time = "2026-11-10T17:02:12.072Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d4/fb/fef1a5294e0fd315638fd8fb421d33c911b238abb3ead1f4603aac0ef630/habemus_papadum_ship-0.12.1.tar.gz", hash = "sha256:29636a6633a2e8155d363ce5e357da8ec40e2a56e91d51674043324e395f4caa", size = 165389, upload-time = "2026-11-10T20:30:04.601Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/30/54/85ae01e13d0f055f412aa4d6b23c42273046d851e67b38242dcd430da564/habemus_papadum_ship-0.12.0-py3-none-any.whl", hash = "sha256:2ce78db8dd925fbcbcbc363dd5e67d40d8368987afd9410fcb999592ccf10d65", size = 75592, upload-time = "2026-11-10T17:02:11.023Z" },
+    { url = "https://files.pythonhosted.org/packages/44/09/d4d2a40aa9204be1bc41c3a62c36fd8f5200419a31179744e0a29e009613/habemus_papadum_ship-0.12.1-py3-none-any.whl", hash = "sha256:36760b85274f5057619bdb79e90f369bb97ba9eed38841d07adb19b34c8dd0d9", size = 75833, upload-time = "2026-11-10T20:30:03.462Z" },
 ]
 
 [[package]]
